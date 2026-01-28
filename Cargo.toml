@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kikyo-core",
+    "crates/kikyo-ui-tauri/src-tauri",
+]
