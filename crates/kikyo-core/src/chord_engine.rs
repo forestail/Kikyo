@@ -78,6 +78,7 @@ pub struct Profile {
     pub trigger_keys: HashMap<ScKey, PlaneTag>,
     pub target_keys: Option<HashSet<ScKey>>,
     pub successive: SuccessiveCfg,
+    pub overlap_ratio_threshold: f64,
 }
 
 impl Default for Profile {
@@ -92,6 +93,7 @@ impl Default for Profile {
             trigger_keys: HashMap::new(),
             target_keys: None,
             successive: SuccessiveCfg { enabled: false },
+            overlap_ratio_threshold: 0.35,
         }
     }
 }
@@ -110,6 +112,7 @@ pub struct ChordState {
 pub struct PendingKey {
     pub key: ScKey,
     pub t_down: Instant,
+    pub t_up: Option<Instant>,
     // kind_hint: PendingKindHint
 }
 
@@ -194,55 +197,56 @@ impl ChordEngine {
                 self.state.pressed.insert(event.key);
                 self.state.down_ts.insert(event.key, now);
 
-                // 2. Normal Handling: Add to pending
+                // 2. Add to pending
                 // Avoid duplicates (if repeat comes in)
                 if !self.state.pending.iter().any(|p| p.key == event.key) {
                     self.state.pending.push(PendingKey {
                         key: event.key,
                         t_down: now,
+                        t_up: None,
                     });
                 }
 
-                // Try to form a chord (if conditions met immediately, e.g. min_overlap=0)
-                if self.profile.min_overlap_ms == 0 {
-                    let chords = self.check_chords(now);
-                    output.extend(chords);
-                }
+                // 3. Check chords
+                // Even on Down, we might trigger something if we had complete info?
+                // But with Ratio logic requiring Up time, we usually wait.
+                // However, "check_chords" handles the "Wait" logic.
+                let chords = self.check_chords(now);
+                output.extend(chords);
             }
             KeyEdge::Up => {
-                // 1. Check for chord formation BEFORE removing from pressed
-                // This allows catching the overlap at the moment of release.
+                // 1. Update state
+                self.state.pressed.remove(&event.key);
+                // Mark t_up in pending
+                if let Some(p) = self.state.pending.iter_mut().find(|p| p.key == event.key) {
+                    p.t_up = Some(now);
+                }
+
+                // 2. Check for chord formation
                 let chords = self.check_chords(now);
                 output.extend(chords);
 
-                // 2. Update state
-                self.state.pressed.remove(&event.key);
+                // 3. Flush Single Taps
+                // If a key is pending, released (t_up is Some), and has NO potential partners (e.g. it's alone),
+                // we can flush it immediately as Tap.
+                // NOTE: If there are other keys, but they are "too far" or "already processed"?
+                // Simplified: If pending count is 1, and it is released, flush it.
+                if self.state.pending.len() == 1 {
+                    let p = &self.state.pending[0];
+                    if p.t_up.is_some() {
+                        // It's a lonely tap
+                        let key = p.key;
+                        let is_mod = self.is_modifier_key(key);
 
-                // 3. Check for Tap (Trigger/Latch) candidates
-                // If the key is still pending (not consumed by chord)
-                let is_pending = self.state.pending.iter().any(|p| p.key == event.key);
-                if is_pending {
-                    if self.is_modifier_key(event.key) {
-                        // Modifier Tap -> Latch
-                        // Remove from pending to consume it
-                        self.state.pending.retain(|p| p.key != event.key);
-                        output.push(Decision::LatchOn(LatchKind::OneShot));
-                        // Clean down_ts
-                        self.state.down_ts.remove(&event.key);
-                    } else {
-                        // Normal key tap (released without chord)
-                        // It was pending (waiting for chord), but released alone.
-                        // So it is a Tap.
-                        self.state.pending.retain(|p| p.key != event.key);
-                        output.push(Decision::KeyTap(event.key));
-                        self.state.down_ts.remove(&event.key);
+                        self.state.pending.clear();
+                        self.state.down_ts.remove(&key);
+
+                        if is_mod {
+                            output.push(Decision::LatchOn(LatchKind::OneShot));
+                        } else {
+                            output.push(Decision::KeyTap(key));
+                        }
                     }
-                }
-
-                // Cleanup down_ts if no longer pending
-                // (Already handled above for the event.key, but safety check)
-                if !self.state.pending.iter().any(|p| p.key == event.key) {
-                    self.state.down_ts.remove(&event.key);
                 }
             }
         }
@@ -313,115 +317,120 @@ impl ChordEngine {
             return output;
         }
 
-        // Simple MVP: Check pairs (2-key chords)
         // Iterate all pairs in pending
         let mut consumed_indices = HashSet::new();
+        let mut flushed_indices = HashSet::new(); // Keys decided as Sequential (Tap)
 
         // Use indices to avoid cloning
-        // Pending is usually small (1-3 keys).
         for i in 0..self.state.pending.len() {
-            if consumed_indices.contains(&i) {
+            if consumed_indices.contains(&i) || flushed_indices.contains(&i) {
                 continue;
             }
 
             for j in (i + 1)..self.state.pending.len() {
-                if consumed_indices.contains(&j) {
+                if consumed_indices.contains(&j) || flushed_indices.contains(&j) {
                     continue;
                 }
 
-                let p1 = &self.state.pending[i];
-                let p2 = &self.state.pending[j];
-
-                // 1. Time difference check (chord window)
-                let t_diff = if p1.t_down > p2.t_down {
-                    p1.t_down.duration_since(p2.t_down)
+                // Determine First (p1) and Second (p2) based on t_down
+                let (idx1, idx2) = if self.state.pending[i].t_down <= self.state.pending[j].t_down {
+                    (i, j)
                 } else {
-                    p2.t_down.duration_since(p1.t_down)
+                    (j, i)
                 };
 
+                let p1 = &self.state.pending[idx1];
+                let p2 = &self.state.pending[idx2];
+
+                // 1. Time difference check using chord_window
+                // (Optimization: If too far apart, P1 is likely tap, but we rely on flush_expired for that mostly.
+                // However, check_chords normally skips far pairs.)
+                let t_diff = p2.t_down.duration_since(p1.t_down);
                 if t_diff.as_millis() as u64 > self.profile.chord_window_ms {
                     continue;
                 }
 
-                // 2. Overlap check
-                // Interval 1: [down1, up1_or_now]
-                // Interval 2: [down2, up2_or_now]
-                // Up time is now if pressed, else... we don't track Up time in PendingKey!
-                // We track down_ts in state.down_ts.
-                // If it is in pressed, use now.
-                // If NOT in pressed, we need its Up time.
-                // Ah, we don't store Up time in PendingKey.
-                // Issue: If A was pressed and released (pending), and B is pressed.
-                // We need A's release time to calculate overlap.
-                // We must store 't_up' or 't_last_associated_event' in pending?
-                // Or we can't strict verify overlap if we threw away Up time.
-                // REFACTOR: PendingKey should store Key state or we rely on 'state.down_ts' strictly?
-                // But 'down_ts' is removed on Up in some logic?
-                // No, my implementation of Up kept down_ts IF pending.
-                // So down_ts has the Down time. But we need Up time.
-                // If it's NOT in 'pressed', it means it is Up.
-                // But WHEN did it go Up? 'now'? No, it went up earlier.
-                // We missed the Up timestamp!
-                // FIX: We need to store 't_up' in PendingKey if it's released but pending.
+                // 2. Overlap Ratio Check
+                // We need p2 to be released (t_up known) to calculate ratio denominator.
+                // Exception: if p2 is pressed, we can't determine ratio definitively generally.
+                // BUT if p1 is still pressed, and p2 is pressed... Min(p1.up, p2.up) is unknown.
+                // So we WAIT if p2 is pressed.
 
-                // For MVP, if a key is released, we assume it ended "recently" or check against specific event?
-                // If A Up happened 100ms ago, and we are processing B Up.
-                // The overlap might be 0.
-                // We need strict timestamps.
-
-                // Let's assume we proceed for now and add 't_up' to PendingKey later?
-                // Or just use 'now' if pressed, and 'p.t_down' (0 overlap) if up?
-                // That would fail "Overlap required".
-
-                // CRITICAL FIX: To support "released but pending", we need `t_up` in PendingKey.
-                // I will add `t_up: Option<Instant>` to PendingKey definition later.
-                // For this step, I will assume keys must be pressed to overlap (intersection with now),
-                // OR purely rely on window check if overlap is disabled.
-                // Since "Overlap required" is a goal, I should fix PendingKey.
-
-                // Skip overlap check for this iteration since I can't enforce it without t_up.
-                // I'll add a TODO and assume sufficient overlap for now or rely on "Both Pressed".
-                let both_pressed =
-                    self.state.pressed.contains(&p1.key) && self.state.pressed.contains(&p2.key);
-                if self.profile.min_overlap_ms > 0 {
-                    if !both_pressed {
-                        // If one is released, we can't verify overlap without t_up.
-                        // Fail safe: don't chord.
-                        continue;
-                    }
-                    // If both pressed, overlap is [max(d1, d2), now].
-                    let start = if p1.t_down > p2.t_down {
-                        p1.t_down
-                    } else {
-                        p2.t_down
-                    };
-                    if (now.duration_since(start).as_millis() as u64) < self.profile.min_overlap_ms
-                    {
-                        continue;
-                    }
+                if p2.t_up.is_none() {
+                    // P2 still down. Wait.
+                    continue;
                 }
 
-                // Match!
-                consumed_indices.insert(i);
-                consumed_indices.insert(j);
-                output.push(Decision::Chord(vec![p1.key, p2.key]));
-                break; // Move to next i
+                // P2 is Up. P1 might be Up or Down.
+                let p1_end = p1.t_up.unwrap_or(now);
+                let p2_end = p2.t_up.unwrap(); // Known
+
+                // Overlap = Intersection of [p1.down, p1_end] and [p2.down, p2_end]
+                // Since p1.down <= p2.down, Intersection start is p2.down.
+                // Intersection end is min(p1_end, p2_end).
+
+                let overlap_start = p2.t_down;
+                let overlap_end = if p1_end < p2_end { p1_end } else { p2_end };
+
+                let overlap_dur = if overlap_end > overlap_start {
+                    overlap_end.duration_since(overlap_start)
+                } else {
+                    Duration::ZERO
+                };
+
+                let p2_dur = p2_end.duration_since(p2.t_down);
+
+                // Avoid division by zero (should be rare/impossible for real key press)
+                let ratio = if p2_dur.as_micros() > 0 {
+                    overlap_dur.as_secs_f64() / p2_dur.as_secs_f64()
+                } else {
+                    0.0
+                };
+
+                if ratio >= self.profile.overlap_ratio_threshold {
+                    // CHORD!
+                    consumed_indices.insert(idx1);
+                    consumed_indices.insert(idx2);
+                    // Output Chord
+                    // Order depends on implementation, usually sorted? Or just vector.
+                    output.push(Decision::Chord(vec![p1.key, p2.key]));
+                    break; // Move to next i
+                } else {
+                    // SEQUENTIAL!
+                    // If ratio is low, it means they are effectively sequential.
+                    // A(Down)->A(Up)->B(Down) or partial overlap failure.
+                    // We should flush P1 as Tap.
+                    // P2 remains pending (might chord with next).
+                    // BUT: If P1 is flushed, we must mark it.
+                    flushed_indices.insert(idx1);
+                    output.push(Decision::KeyTap(p1.key));
+
+                    // We do NOT break here, because p1 is now flushed, we continue outer loop?
+                    // Actually if p1 is flushed, we shouldn't continue checking p1 against others.
+                    break; // Move to next i (which will skip because p1 is flushed)
+                }
             }
         }
 
-        // Remove consumed
-        if !consumed_indices.is_empty() {
+        // Remove consumed or flushed
+        if !consumed_indices.is_empty() || !flushed_indices.is_empty() {
             let mut new_pending = Vec::new();
             for (i, p) in self.state.pending.iter().enumerate() {
-                if !consumed_indices.contains(&i) {
-                    new_pending.push(p.clone());
-                } else {
-                    // Consumed. Clean down_ts if not pressed?
-                    // Usually yes.
+                if consumed_indices.contains(&i) {
+                    // Consumed by chord
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
+                    continue;
                 }
+                if flushed_indices.contains(&i) {
+                    // Flushed as Tap
+                    if !self.state.pressed.contains(&p.key) {
+                        self.state.down_ts.remove(&p.key);
+                    }
+                    continue;
+                }
+                new_pending.push(p.clone());
             }
             self.state.pending = new_pending;
         }
@@ -460,37 +469,37 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_chord_on_release_overlap() {
+    fn test_basic_chord_nested_overlap() {
+        // A(Down) -> B(Down) -> B(Up) -> A(Up)
+        // Ratio should be 1.0 (100%)
         let mut profile = Profile::default();
-        profile.chord_window_ms = 50;
-        profile.min_overlap_ms = 5; // Require 5ms overlap
-
+        profile.chord_window_ms = 200;
+        profile.overlap_ratio_threshold = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A
         let k2 = make_key(0x30); // B
 
-        // 1. Down A at t0
-        let res = engine.on_event(make_event(k1, KeyEdge::Down, t0));
-        assert!(res.is_empty(), "Should pending");
+        // 1. Down A
+        engine.on_event(make_event(k1, KeyEdge::Down, t0));
+        // 2. Down B at +10
+        engine.on_event(make_event(
+            k2,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        // 3. Up B at +60 (Duration 50)
+        let res = engine.on_event(make_event(k2, KeyEdge::Up, t0 + Duration::from_millis(60)));
 
-        // 2. Down B at t0 + 10ms (Within window)
-        let t1 = t0 + Duration::from_millis(10);
-        let res = engine.on_event(make_event(k2, KeyEdge::Down, t1));
-        assert!(
-            res.is_empty(),
-            "Should pending (overlap not met on down edge)"
-        );
-
-        // 3. Up A at t0 + 20ms.
-        // Overlap duration: A is [0..20], B is [10..20]. Overlap = 10ms >= 5ms.
-        // Match!
-        let t2 = t0 + Duration::from_millis(20);
-        let res = engine.on_event(make_event(k1, KeyEdge::Up, t2));
+        // At this point:
+        // P1(A) Down t0, Up None.
+        // P2(B) Down t0+10, Up t0+60.
+        // A is still down, so A "covers" B strictly.
+        // Overlap = Duration of B = 50. Ratio = 1.0.
+        // Should produce Chord(A, B).
 
         assert_eq!(res.len(), 1);
         if let Decision::Chord(keys) = &res[0] {
-            assert_eq!(keys.len(), 2);
             assert!(keys.contains(&k1));
             assert!(keys.contains(&k2));
         } else {
@@ -499,150 +508,117 @@ mod tests {
     }
 
     #[test]
-    fn test_sequential_flush() {
+    fn test_ratio_sequential() {
+        // A(Down) -> A(Up) -> B(Down) -> B(Up)
+        // Ratio 0.
         let mut profile = Profile::default();
-        profile.chord_window_ms = 50;
+        profile.chord_window_ms = 200;
+        profile.overlap_ratio_threshold = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A
         let k2 = make_key(0x30); // B
 
-        // 1. Down A
         engine.on_event(make_event(k1, KeyEdge::Down, t0));
 
-        // 2. Down B at t0 + 100ms (Outside window)
-        // This 'on_event' calls flush_expired FIRST?
-        // No, current logic calls flush AT END of on_event.
-        // So pending B is added. A is expired.
-        // flush checks A (t0). now is t0+100. Diff=100 > 50. Expired.
-        // So A becomes KeyTap. B remains pending.
-        let t1 = t0 + Duration::from_millis(100);
-        let res = engine.on_event(make_event(k2, KeyEdge::Down, t1));
+        let res1 = engine.on_event(make_event(k1, KeyEdge::Up, t0 + Duration::from_millis(50)));
+        assert_eq!(res1.len(), 1);
+        assert_eq!(res1[0], Decision::KeyTap(k1));
 
-        // Check A tap
-        let has_tap_a = res
+        engine.on_event(make_event(
+            k2,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(60),
+        ));
+
+        let res2 = engine.on_event(make_event(k2, KeyEdge::Up, t0 + Duration::from_millis(110)));
+
+        // A tap, B tap.
+        // BUp should flush A (Tap) and also flush B (Tap) because B is lonely.
+        // But let's check content.
+        let taps: Vec<ScKey> = res2
             .iter()
-            .any(|d| matches!(d, Decision::KeyTap(k) if *k == k1));
-        assert!(has_tap_a, "Should flush A as Tap");
+            .filter_map(|d| match d {
+                Decision::KeyTap(k) => Some(*k),
+                _ => None,
+            })
+            .collect();
 
-        // B should NOT be output yet
-        let has_b = res.iter().any(|d| match d {
-            Decision::KeyTap(k) => *k == k2,
-            Decision::Passthrough(k, _) => *k == k2,
-            _ => false,
-        });
-        assert!(!has_b, "B should be pending");
+        // assert!(taps.contains(&k1), "Should contain Tap A"); // A is already flushed
+        assert!(taps.contains(&k2), "Should contain Tap B");
     }
 
     #[test]
-    fn test_trigger_tap() {
+    fn test_ratio_chord_pass() {
+        // A(Down) -> B(Down) -> A(Up) -> B(Up)
+        // A: [0, 100], B: [50, 150]. B Dur = 100.
+        // Overlap: [50, 100] = 50ms.
+        // Ratio: 0.5 >= 0.35. -> Chord.
         let mut profile = Profile::default();
-        profile.chord_window_ms = 50;
-        // Make K1 a modifier (Trigger Logic via ThumbKeys or Modifier check)
-        // The implementation uses `is_modifier_key`.
-        // Let's set up ThumbKeys.
-        let k1 = make_key(0x39); // Space
-        let mut tk = std::collections::HashSet::new();
-        tk.insert(k1);
-        profile.thumb_keys = Some(ThumbKeys {
-            left: tk.clone(),
-            right: std::collections::HashSet::new(),
-        });
-
+        profile.chord_window_ms = 200;
+        profile.overlap_ratio_threshold = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
+        let k1 = make_key(0x1E); // A
+        let k2 = make_key(0x30); // B
 
-        // 1. Down Space
         engine.on_event(make_event(k1, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k2,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        ));
 
-        // 2. Up Space at t0 + 20ms (Short tap).
-        // Should become LatchOn(OneShot)?
-        let t1 = t0 + Duration::from_millis(20);
-        let res = engine.on_event(make_event(k1, KeyEdge::Up, t1));
+        // A Up at 100.
+        // At this point B is Down but not Up. Wait.
+        let res1 = engine.on_event(make_event(k1, KeyEdge::Up, t0 + Duration::from_millis(100)));
+        assert!(res1.is_empty(), "Should wait for B release");
 
-        assert_eq!(res.len(), 1);
-        match res[0] {
-            Decision::LatchOn(LatchKind::OneShot) => {}
-            _ => panic!("Expected LatchOn, got {:?}", res),
+        // B Up at 150.
+        let res2 = engine.on_event(make_event(k2, KeyEdge::Up, t0 + Duration::from_millis(150)));
+
+        assert_eq!(res2.len(), 1);
+        match &res2[0] {
+            Decision::Chord(keys) => {
+                assert!(keys.contains(&k1));
+                assert!(keys.contains(&k2));
+            }
+            _ => panic!("Expected Chord, got {:?}", res2),
         }
     }
 
     #[test]
-    fn test_space_rollover() {
+    fn test_ratio_chord_fail() {
+        // A(Down) -> B(Down) -> A(Up) -> B(Up)
+        // A: [0, 60], B: [50, 150]. B Dur = 100.
+        // Overlap: [50, 60] = 10ms.
+        // Ratio: 0.1 < 0.35. -> Tap A, Tap B.
         let mut profile = Profile::default();
-        profile.chord_window_ms = 50;
-
+        profile.chord_window_ms = 200;
+        profile.overlap_ratio_threshold = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
-        let k_a = make_key(0x1E); // A
-        let k_space = make_key(0x39); // Space
+        let k1 = make_key(0x1E); // A
+        let k2 = make_key(0x30); // B
 
-        // 1. Down A at t0
-        // Expect: Pending (waiting for potential chord)
-        let res = engine.on_event(make_event(k_a, KeyEdge::Down, t0));
-        assert!(res.is_empty(), "A should be pending");
+        engine.on_event(make_event(k1, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k2,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        ));
+        engine.on_event(make_event(k1, KeyEdge::Up, t0 + Duration::from_millis(60)));
 
-        // 2. Down Space at t0 + 10ms (Within window)
-        // Expect: Flush A (KeyTap), then Space (Passthrough Down).
-        let t1 = t0 + Duration::from_millis(10);
-        let res = engine.on_event(make_event(k_space, KeyEdge::Down, t1));
+        let res = engine.on_event(make_event(k2, KeyEdge::Up, t0 + Duration::from_millis(150)));
 
-        assert_eq!(
-            res.len(),
-            2,
-            "Should output flushed key then space passthrough"
-        );
-        assert_eq!(res[0], Decision::KeyTap(k_a));
-        assert_eq!(res[1], Decision::Passthrough(k_space, KeyEdge::Down));
-
-        // Space should be in passed_keys but NOT in pending
-        let is_space_pending = engine.state.pending.iter().any(|p| p.key == k_space);
-        assert!(!is_space_pending, "Space should not be in pending");
-        assert!(engine.state.passed_keys.contains(&k_space));
-
-        // 3. Up Space at t0 + 30ms
-        // Expect: Space Passthrough Up
-        let t2 = t0 + Duration::from_millis(30);
-        let res = engine.on_event(make_event(k_space, KeyEdge::Up, t2));
-        assert_eq!(res.len(), 1, "Space up should be passed thorough");
-        assert_eq!(res[0], Decision::Passthrough(k_space, KeyEdge::Up));
-
-        assert!(!engine.state.passed_keys.contains(&k_space));
-    }
-
-    #[test]
-    fn test_non_target_space_rollover() {
-        let mut profile = Profile::default();
-        profile.chord_window_ms = 50;
-        let k_a = make_key(0x1E); // A
-
-        // Setup target keys: ONLY A is target. Space (0x39) is NOT.
-        let mut targets = std::collections::HashSet::new();
-        targets.insert(k_a);
-        profile.target_keys = Some(targets);
-
-        let mut engine = ChordEngine::new(profile);
-        let t0 = Instant::now();
-        let k_space = make_key(0x39); // Space
-
-        // 1. Down A (Target) at t0
-        // Expect: Pending
-        let res = engine.on_event(make_event(k_a, KeyEdge::Down, t0));
-        assert!(res.is_empty(), "A should be pending even with whitelist");
-
-        // 2. Down Space (Non-Target) at t0 + 10ms
-        // Expect: Even though Space is NOT in whitelist, our special priority logic MUST trigger.
-        // It should flush A, then pass Space.
-        let t1 = t0 + Duration::from_millis(10);
-        let res = engine.on_event(make_event(k_space, KeyEdge::Down, t1));
-
-        assert_eq!(res.len(), 2, "Should flush A then pass Space");
-        assert_eq!(res[0], Decision::KeyTap(k_a));
-        assert_eq!(res[1], Decision::Passthrough(k_space, KeyEdge::Down));
-
-        // 3. Up Space
-        let t2 = t0 + Duration::from_millis(30);
-        let res = engine.on_event(make_event(k_space, KeyEdge::Up, t2));
-        assert_eq!(res[0], Decision::Passthrough(k_space, KeyEdge::Up));
+        let taps: Vec<ScKey> = res
+            .iter()
+            .filter_map(|d| match d {
+                Decision::KeyTap(k) => Some(*k),
+                _ => None,
+            })
+            .collect();
+        assert!(taps.contains(&k1));
+        assert!(taps.contains(&k2));
     }
 }

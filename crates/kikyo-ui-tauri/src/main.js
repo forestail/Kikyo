@@ -4,7 +4,7 @@ let pathInput;
 let statusMsg;
 let enabledCb;
 let chordWindowInput;
-let minOverlapInput;
+let overlapRatioInput;
 let maxChordSizeInput;
 let currentProfile = null;
 
@@ -41,7 +41,10 @@ async function loadProfile() {
         const savedProfile = JSON.parse(saved);
         // Merge saved fields into profile
         profile.chord_window_ms = savedProfile.chord_window_ms;
-        profile.min_overlap_ms = savedProfile.min_overlap_ms;
+        // Legacy support or just overwrite
+        if (savedProfile.overlap_ratio_threshold !== undefined) {
+          profile.overlap_ratio_threshold = savedProfile.overlap_ratio_threshold;
+        }
         profile.max_chord_size = savedProfile.max_chord_size;
 
         // Apply back to backend immediately
@@ -62,7 +65,11 @@ async function loadProfile() {
 function updateUI(profile) {
   if (!profile) return;
   if (chordWindowInput) chordWindowInput.value = profile.chord_window_ms;
-  if (minOverlapInput) minOverlapInput.value = profile.min_overlap_ms;
+  // Convert 0.35 -> 35
+  if (overlapRatioInput) {
+    const val = (profile.overlap_ratio_threshold != null) ? profile.overlap_ratio_threshold : 0.35;
+    overlapRatioInput.value = Math.round(val * 100);
+  }
   if (maxChordSizeInput) maxChordSizeInput.value = profile.max_chord_size;
 }
 
@@ -71,14 +78,22 @@ async function applyProfile() {
 
   // Update from inputs
   currentProfile.chord_window_ms = parseInt(chordWindowInput.value, 10);
-  currentProfile.min_overlap_ms = parseInt(minOverlapInput.value, 10);
+
+  // Convert 35 -> 0.35
+  const ratioVal = parseInt(overlapRatioInput.value, 10);
+  currentProfile.overlap_ratio_threshold = ratioVal / 100.0;
+
+  // Force strict min overlap to 0 for Ratio logic to take precedence freely? 
+  // User asked to *replace* it.
+  currentProfile.min_overlap_ms = 0;
+
   currentProfile.max_chord_size = parseInt(maxChordSizeInput.value, 10);
 
   try {
     await invoke("set_profile", { profile: currentProfile });
     localStorage.setItem("kikyo_profile", JSON.stringify({
       chord_window_ms: currentProfile.chord_window_ms,
-      min_overlap_ms: currentProfile.min_overlap_ms,
+      overlap_ratio_threshold: currentProfile.overlap_ratio_threshold,
       max_chord_size: currentProfile.max_chord_size
     }));
     statusMsg.textContent = "Settings Applied";
@@ -94,7 +109,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const loadBtn = document.querySelector("#load-btn");
 
   chordWindowInput = document.querySelector("#chord-window");
-  minOverlapInput = document.querySelector("#min-overlap");
+  overlapRatioInput = document.querySelector("#overlap-ratio");
   maxChordSizeInput = document.querySelector("#max-chord-size");
   const applyBtn = document.querySelector("#apply-settings-btn");
 
