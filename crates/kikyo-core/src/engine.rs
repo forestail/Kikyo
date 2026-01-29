@@ -47,7 +47,15 @@ impl Engine {
         self.chord_engine.profile.clone()
     }
 
-    pub fn set_profile(&mut self, profile: Profile) {
+    pub fn set_profile(&mut self, mut profile: Profile) {
+        // Preserve layout-derived data if missing in new profile
+        let current = &self.chord_engine.profile;
+        if profile.target_keys.is_none() && current.target_keys.is_some() {
+            profile.target_keys = current.target_keys.clone();
+        }
+        if profile.trigger_keys.is_empty() && !current.trigger_keys.is_empty() {
+            profile.trigger_keys = current.trigger_keys.clone();
+        }
         self.chord_engine.set_profile(profile);
     }
 
@@ -433,10 +441,16 @@ xx,xx,dc,無,無,無,無,無,無,無,無,無
         let res = engine.process_key(0x25, false, false, false);
         assert_eq!(res, KeyAction::Block);
 
-        // 2. Press D (0x20) WHILE K is pressed -> Expect "dc" (Chord)
+        // 2. Press D (0x20) WHILE K is pressed -> Expect BLOCK because we need UP to calc ratio
         let res = engine.process_key(0x20, false, false, false);
+        assert_eq!(res, KeyAction::Block);
+
+        // 3. Release D -> Now we have duration, can calc ratio. Expect "dc"
+        let res = engine.process_key(0x20, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
+                // Should contain c (0x2E) and d (which became c in chord)
+                // Actually the chord output is "dc".
                 assert_eq!(evs.len(), 4);
                 // "c" -> 0x2E
                 match evs[2] {
@@ -444,11 +458,8 @@ xx,xx,dc,無,無,無,無,無,無,無,無,無
                     _ => panic!("Expected Scancode"),
                 }
             }
-            _ => panic!("Expected Inject for Chord D, got {:?}", res),
+            _ => panic!("Expected Inject for Chord D on Up, got {:?}", res),
         }
-
-        // 3. Release D
-        engine.process_key(0x20, false, true, false);
 
         // 4. Release K -> Should output NOTHING (Consumed)
         let res = engine.process_key(0x25, false, true, false);
@@ -616,7 +627,13 @@ dummy
         // Index 7 is "xx". "xx" parses as KeySequence("xx").
         // D is at Col 2. "d_base" parses as KeySequence("d_base").
 
+        // 2. Press D (0x20) WHILE K is pressed.
+        // Expect BLOCK until D Up.
         let res = engine.process_key(0x20, false, false, false);
+        assert_eq!(res, KeyAction::Block);
+
+        // 3. Release D -> Logic decides "Chord" (K+D). Fallback logic runs.
+        let res = engine.process_key(0x20, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
                 // If fallback uses raw scancode, we get K, D.
@@ -632,7 +649,7 @@ dummy
                     "Expected 'x' (from 'xx' definition for K) in fallback output"
                 );
             }
-            _ => panic!("Expected Inject (Fallback), got {:?}", res),
+            _ => panic!("Expected Inject (Fallback) on Up, got {:?}", res),
         }
     }
 
@@ -674,6 +691,77 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             res,
             KeyAction::Pass,
             "Undefined key 'RightArrow' should pass through immediately"
+        );
+    }
+
+    #[test]
+    fn test_undefined_enter_pass() {
+        // Reproduce user issue: Enter key waiting for Up?
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2 (A only defined)
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout); // target_keys should be Some({...})
+
+        // 1. Press Enter (0x1C) -> NOT using generic RC map. should Pass.
+        let res = engine.process_key(0x1C, false, false, false);
+        assert_eq!(
+            res,
+            KeyAction::Pass,
+            "Enter key (0x1C) should pass immediately (Down)"
+        );
+
+        // 2. Up Enter
+        let res = engine.process_key(0x1C, false, true, false);
+        assert_eq!(
+            res,
+            KeyAction::Pass,
+            "Enter key (0x1C) should pass immediately (Up)"
+        );
+    }
+
+    #[test]
+    fn test_set_profile_preserves_targets() {
+        let config = "
+[ローマ字シフト無し]
+; R2 (A only defined)
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        // Verify target_keys is set
+        assert!(engine.get_profile().target_keys.is_some());
+
+        // Update profile (e.g. changing timeout)
+        let mut new_profile = Profile::default();
+        new_profile.chord_window_ms = 999;
+        // target_keys is None in default()
+
+        engine.set_profile(new_profile);
+
+        // Verify target_keys is PRESERVED
+        assert!(
+            engine.get_profile().target_keys.is_some(),
+            "target_keys should be preserved"
+        );
+
+        // Verify Enter key (undefined) still Passes
+        let res = engine.process_key(0x1C, false, false, false);
+        assert_eq!(
+            res,
+            KeyAction::Pass,
+            "Enter should still pass after profile update"
         );
     }
 }

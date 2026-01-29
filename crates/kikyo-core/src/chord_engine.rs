@@ -252,11 +252,13 @@ impl ChordEngine {
         }
 
         // Cycle flush to handle timeouts
-        output.extend(self.flush_expired(now));
+        // REMOVED: flush_expired logic to allow infinite window (overlap based only)
+        // output.extend(self.flush_expired(now));
 
         output
     }
 
+    /* REMOVED flush_expired to disable time window
     pub fn flush_expired(&mut self, now: Instant) -> Vec<Decision> {
         // Simple flush: if > window, force KeyTap.
         let window = Duration::from_millis(self.profile.chord_window_ms);
@@ -294,6 +296,7 @@ impl ChordEngine {
 
         output
     }
+    */
 
     pub fn flush_all_pending(&mut self) -> Vec<Decision> {
         let mut output = Vec::new();
@@ -343,12 +346,13 @@ impl ChordEngine {
                 let p2 = &self.state.pending[idx2];
 
                 // 1. Time difference check using chord_window
-                // (Optimization: If too far apart, P1 is likely tap, but we rely on flush_expired for that mostly.
-                // However, check_chords normally skips far pairs.)
+                // REMOVED: chord_window check. We now only rely on overlap ratio.
+                /*
                 let t_diff = p2.t_down.duration_since(p1.t_down);
                 if t_diff.as_millis() as u64 > self.profile.chord_window_ms {
                     continue;
                 }
+                */
 
                 // 2. Overlap Ratio Check
                 // We need p2 to be released (t_up known) to calculate ratio denominator.
@@ -620,5 +624,50 @@ mod tests {
             .collect();
         assert!(taps.contains(&k1));
         assert!(taps.contains(&k2));
+    }
+
+    #[test]
+    fn test_chord_long_delay() {
+        // A(Down) --- wait 500ms --- B(Down) -> B(Up) -> A(Up)
+        // Even with long specific wait, if overlap is good, it should chord.
+        // A Down at 0.
+        // B Down at 500. B Up at 600. (Dur 100).
+        // Overlap [500, 600] = 100. Ratio = 1.0.
+        // Old logic would timeout A at 200ms. New logic should find Chord.
+        let mut profile = Profile::default();
+        profile.chord_window_ms = 200; // should be ignored
+        profile.overlap_ratio_threshold = 0.35;
+        let mut engine = ChordEngine::new(profile);
+        let t0 = Instant::now();
+        let k1 = make_key(0x1E); // A
+        let k2 = make_key(0x30); // B
+
+        // 1. Down A
+        engine.on_event(make_event(k1, KeyEdge::Down, t0));
+
+        // 2. Down B at +500ms
+        let t_b_down = t0 + Duration::from_millis(500);
+        engine.on_event(make_event(k2, KeyEdge::Down, t_b_down));
+
+        // 3. Up B at +600ms
+        let t_b_up = t_b_down + Duration::from_millis(100);
+        let res = engine.on_event(make_event(k2, KeyEdge::Up, t_b_up));
+
+        // Should be Chord
+        assert_eq!(res.len(), 1);
+        if let Decision::Chord(keys) = &res[0] {
+            assert!(keys.contains(&k1));
+            assert!(keys.contains(&k2));
+        } else {
+            // It might fail if we didn't remove the window check
+            panic!("Expected Chord (long delay), got {:?}", res);
+        }
+
+        // Cleanup A
+        engine.on_event(make_event(
+            k1,
+            KeyEdge::Up,
+            t_b_up + Duration::from_millis(100),
+        ));
     }
 }
