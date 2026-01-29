@@ -84,7 +84,7 @@ impl Default for Profile {
         Self {
             chord_style: ChordStyle::TriggerKey,
             chord_window_ms: 200,
-            min_overlap_ms: 8,
+            min_overlap_ms: 50,
             max_chord_size: 2,
             adaptive_window: AdaptiveCfg { enabled: false },
             thumb_keys: None,
