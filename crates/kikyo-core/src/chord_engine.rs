@@ -76,6 +76,7 @@ pub struct Profile {
     pub adaptive_window: AdaptiveCfg,
     pub thumb_keys: Option<ThumbKeys>,
     pub trigger_keys: HashMap<ScKey, PlaneTag>,
+    pub target_keys: Option<HashSet<ScKey>>,
     pub successive: SuccessiveCfg,
 }
 
@@ -89,6 +90,7 @@ impl Default for Profile {
             adaptive_window: AdaptiveCfg { enabled: false },
             thumb_keys: None,
             trigger_keys: HashMap::new(),
+            target_keys: None,
             successive: SuccessiveCfg { enabled: false },
         }
     }
@@ -144,6 +146,14 @@ impl ChordEngine {
     pub fn on_event(&mut self, event: KeyEvent) -> Vec<Decision> {
         if event.injected {
             return vec![];
+        }
+
+        // 0. Filter non-target keys (if whitelist is active)
+        if let Some(ref targets) = self.profile.target_keys {
+            if !targets.contains(&event.key) {
+                // Not in target list -> Pass through immediately
+                return vec![Decision::Passthrough(event.key, event.edge)];
+            }
         }
 
         let now = event.t;

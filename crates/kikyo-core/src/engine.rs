@@ -2,6 +2,7 @@ use crate::chord_engine::{ChordEngine, Decision, KeyEdge, KeyEvent, Profile};
 use crate::types::{InputEvent, KeyAction, Layout, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::time::Instant;
 use tracing::debug;
 
@@ -57,6 +58,35 @@ impl Engine {
         );
 
         let mut profile = self.chord_engine.profile.clone();
+
+        // 1. Collect all definition RCs from layout
+        let mut active_rcs = HashSet::new();
+        for section in layout.sections.values() {
+            // Base plane
+            for (rc, token) in &section.base_plane.map {
+                if !matches!(token, Token::None) {
+                    active_rcs.insert(rc);
+                }
+            }
+            // Sub planes
+            for sub in section.sub_planes.values() {
+                for (rc, token) in &sub.map {
+                    if !matches!(token, Token::None) {
+                        active_rcs.insert(rc);
+                    }
+                }
+            }
+        }
+
+        // 2. Map RCs back to ScKeys
+        // Brute-force reverse mapping from JIS_SC_TO_RC
+        let mut target_keys = HashSet::new();
+        for (sc, rc) in JIS_SC_TO_RC.iter() {
+            if active_rcs.contains(rc) {
+                target_keys.insert(*sc);
+            }
+        }
+
         // MVP: Detect trigger keys from "<...>" sections.
         for name in layout.sections.keys() {
             tracing::info!(" - Section: {}", name);
@@ -66,9 +96,19 @@ impl Engine {
                     let key = ScKey::new(sc, false);
                     profile.trigger_keys.insert(key, name.clone());
                     tracing::info!("   -> Registered TriggerKey: {} (sc={:02X})", name, sc);
+                    // Also add to target_keys
+                    target_keys.insert(key);
                 }
             }
         }
+
+        // Add thumb keys if any (currently handled via profile manually or elsewhere, but let's ensure)
+        if let Some(ref tk) = profile.thumb_keys {
+            target_keys.extend(tk.left.iter());
+            target_keys.extend(tk.right.iter());
+        }
+
+        profile.target_keys = Some(target_keys);
 
         self.chord_engine.set_profile(profile);
         self.layout = Some(layout);
@@ -589,5 +629,46 @@ dummy
             }
             _ => panic!("Expected Inject (Fallback), got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_undefined_key_passthrough() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2 (A only defined)
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.chord_engine.profile.min_overlap_ms = 0;
+        engine.load_layout(layout);
+
+        // 1. Press A (0x1E) -> Defined in layout. Expect BLOCK (Wait).
+        let res = engine.process_key(0x1E, false, false, false);
+        assert_eq!(res, KeyAction::Block, "Defined key 'A' should wait");
+
+        // 2. Press B (0x30) -> NOT defined. Expect PASS (Passthrough).
+        // Since it's passthrough, process_key should return KeyAction::Pass
+        // (because engine returns Passthrough decision and we check if k==key).
+        let res = engine.process_key(0x30, false, false, false);
+        assert_eq!(
+            res,
+            KeyAction::Pass,
+            "Undefined key 'B' should pass through immediately"
+        );
+
+        // 3. Press RightArrow (0x4D extended) -> NOT defined. Expect PASS.
+        let res = engine.process_key(0x4D, true, false, false);
+        assert_eq!(
+            res,
+            KeyAction::Pass,
+            "Undefined key 'RightArrow' should pass through immediately"
+        );
     }
 }
