@@ -1,128 +1,181 @@
 const { invoke } = window.__TAURI__.core;
 
-let pathInput;
-let statusMsg;
-let enabledCb;
-let chordWindowInput;
-let overlapRatioInput;
-let maxChordSizeInput;
+// Elements
+let layoutPathInput, loadLayoutBtn;
+let globalEnabledCb;
+let saveBtn, statusMsg;
+
+// Sidebar
+let navItems, sections;
+
+// Profile Inputs
+// Array
+let charRepeatAssignedCb, charRepeatUnassignedCb;
+// Thumb
+let thumbKeyModeSel, thumbContinuousCb, thumbSinglePressSel, thumbRepeatCb, thumbOverlapRatioInput, thumbOverlapVal;
+// Chord
+let charContinuousCb, charOverlapRatioInput, charOverlapVal;
+
 let currentProfile = null;
 
 async function loadLayout() {
-  if (!pathInput) return;
-  const path = pathInput.value;
+  if (!layoutPathInput) return;
+  const path = layoutPathInput.value;
   try {
-    statusMsg.textContent = "Loading...";
+    statusMsg.innerText = "Loading...";
     const res = await invoke("load_yab", { path });
-    statusMsg.textContent = "Success: " + res;
-    // Save to localStorage
+    statusMsg.innerText = "成功: " + res;
     localStorage.setItem("kikyo_path", path);
   } catch (e) {
-    statusMsg.textContent = "Error: " + e;
+    statusMsg.innerText = "エラー: " + e;
   }
 }
 
 async function toggleEnabled() {
-  if (!enabledCb) return;
-  const val = enabledCb.checked;
+  if (!globalEnabledCb) return;
+  const val = globalEnabledCb.checked;
   await invoke("set_enabled", { enabled: val });
-  statusMsg.textContent = val ? "Enabled" : "Disabled";
+  statusMsg.innerText = val ? "有効" : "無効";
 }
 
 async function loadProfile() {
   try {
-    // 1. Get default/current from backend
     let profile = await invoke("get_profile");
+    console.log("Loaded profile:", profile);
 
-    // 2. Check localStorage
-    const saved = localStorage.getItem("kikyo_profile");
-    if (saved) {
-      try {
-        const savedProfile = JSON.parse(saved);
-        // Merge saved fields into profile
-        profile.chord_window_ms = savedProfile.chord_window_ms;
-        // Legacy support or just overwrite
-        if (savedProfile.overlap_ratio_threshold !== undefined) {
-          profile.overlap_ratio_threshold = savedProfile.overlap_ratio_threshold;
-        }
-        profile.max_chord_size = savedProfile.max_chord_size;
-
-        // Apply back to backend immediately
-        await invoke("set_profile", { profile });
-        console.log("Applied saved profile:", profile);
-      } catch (e) {
-        console.error("Failed to parse saved profile", e);
-      }
-    }
+    // Migration helper: if old field exists in JSON but new one doesn't (unlikely with struct, but for safety)
+    // Actually backend returns default struct if missing fields, so we rely on backend default.
 
     currentProfile = profile;
     updateUI(profile);
   } catch (e) {
-    statusMsg.textContent = "Error loading profile: " + e;
+    statusMsg.innerText = "プロファイル読み込みエラー: " + e;
   }
 }
 
 function updateUI(profile) {
   if (!profile) return;
-  if (chordWindowInput) chordWindowInput.value = profile.chord_window_ms;
-  // Convert 0.35 -> 35
-  if (overlapRatioInput) {
-    const val = (profile.overlap_ratio_threshold != null) ? profile.overlap_ratio_threshold : 0.35;
-    overlapRatioInput.value = Math.round(val * 100);
+
+  // Boolean checkboxes
+  if (charRepeatAssignedCb) charRepeatAssignedCb.checked = profile.char_key_repeat_assigned;
+  if (charRepeatUnassignedCb) charRepeatUnassignedCb.checked = profile.char_key_repeat_unassigned;
+
+  if (thumbContinuousCb) thumbContinuousCb.checked = profile.thumb_shift_continuous;
+  if (thumbRepeatCb) thumbRepeatCb.checked = profile.thumb_shift_repeat;
+
+  if (charContinuousCb) charContinuousCb.checked = profile.char_key_continuous;
+
+  // Enums (Selects) - Backend returns string if Serialize is correctly set up with Enums
+  if (thumbKeyModeSel) thumbKeyModeSel.value = profile.thumb_shift_key_mode;
+  if (thumbSinglePressSel) thumbSinglePressSel.value = profile.thumb_shift_single_press;
+
+  // Ranges (Floats 0.0-1.0 to 0-100)
+  if (thumbOverlapRatioInput) {
+    const val = Math.round(profile.thumb_shift_overlap_ratio * 100);
+    thumbOverlapRatioInput.value = val;
+    if (thumbOverlapVal) thumbOverlapVal.innerText = val + "%";
   }
-  if (maxChordSizeInput) maxChordSizeInput.value = profile.max_chord_size;
+  if (charOverlapRatioInput) {
+    const val = Math.round(profile.char_key_overlap_ratio * 100);
+    charOverlapRatioInput.value = val;
+    if (charOverlapVal) charOverlapVal.innerText = val + "%";
+  }
 }
 
-async function applyProfile() {
+async function saveProfile() {
   if (!currentProfile) return;
 
-  // Update from inputs
-  currentProfile.chord_window_ms = parseInt(chordWindowInput.value, 10);
+  // Gather values
+  currentProfile.char_key_repeat_assigned = charRepeatAssignedCb.checked;
+  currentProfile.char_key_repeat_unassigned = charRepeatUnassignedCb.checked;
 
-  // Convert 35 -> 0.35
-  const ratioVal = parseInt(overlapRatioInput.value, 10);
-  currentProfile.overlap_ratio_threshold = ratioVal / 100.0;
+  currentProfile.thumb_shift_key_mode = thumbKeyModeSel.value;
+  currentProfile.thumb_shift_continuous = thumbContinuousCb.checked;
+  currentProfile.thumb_shift_single_press = thumbSinglePressSel.value;
+  currentProfile.thumb_shift_repeat = thumbRepeatCb.checked;
+  currentProfile.thumb_shift_overlap_ratio = parseInt(thumbOverlapRatioInput.value, 10) / 100.0;
 
-  // Force strict min overlap to 0 for Ratio logic to take precedence freely? 
-  // User asked to *replace* it.
-  currentProfile.min_overlap_ms = 0;
-
-  currentProfile.max_chord_size = parseInt(maxChordSizeInput.value, 10);
+  currentProfile.char_key_continuous = charContinuousCb.checked;
+  currentProfile.char_key_overlap_ratio = parseInt(charOverlapRatioInput.value, 10) / 100.0;
 
   try {
+    console.log("Saving profile:", currentProfile);
     await invoke("set_profile", { profile: currentProfile });
-    localStorage.setItem("kikyo_profile", JSON.stringify({
-      chord_window_ms: currentProfile.chord_window_ms,
-      overlap_ratio_threshold: currentProfile.overlap_ratio_threshold,
-      max_chord_size: currentProfile.max_chord_size
-    }));
-    statusMsg.textContent = "Settings Applied";
+    statusMsg.innerText = "設定を保存しました";
+
+    // Save minimal local storage if needed, or just rely on backend? 
+    // User didn't ask for persistence beyond session/backend, but we probably should.
+    // For now, relying on backend (in-memory) and localStorage for PATH.
+    // Ideally backend should save to disk.
   } catch (e) {
-    statusMsg.textContent = "Error applying settings: " + e;
+    statusMsg.innerText = "保存エラー: " + e;
   }
+}
+
+// Sidebar logic
+function setupSidebar() {
+  navItems.forEach(item => {
+    item.addEventListener("click", () => {
+      // Remove active class
+      navItems.forEach(n => n.classList.remove("active"));
+      sections.forEach(s => s.classList.remove("active"));
+
+      // Add active
+      item.classList.add("active");
+      const targetId = item.dataset.target;
+      document.getElementById(targetId).classList.add("active");
+    });
+  });
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  pathInput = document.querySelector("#path-input");
+  // Elements binding
   statusMsg = document.querySelector("#status-msg");
-  enabledCb = document.querySelector("#enabled-cb");
-  const loadBtn = document.querySelector("#load-btn");
 
-  chordWindowInput = document.querySelector("#chord-window");
-  overlapRatioInput = document.querySelector("#overlap-ratio");
-  maxChordSizeInput = document.querySelector("#max-chord-size");
-  const applyBtn = document.querySelector("#apply-settings-btn");
+  layoutPathInput = document.querySelector("#layout-path");
+  loadLayoutBtn = document.querySelector("#load-layout-btn");
+  globalEnabledCb = document.querySelector("#global-enabled");
 
-  loadBtn.addEventListener("click", loadLayout);
-  enabledCb.addEventListener("change", toggleEnabled);
-  applyBtn.addEventListener("click", applyProfile);
+  saveBtn = document.querySelector("#save-btn");
 
-  // Load saved path
-  const saved = localStorage.getItem("kikyo_path");
-  if (saved) {
-    pathInput.value = saved;
-  }
+  // Arr
+  charRepeatAssignedCb = document.querySelector("#char-repeat-assigned");
+  charRepeatUnassignedCb = document.querySelector("#char-repeat-unassigned");
 
-  // Initialize Profile
+  // Thumb
+  thumbKeyModeSel = document.querySelector("#thumb-key-mode");
+  thumbContinuousCb = document.querySelector("#thumb-continuous");
+  thumbSinglePressSel = document.querySelector("#thumb-single-press");
+  thumbRepeatCb = document.querySelector("#thumb-repeat");
+  thumbOverlapRatioInput = document.querySelector("#thumb-overlap-ratio");
+  thumbOverlapVal = document.querySelector("#thumb-overlap-val");
+
+  // Chord
+  charContinuousCb = document.querySelector("#char-continuous");
+  charOverlapRatioInput = document.querySelector("#char-overlap-ratio");
+  charOverlapVal = document.querySelector("#char-overlap-val");
+
+  // Sidebar
+  navItems = document.querySelectorAll(".nav-item");
+  sections = document.querySelectorAll(".settings-section");
+  setupSidebar();
+
+  // Listeners
+  loadLayoutBtn.addEventListener("click", loadLayout);
+  globalEnabledCb.addEventListener("change", toggleEnabled);
+  saveBtn.addEventListener("click", saveProfile);
+
+  // Range Listeners for value update
+  thumbOverlapRatioInput.addEventListener("input", (e) => {
+    if (thumbOverlapVal) thumbOverlapVal.innerText = e.target.value + "%";
+  });
+  charOverlapRatioInput.addEventListener("input", (e) => {
+    if (charOverlapVal) charOverlapVal.innerText = e.target.value + "%";
+  });
+
+  // Init
+  const savedPath = localStorage.getItem("kikyo_path");
+  if (savedPath) layoutPathInput.value = savedPath;
+
   loadProfile();
 });

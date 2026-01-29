@@ -61,6 +61,21 @@ pub struct AdaptiveCfg {
     // Add parameters for adaptive window here later
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThumbShiftKeyMode {
+    NonTransformTransform, // 無変換 - 変換
+    NonTransformSpace,     // 無変換 - スペース
+    SpaceTransform,        // スペース - 変換
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThumbShiftSinglePress {
+    None,        // 無効
+    Enable,      // 有効
+    PrefixShift, // 前置シフト
+    SpaceKey,    // Spaceキー
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessiveCfg {
     pub enabled: bool,
@@ -71,14 +86,26 @@ pub struct SuccessiveCfg {
 pub struct Profile {
     pub chord_style: ChordStyle,
     pub chord_window_ms: u64,
-    pub min_overlap_ms: u64,
+    // min_overlap_ms removed
     pub max_chord_size: usize,
     pub adaptive_window: AdaptiveCfg,
     pub thumb_keys: Option<ThumbKeys>,
     pub trigger_keys: HashMap<ScKey, PlaneTag>,
     pub target_keys: Option<HashSet<ScKey>>,
     pub successive: SuccessiveCfg,
-    pub overlap_ratio_threshold: f64,
+
+    // New fields
+    pub char_key_repeat_assigned: bool,
+    pub char_key_repeat_unassigned: bool,
+
+    pub thumb_shift_key_mode: ThumbShiftKeyMode,
+    pub thumb_shift_continuous: bool,
+    pub thumb_shift_single_press: ThumbShiftSinglePress,
+    pub thumb_shift_repeat: bool,
+    pub thumb_shift_overlap_ratio: f64,
+
+    pub char_key_continuous: bool,
+    pub char_key_overlap_ratio: f64, // Renamed from overlap_ratio_threshold
 }
 
 impl Default for Profile {
@@ -86,14 +113,25 @@ impl Default for Profile {
         Self {
             chord_style: ChordStyle::TriggerKey,
             chord_window_ms: 200,
-            min_overlap_ms: 50,
+            // min_overlap_ms: 50, // Removed
             max_chord_size: 2,
             adaptive_window: AdaptiveCfg { enabled: false },
             thumb_keys: None,
             trigger_keys: HashMap::new(),
             target_keys: None,
             successive: SuccessiveCfg { enabled: false },
-            overlap_ratio_threshold: 0.35,
+
+            char_key_repeat_assigned: false,
+            char_key_repeat_unassigned: true,
+
+            thumb_shift_key_mode: ThumbShiftKeyMode::NonTransformTransform,
+            thumb_shift_continuous: false,
+            thumb_shift_single_press: ThumbShiftSinglePress::None,
+            thumb_shift_repeat: false,
+            thumb_shift_overlap_ratio: 0.35,
+
+            char_key_continuous: false,
+            char_key_overlap_ratio: 0.35, // Renamed from overlap_ratio_threshold
         }
     }
 }
@@ -391,7 +429,7 @@ impl ChordEngine {
                     0.0
                 };
 
-                if ratio >= self.profile.overlap_ratio_threshold {
+                if ratio >= self.profile.char_key_overlap_ratio {
                     // CHORD!
                     consumed_indices.insert(idx1);
                     consumed_indices.insert(idx2);
@@ -478,7 +516,7 @@ mod tests {
         // Ratio should be 1.0 (100%)
         let mut profile = Profile::default();
         profile.chord_window_ms = 200;
-        profile.overlap_ratio_threshold = 0.35;
+        profile.char_key_overlap_ratio = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A
@@ -517,7 +555,7 @@ mod tests {
         // Ratio 0.
         let mut profile = Profile::default();
         profile.chord_window_ms = 200;
-        profile.overlap_ratio_threshold = 0.35;
+        profile.char_key_overlap_ratio = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A
@@ -560,7 +598,7 @@ mod tests {
         // Ratio: 0.5 >= 0.35. -> Chord.
         let mut profile = Profile::default();
         profile.chord_window_ms = 200;
-        profile.overlap_ratio_threshold = 0.35;
+        profile.char_key_overlap_ratio = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A
@@ -599,7 +637,7 @@ mod tests {
         // Ratio: 0.1 < 0.35. -> Tap A, Tap B.
         let mut profile = Profile::default();
         profile.chord_window_ms = 200;
-        profile.overlap_ratio_threshold = 0.35;
+        profile.char_key_overlap_ratio = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A
@@ -636,7 +674,7 @@ mod tests {
         // Old logic would timeout A at 200ms. New logic should find Chord.
         let mut profile = Profile::default();
         profile.chord_window_ms = 200; // should be ignored
-        profile.overlap_ratio_threshold = 0.35;
+        profile.char_key_overlap_ratio = 0.35;
         let mut engine = ChordEngine::new(profile);
         let t0 = Instant::now();
         let k1 = make_key(0x1E); // A

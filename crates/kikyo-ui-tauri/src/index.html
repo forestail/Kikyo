@@ -1,99 +1,171 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Kikyo Settings</title>
-  <style>
-    :root {
-      font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-      font-size: 16px;
-      line-height: 24px;
-      font-weight: 400;
-      color-scheme: light dark;
-      color: rgba(255, 255, 255, 0.87);
-      background-color: #242424;
-    }
-
-    body {
-      margin: 0;
-      display: flex;
-      place-items: center;
-      min-width: 320px;
-      min-height: 100vh;
-    }
-
-    #app {
-      max-width: 1280px;
-      margin: 0 auto;
-      padding: 2rem;
-      text-align: center;
-    }
-
-    input {
-      padding: 0.6em 1.2em;
-      font-size: 1em;
-      margin: 5px;
-    }
-
-    button {
-      border-radius: 8px;
-      border: 1px solid transparent;
-      padding: 0.6em 1.2em;
-      font-size: 1em;
-      font-weight: 500;
-      font-family: inherit;
-      background-color: #1a1a1a;
-      cursor: pointer;
-      transition: border-color 0.25s;
-    }
-
-    button:hover {
-      border-color: #646cff;
-    }
-
-    .card {
-      padding: 2em;
-    }
-  </style>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 
 <body>
-  <div id="app">
-    <h1>桔梗 (Kikyo)</h1>
-
-    <div class="card">
-      <label>
-        <input type="checkbox" id="enabled-cb" checked />
-        Enable Kikyo
-      </label>
-    </div>
-
-    <div class="card">
-      <input id="path-input" placeholder="Path to .yab file" style="width: 300px;" />
-      <button id="load-btn">Load Layout</button>
-    </div>
-
-    <div class="card" style="text-align: left;">
-      <h3>Chord Settings</h3>
-      <div style="margin-bottom: 10px;">
-        <label>Chord Window (ms): <input type="number" id="chord-window" style="width: 80px;" /></label>
-      </div>
-      <div style="margin-bottom: 10px;">
-        <label>文字キー同志の重なり割合 (%): <input type="number" id="overlap-ratio" style="width: 80px;" /></label>
-      </div>
-      <div style="margin-bottom: 10px;">
-        <label>Max Chord Size: <input type="number" id="max-chord-size" style="width: 80px;" /></label>
-      </div>
-      <button id="apply-settings-btn">Apply Settings</button>
-    </div>
-
-    <p id="status-msg">Ready</p>
-    <p style="font-size: 0.8em; color: #888;">Emergency Stop: Ctrl + Alt + Esc</p>
+  <div class="sidebar">
+    <div class="sidebar-header">設定</div>
+    <ul class="sidebar-nav">
+      <li class="nav-item active" data-target="section-array">配列</li>
+      <li class="nav-item" data-target="section-thumb">親指シフト</li>
+      <li class="nav-item" data-target="section-chord">文字キー同時打鍵シフト</li>
+      <li class="nav-item" data-target="section-about">桔梗について</li>
+    </ul>
   </div>
 
-  <script type="module" src="/main.js" defer></script>
+  <div class="main-content">
+    <div class="header-bar">
+      <h1>設定</h1>
+      <div class="header-actions">
+        <label class="toggle-switch">
+            <input type="checkbox" id="global-enabled" checked>
+            <span class="slider"></span>
+        </label>
+        <span style="margin-left: 10px; font-size: 0.9em;">有効</span>
+      </div>
+    </div>
+
+    <!-- 配列セクション -->
+    <div id="section-array" class="settings-section active">
+      <h2>配列</h2>
+      
+      <div class="setting-item">
+        <div class="setting-label">配列定義ファイル</div>
+        <div class="setting-control row">
+          <input type="text" id="layout-path" placeholder="C:\path\to\layout.yab" />
+          <button id="load-layout-btn">読み込み</button>
+        </div>
+        <div class="setting-desc">使用する配列定義ファイル（.yab）のパスを指定します。</div>
+      </div>
+
+      <div class="setting-group">
+        <h3>文字キーのキーリピートを有効にする</h3>
+        
+        <div class="setting-item">
+            <div class="setting-label">文字が割り当てられているキー</div>
+            <div class="setting-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="char-repeat-assigned">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="setting-item">
+            <div class="setting-label">文字が割り当てられていないキー</div>
+            <div class="setting-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="char-repeat-unassigned">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 親指シフトセクション -->
+    <div id="section-thumb" class="settings-section">
+      <h2>親指シフト</h2>
+
+      <div class="setting-item">
+        <div class="setting-label">親指シフトキー</div>
+        <div class="setting-control">
+            <select id="thumb-key-mode">
+                <option value="NonTransformTransform">無変換 - 変換</option>
+                <option value="NonTransformSpace">無変換 - スペース</option>
+                <option value="SpaceTransform">スペース - 変換</option>
+            </select>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div class="setting-label">連続シフト</div>
+        <div class="setting-control">
+            <label class="toggle-switch">
+                <input type="checkbox" id="thumb-continuous">
+                <span class="slider"></span>
+            </label>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div class="setting-label">単独打鍵</div>
+        <div class="setting-control">
+            <select id="thumb-single-press">
+                <option value="None">無効</option>
+                <option value="Enable">有効</option>
+                <option value="PrefixShift">前置シフト</option>
+                <option value="SpaceKey">Spaceキー</option>
+            </select>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div class="setting-label">親指シフトキーリピート</div>
+        <div class="setting-control">
+            <label class="toggle-switch">
+                <input type="checkbox" id="thumb-repeat">
+                <span class="slider"></span>
+            </label>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+          <div class="setting-label">親指シフトが同時打鍵と判定される重なり割合</div>
+          <div class="setting-control">
+              <input type="range" id="thumb-overlap-ratio" min="0" max="100" class="range-slider">
+              <span id="thumb-overlap-val" class="range-val">35%</span>
+          </div>
+      </div>
+
+    </div>
+
+    <!-- 文字キー同時打鍵シフトセクション -->
+    <div id="section-chord" class="settings-section">
+      <h2>文字キー同時打鍵シフト</h2>
+
+      <div class="setting-item">
+        <div class="setting-label">連続シフト</div>
+        <div class="setting-control">
+            <label class="toggle-switch">
+                <input type="checkbox" id="char-continuous">
+                <span class="slider"></span>
+            </label>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+          <div class="setting-label">文字キー同志が同時打鍵と判定される重なり割合</div>
+          <div class="setting-control">
+              <input type="range" id="char-overlap-ratio" min="0" max="100" class="range-slider">
+              <span id="char-overlap-val" class="range-val">35%</span>
+          </div>
+      </div>
+      
+    </div>
+
+    <!-- 桔梗についてセクション -->
+    <div id="section-about" class="settings-section">
+      <h2>桔梗について</h2>
+      <div class="setting-item">
+          <p>Kikyo Version 0.1.0</p>
+          <p style="font-size: 0.8em; color: #888;">Emergency Stop: Ctrl + Alt + Esc</p>
+          <div style="margin-top: 10px;">
+              <button id="save-btn" class="primary">設定を保存</button>
+          </div>
+          <p id="status-msg" style="margin-top: 10px;"></p>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="/main.js"></script>
 </body>
 
 </html>

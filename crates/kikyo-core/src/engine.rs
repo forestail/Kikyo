@@ -391,7 +391,7 @@ z,x,c,v,b,n,m,,,.,/,\\
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
-        engine.chord_engine.profile.min_overlap_ms = 0;
+        // engine.chord_engine.profile.min_overlap_ms = 0; // Removed
         engine.load_layout(layout);
 
         // 1. Press K
@@ -434,7 +434,7 @@ xx,xx,dc,無,無,無,無,無,無,無,無,無
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
-        engine.chord_engine.profile.min_overlap_ms = 0;
+        // engine.chord_engine.profile.min_overlap_ms = 0; // Removed
         engine.load_layout(layout);
 
         // 1. Press K (0x25) -> Expect BLOCK (Delayed)
@@ -510,7 +510,7 @@ xx,xx,s_base,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
-        engine.chord_engine.profile.min_overlap_ms = 0;
+        // engine.chord_engine.profile.min_overlap_ms = 0; // Removed
         engine.load_layout(layout);
 
         // 0x20 is 'd' key. In our dummy config, it corresponds to "n_base" (no shift) and "s_base" (shifted)
@@ -610,7 +610,7 @@ dummy
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
-        engine.chord_engine.profile.min_overlap_ms = 0;
+        // engine.chord_engine.profile.min_overlap_ms = 0; // Removed
         engine.load_layout(layout);
 
         // 1. Press K (0x25) -> Expect BLOCK (Delayed)
@@ -668,7 +668,7 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
-        engine.chord_engine.profile.min_overlap_ms = 0;
+        // engine.chord_engine.profile.min_overlap_ms = 0; // Removed
         engine.load_layout(layout);
 
         // 1. Press A (0x1E) -> Defined in layout. Expect BLOCK (Wait).
