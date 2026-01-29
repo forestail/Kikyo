@@ -194,6 +194,11 @@ impl Engine {
         }
 
         if !inject_ops.is_empty() {
+            if pass_current {
+                // If we also need to pass the current key, append it to the injection sequence.
+                // This ensures "Flushed Keys" -> "Current Key" order.
+                inject_ops.push(InputEvent::Scancode(sc, ext, up));
+            }
             return KeyAction::Inject(inject_ops);
         }
 

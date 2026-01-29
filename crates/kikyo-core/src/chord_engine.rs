@@ -102,6 +102,7 @@ pub struct ChordState {
     pub down_ts: HashMap<ScKey, Instant>,
     pub pending: Vec<PendingKey>,
     pub latch: LatchState,
+    pub passed_keys: HashSet<ScKey>,
     // pub stats: Stats,
 }
 
@@ -135,6 +136,7 @@ impl ChordEngine {
                 down_ts: HashMap::new(),
                 pending: Vec::new(),
                 latch: LatchState::None,
+                passed_keys: HashSet::new(),
             },
         }
     }
@@ -148,7 +150,37 @@ impl ChordEngine {
             return vec![];
         }
 
-        // 0. Filter non-target keys (if whitelist is active)
+        let now = event.t;
+        let mut output = Vec::new();
+
+        // 0. Priority Handling Checklist
+        match event.edge {
+            KeyEdge::Up => {
+                // Check passed keys (Always pass through regardless of target list)
+                if self.state.passed_keys.contains(&event.key) {
+                    self.state.passed_keys.remove(&event.key);
+                    self.state.pressed.remove(&event.key);
+                    self.state.down_ts.remove(&event.key);
+                    return vec![Decision::Passthrough(event.key, KeyEdge::Up)];
+                }
+            }
+            KeyEdge::Down => {
+                // Special Handling for Space Key (0x39) - Always check first
+                if event.key.sc == 0x39 {
+                    // Flush existing pending keys FIRST.
+                    output.extend(self.flush_all_pending());
+
+                    // Output Space as Passthrough (Down) immediately.
+                    self.state.passed_keys.insert(event.key);
+                    output.push(Decision::Passthrough(event.key, KeyEdge::Down));
+
+                    // Since we handled Space, we return immediately with the sequence
+                    return output;
+                }
+            }
+        }
+
+        // 1. Filter non-target keys (if whitelist is active)
         if let Some(ref targets) = self.profile.target_keys {
             if !targets.contains(&event.key) {
                 // Not in target list -> Pass through immediately
@@ -156,16 +188,13 @@ impl ChordEngine {
             }
         }
 
-        let now = event.t;
-        let mut output = Vec::new();
-
         match event.edge {
             KeyEdge::Down => {
                 // 1. Update pressed state
                 self.state.pressed.insert(event.key);
                 self.state.down_ts.insert(event.key, now);
 
-                // 2. Add to pending
+                // 2. Normal Handling: Add to pending
                 // Avoid duplicates (if repeat comes in)
                 if !self.state.pending.iter().any(|p| p.key == event.key) {
                     self.state.pending.push(PendingKey {
@@ -174,9 +203,7 @@ impl ChordEngine {
                     });
                 }
 
-                // 3. Try to form a chord (if conditions met immediately, e.g. min_overlap=0)
-                // Even if min_overlap > 0, we check.
-                // If checking on Down, overlap with current key is 0.
+                // Try to form a chord (if conditions met immediately, e.g. min_overlap=0)
                 if self.profile.min_overlap_ms == 0 {
                     let chords = self.check_chords(now);
                     output.extend(chords);
@@ -260,6 +287,22 @@ impl ChordEngine {
         // This reverses output order relative to input order.
         // Ideally we should process oldest first.
         output.reverse();
+
+        output
+    }
+
+    pub fn flush_all_pending(&mut self) -> Vec<Decision> {
+        let mut output = Vec::new();
+        // Drain all pending keys and output them as KeyTap
+        let pending = std::mem::take(&mut self.state.pending);
+
+        for p in pending {
+            output.push(Decision::KeyTap(p.key));
+            // Clean up down_ts if it's not pressed
+            if !self.state.pressed.contains(&p.key) {
+                self.state.down_ts.remove(&p.key);
+            }
+        }
 
         output
     }
@@ -522,5 +565,84 @@ mod tests {
             Decision::LatchOn(LatchKind::OneShot) => {}
             _ => panic!("Expected LatchOn, got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_space_rollover() {
+        let mut profile = Profile::default();
+        profile.chord_window_ms = 50;
+
+        let mut engine = ChordEngine::new(profile);
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E); // A
+        let k_space = make_key(0x39); // Space
+
+        // 1. Down A at t0
+        // Expect: Pending (waiting for potential chord)
+        let res = engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        assert!(res.is_empty(), "A should be pending");
+
+        // 2. Down Space at t0 + 10ms (Within window)
+        // Expect: Flush A (KeyTap), then Space (Passthrough Down).
+        let t1 = t0 + Duration::from_millis(10);
+        let res = engine.on_event(make_event(k_space, KeyEdge::Down, t1));
+
+        assert_eq!(
+            res.len(),
+            2,
+            "Should output flushed key then space passthrough"
+        );
+        assert_eq!(res[0], Decision::KeyTap(k_a));
+        assert_eq!(res[1], Decision::Passthrough(k_space, KeyEdge::Down));
+
+        // Space should be in passed_keys but NOT in pending
+        let is_space_pending = engine.state.pending.iter().any(|p| p.key == k_space);
+        assert!(!is_space_pending, "Space should not be in pending");
+        assert!(engine.state.passed_keys.contains(&k_space));
+
+        // 3. Up Space at t0 + 30ms
+        // Expect: Space Passthrough Up
+        let t2 = t0 + Duration::from_millis(30);
+        let res = engine.on_event(make_event(k_space, KeyEdge::Up, t2));
+        assert_eq!(res.len(), 1, "Space up should be passed thorough");
+        assert_eq!(res[0], Decision::Passthrough(k_space, KeyEdge::Up));
+
+        assert!(!engine.state.passed_keys.contains(&k_space));
+    }
+
+    #[test]
+    fn test_non_target_space_rollover() {
+        let mut profile = Profile::default();
+        profile.chord_window_ms = 50;
+        let k_a = make_key(0x1E); // A
+
+        // Setup target keys: ONLY A is target. Space (0x39) is NOT.
+        let mut targets = std::collections::HashSet::new();
+        targets.insert(k_a);
+        profile.target_keys = Some(targets);
+
+        let mut engine = ChordEngine::new(profile);
+        let t0 = Instant::now();
+        let k_space = make_key(0x39); // Space
+
+        // 1. Down A (Target) at t0
+        // Expect: Pending
+        let res = engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        assert!(res.is_empty(), "A should be pending even with whitelist");
+
+        // 2. Down Space (Non-Target) at t0 + 10ms
+        // Expect: Even though Space is NOT in whitelist, our special priority logic MUST trigger.
+        // It should flush A, then pass Space.
+        let t1 = t0 + Duration::from_millis(10);
+        let res = engine.on_event(make_event(k_space, KeyEdge::Down, t1));
+
+        assert_eq!(res.len(), 2, "Should flush A then pass Space");
+        assert_eq!(res[0], Decision::KeyTap(k_a));
+        assert_eq!(res[1], Decision::Passthrough(k_space, KeyEdge::Down));
+
+        // 3. Up Space
+        let t2 = t0 + Duration::from_millis(30);
+        let res = engine.on_event(make_event(k_space, KeyEdge::Up, t2));
+        assert_eq!(res[0], Decision::Passthrough(k_space, KeyEdge::Up));
     }
 }
