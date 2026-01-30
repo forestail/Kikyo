@@ -84,5 +84,6 @@ pub struct Section {
 
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
+    pub name: Option<String>,
     pub sections: std::collections::HashMap<String, Section>,
 }

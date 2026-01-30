@@ -43,6 +43,14 @@ impl Engine {
         self.ignore_ime = ignore;
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn get_layout_name(&self) -> Option<String> {
+        self.layout.as_ref().and_then(|l| l.name.clone())
+    }
+
     pub fn get_profile(&self) -> Profile {
         self.chord_engine.profile.clone()
     }

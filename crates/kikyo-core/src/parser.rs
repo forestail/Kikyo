@@ -58,8 +58,49 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
         }
     };
 
-    for line in content.lines() {
+    let mut iter = content.lines();
+
+    // Check first line for layout name (starts with ;)
+    if let Some(first_line) = iter.next() {
+        let first_line_trim = first_line.trim();
+        if first_line_trim.starts_with(';') {
+            // remove leading ';'
+            let name = first_line_trim.trim_start_matches(';').trim().to_string();
+            if !name.is_empty() {
+                layout.name = Some(name);
+            }
+        } else {
+            // If not a comment line, treat it as normal content?
+            // Actually, usually headers are optional. If it's not a name, we should process it.
+            // But for simplicity in this iterator approach, let's just re-process it if not handled?
+            // Or better: Re-create iterator or handle the first line specially.
+            // Given the requirements: "{読み込んでいる配列定義の名称}は読み込んだyabファイルの先頭行を表示する。ただし１文字目は";"のため非表示にする。"
+            // It implies the name IS on the first line.
+            // However, we should be robust.
+
+            // To properly handle the "peek" or "process", let's rewrite the loop slightly.
+            // But actually, `iter` is stateful.
+
+            // If the first line was NOT a name comment, we need to process it as normal line.
+            // Just duplicate the line processing logic or use a helper is tedious.
+            // Let's iterate `content.lines()` again but skip 0 if we consumed it as name?
+            // No, `content.lines()` creates a new iterator.
+        }
+    }
+
+    // Re-iterate from start for full parsing, but this time we already have the name if found.
+    // Wait, simpler approach:
+
+    for (i, line) in content.lines().enumerate() {
         let line = line.trim();
+        if i == 0 && line.starts_with(';') {
+            let name = line.trim_start_matches(';').trim().to_string();
+            if !name.is_empty() {
+                layout.name = Some(name);
+            }
+            continue;
+        }
+
         if line.is_empty() || line.starts_with(';') {
             continue;
         }
@@ -202,5 +243,29 @@ mod tests {
 
         // Punctuation
         assert_eq!(parse_token("，．"), Token::KeySequence(",.".into()));
+    }
+    #[test]
+    fn test_parse_layout_name() {
+        let content_with_name = "; 新下駄配列
+[Main]
+a,b
+";
+        let layout = parse_yab_content(content_with_name).expect("Failed to parse");
+        assert_eq!(layout.name, Some("新下駄配列".to_string()));
+
+        let content_without_name = "
+[Main]
+a,b
+";
+        // Note: Our current logic checks the VERY FIRST line of the string.
+        // In the string literal above, the first line is empty (newline).
+        // Let's adjust the test string to be precise.
+        let layout_no_name = parse_yab_content(content_without_name.trim_start()).expect("Failed");
+        // If it starts with [Main], it's not a comment, so name should be None.
+        assert_eq!(layout_no_name.name, None);
+
+        let content_name_variation = ";My Layout  ";
+        let layout_var = parse_yab_content(content_name_variation).expect("Failed");
+        assert_eq!(layout_var.name, Some("My Layout".to_string()));
     }
 }
