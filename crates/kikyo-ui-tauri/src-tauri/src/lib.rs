@@ -1,13 +1,55 @@
 use kikyo_core::chord_engine::Profile;
 use kikyo_core::engine::ENGINE;
 use kikyo_core::{keyboard_hook, parser};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::Emitter;
 use tauri::Manager;
+use tauri::WindowEvent;
 
 struct AppState {
     current_yab_path: Mutex<Option<String>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Settings {
+    last_yab_path: Option<String>,
+}
+
+fn get_settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("settings.json"))
+        .ok()
+}
+
+fn load_settings(app: &tauri::AppHandle) -> Settings {
+    if let Some(path) = get_settings_path(app) {
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(settings) = serde_json::from_str(&content) {
+                    return settings;
+                }
+            }
+        }
+    }
+    Settings {
+        last_yab_path: None,
+    }
+}
+
+fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
+    if let Some(path) = get_settings_path(app) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(content) = serde_json::to_string(settings) {
+            let _ = fs::write(path, content);
+        }
+    }
 }
 
 fn update_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -75,6 +117,12 @@ fn load_yab(
     *state.current_yab_path.lock().unwrap() = Some(path.clone());
     let _ = update_tray_menu(&app);
 
+    // Save settings
+    let settings = Settings {
+        last_yab_path: Some(path),
+    };
+    save_settings(&app, &settings);
+
     Ok(stats)
 }
 
@@ -82,6 +130,7 @@ fn load_yab(
 fn set_enabled(app: tauri::AppHandle, enabled: bool) {
     ENGINE.lock().set_enabled(enabled);
     let _ = update_tray_menu(&app);
+    let _ = app.emit("enabled-state-changed", enabled);
 }
 
 #[tauri::command]
@@ -152,14 +201,49 @@ pub fn run() {
                         let current = ENGINE.lock().is_enabled();
                         ENGINE.lock().set_enabled(!current);
                         let _ = update_tray_menu(app);
+                        let _ = app.emit("enabled-state-changed", !current);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
                     }
                     _ => {}
                 })
                 .icon(app.default_window_icon().unwrap().clone())
                 .build(app)?;
 
+            // Load settings
+            let settings = load_settings(app.handle());
+            if let Some(path) = settings.last_yab_path {
+                if let Ok(layout) = parser::load_yab(&path) {
+                    ENGINE.lock().load_layout(layout);
+                    *app.state::<AppState>().current_yab_path.lock().unwrap() = Some(path);
+                }
+            }
+
             // Update to correct initial state
             update_tray_menu(app.handle())?;
+
+            // Prepare Window Event for close
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = window_clone.hide();
+                    }
+                    _ => {}
+                });
+            }
 
             // Spawn Hook Thread
             std::thread::spawn(|| {

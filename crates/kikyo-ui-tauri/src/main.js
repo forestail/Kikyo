@@ -178,4 +178,27 @@ window.addEventListener("DOMContentLoaded", () => {
   if (savedPath) layoutPathInput.value = savedPath;
 
   loadProfile();
+  refreshEnabledState();
+
+  window.addEventListener("focus", () => {
+    refreshEnabledState();
+    loadProfile();
+  });
+
+  window.__TAURI__.event.listen("enabled-state-changed", (event) => {
+    const enabled = event.payload;
+    if (globalEnabledCb) globalEnabledCb.checked = enabled;
+    statusMsg.innerText = enabled ? "有効" : "無効";
+  });
 });
+
+async function refreshEnabledState() {
+  if (!globalEnabledCb) return;
+  try {
+    const enabled = await invoke("get_enabled");
+    globalEnabledCb.checked = enabled;
+    statusMsg.innerText = enabled ? "有効" : "無効";
+  } catch (e) {
+    console.error(e);
+  }
+}
