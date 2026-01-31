@@ -81,7 +81,8 @@ pub enum ImeMode {
     Auto,
     Imm,
     Tsf,
-    Ignore,
+    Ignore,     // Force Japanese (Roman)
+    ForceAlpha, // Force Alphanumeric
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

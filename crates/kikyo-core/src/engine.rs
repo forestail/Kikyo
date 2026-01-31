@@ -144,15 +144,121 @@ impl Engine {
         if !self.enabled {
             return KeyAction::Pass;
         }
-        if !crate::ime::is_ime_on(self.chord_engine.profile.ime_mode) {
-            return KeyAction::Pass;
-        }
+
+        // Check IME state
+        let is_japanese = crate::ime::is_japanese_input_active(self.chord_engine.profile.ime_mode);
+        // Note: previous logic had early return if !ime_on.
+        // Now if !ime_on (meaning Not Japanese Input), we use is_japanese=false -> [英数...] sections.
+        // However, if IME is effectively disabled/closed, logic is similar to "英数" mode.
+        // But we must also ensure we don't block keys if we shouldn't hook?
+        // Requirement says "relevant definition ... -> hook". If "definition missing -> no hook".
+        // So checking for section existence in resolve() handles the "no hook" case.
+        // But existing ime_on check also handled "Don't run ANY logic if IME off".
+        // The new requirement implies we DO run logic even if IME off, specifically for [英数...] sections.
+        // So we remove the early return.
 
         if self.layout.is_none() {
             return KeyAction::Pass;
         }
 
         let key = ScKey::new(sc, ext);
+
+        // Pre-check: Verify if the key is defined in the current section.
+        // If not, we pass immediately to avoid ChordEngine buffering.
+        {
+            // 1. Determine local "Thumb Shift" status from ChordEngine state
+            let mut has_left_thumb = false;
+            let mut has_right_thumb = false;
+            if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                for k in &self.chord_engine.state.pressed {
+                    if tk.left.contains(k) {
+                        has_left_thumb = true;
+                    }
+                    if tk.right.contains(k) {
+                        has_right_thumb = true;
+                    }
+                }
+            }
+
+            // 2. Select PREFIX & SUFFIX
+            let prefix = if is_japanese {
+                "ローマ字"
+            } else {
+                "英数"
+            };
+            let suffix = if shift {
+                if has_left_thumb {
+                    "小指左親指シフト"
+                } else if has_right_thumb {
+                    "小指右親指シフト"
+                } else {
+                    "小指シフト"
+                }
+            } else {
+                if has_left_thumb {
+                    "左親指シフト"
+                } else if has_right_thumb {
+                    "右親指シフト"
+                } else {
+                    "シフト無し"
+                }
+            };
+
+            let section_name = format!("{}{}", prefix, suffix);
+
+            // 3. Check Section Existence
+            if let Some(layout) = &self.layout {
+                if let Some(section) = layout.sections.get(&section_name) {
+                    // Section exists. Check if key is defined.
+                    let mut is_defined = false;
+
+                    // Check Base Plane
+                    if let Some(rc) = self.key_to_rc(key) {
+                        if let Some(token) = section.base_plane.map.get(&rc) {
+                            if !matches!(token, Token::None) {
+                                is_defined = true;
+                            }
+                        }
+                    }
+
+                    // Check Trigger Keys (Sub Planes)
+                    if !is_defined {
+                        if let Some(name) = crate::jis_map::sc_to_key_name(sc) {
+                            let tag = format!("<{}>", name);
+                            if section.sub_planes.contains_key(&tag) {
+                                is_defined = true;
+                            }
+                        }
+                    }
+
+                    let mut is_thumb = false;
+                    if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                        if tk.left.contains(&key) || tk.right.contains(&key) {
+                            is_thumb = true;
+                        }
+                    }
+
+                    if !is_defined && !is_thumb {
+                        // Defined section, but key is not in it -> Pass
+                        return KeyAction::Pass;
+                    }
+                } else {
+                    // Section does NOT exist -> Pass
+                    // UNLESS it is a Thumb Key
+                    let mut is_thumb = false;
+                    if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                        if tk.left.contains(&key) || tk.right.contains(&key) {
+                            is_thumb = true;
+                        }
+                    }
+
+                    if !is_thumb {
+                        return KeyAction::Pass;
+                    }
+                }
+            }
+        }
+
         let event = KeyEvent {
             key,
             edge: if up { KeyEdge::Up } else { KeyEdge::Down },
@@ -173,7 +279,7 @@ impl Engine {
                     }
                 }
                 Decision::KeyTap(k) => {
-                    if let Some(token) = self.resolve(&[k], shift) {
+                    if let Some(token) = self.resolve(&[k], shift, is_japanese) {
                         if let Some(ops) = self.token_to_events(&token) {
                             inject_ops.extend(ops);
                         }
@@ -185,7 +291,7 @@ impl Engine {
                     }
                 }
                 Decision::Chord(keys) => {
-                    if let Some(token) = self.resolve(&keys, shift) {
+                    if let Some(token) = self.resolve(&keys, shift, is_japanese) {
                         if let Some(ops) = self.token_to_events(&token) {
                             inject_ops.extend(ops);
                         }
@@ -194,7 +300,7 @@ impl Engine {
                         for k in keys {
                             // Try to resolve as single key (unshifted)
                             let mut resolved = false;
-                            if let Some(token) = self.resolve(&[k], false) {
+                            if let Some(token) = self.resolve(&[k], false, is_japanese) {
                                 if let Some(ops) = self.token_to_events(&token) {
                                     inject_ops.extend(ops);
                                     resolved = true;
@@ -235,18 +341,85 @@ impl Engine {
         KeyAction::Block
     }
 
-    fn resolve(&self, keys: &[ScKey], shift: bool) -> Option<Token> {
+    fn resolve(&self, keys: &[ScKey], shift: bool, is_japanese: bool) -> Option<Token> {
         let layout = self.layout.as_ref()?;
-        let section_name = if shift {
-            "ローマ字小指シフト"
-        } else {
-            "ローマ字シフト無し"
-        };
-        // tracing::info!("Resolve: key={:?} shift={} section={}", keys, shift, section_name);
-        let section = layout.sections.get(section_name)?;
 
-        if keys.len() == 1 {
-            let key = keys[0];
+        // 1. Determine "Thumb Shift" status
+        let mut has_left_thumb = false;
+        let mut has_right_thumb = false;
+
+        if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+            for k in keys {
+                if tk.left.contains(k) {
+                    has_left_thumb = true;
+                }
+                if tk.right.contains(k) {
+                    has_right_thumb = true;
+                }
+            }
+        }
+
+        // 2. Select PREFIX (Eng vs Roma)
+        let prefix = if is_japanese {
+            "ローマ字"
+        } else {
+            "英数"
+        };
+
+        // 3. Select SUFFIX
+        let suffix = if shift {
+            if has_left_thumb {
+                "小指左親指シフト"
+            } else if has_right_thumb {
+                "小指右親指シフト"
+            } else {
+                "小指シフト"
+            }
+        } else {
+            if has_left_thumb {
+                "左親指シフト"
+            } else if has_right_thumb {
+                "右親指シフト"
+            } else {
+                "シフト無し"
+            }
+        };
+
+        let section_name = format!("{}{}", prefix, suffix);
+        // tracing::info!("Resolve: section={} keys={:?}", section_name, keys);
+
+        let section = layout.sections.get(&section_name)?;
+
+        // 4. Update keys for lookup (Remove Thumb Modifiers)
+        let lookup_keys: Vec<ScKey> = if has_left_thumb || has_right_thumb {
+            if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                keys.iter()
+                    .filter(|&&k| {
+                        let is_left = tk.left.contains(&k);
+                        let is_right = tk.right.contains(&k);
+                        if has_left_thumb && is_left {
+                            return false;
+                        }
+                        if has_right_thumb && is_right {
+                            return false;
+                        }
+                        true
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                keys.to_vec()
+            }
+        } else {
+            keys.to_vec()
+        };
+
+        if lookup_keys.is_empty() {
+            return None;
+        }
+
+        if lookup_keys.len() == 1 {
+            let key = lookup_keys[0];
             let latch = &self.chord_engine.state.latch;
 
             if let crate::chord_engine::LatchState::OneShot(tag)
@@ -264,9 +437,9 @@ impl Engine {
             if let Some(rc) = self.key_to_rc(key) {
                 return section.base_plane.map.get(&rc).cloned();
             }
-        } else if keys.len() == 2 {
-            let k1 = keys[0];
-            let k2 = keys[1];
+        } else if lookup_keys.len() == 2 {
+            let k1 = lookup_keys[0];
+            let k2 = lookup_keys[1];
 
             if let Some(token) = self.try_resolve_modifier(section, k1, k2) {
                 return Some(token);
@@ -781,5 +954,174 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             KeyAction::Pass,
             "Enter should still pass after profile update"
         );
+    }
+
+    #[test]
+    fn test_ime_section_switching() {
+        let config = "
+[英数シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+alph_a
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+roma_a
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        // 1. Force Japanese Mode (Ignore)
+        engine.set_ime_mode(ImeMode::Ignore);
+
+        // Down
+        engine.process_key(0x1E, false, false, false);
+        // Up
+        let res = engine.process_key(0x1E, false, true, false);
+
+        match res {
+            KeyAction::Inject(evs) => {
+                // roma_a starts with 'r' (0x13)
+                if let InputEvent::Scancode(sc, _, _) = evs[0] {
+                    assert_eq!(sc, 0x13, "Expected 'r' from [ローマ字...], got {:02X}", sc);
+                }
+            }
+            _ => panic!("Expected Inject in Roman mode, got {:?}", res),
+        }
+
+        // 2. Force Alpha Mode
+        engine.set_ime_mode(ImeMode::ForceAlpha);
+
+        // Down (Reset pending first? Engine state persists. Need to wait for previous key to clear?
+        // Previous Up flushed pending. So safe.)
+        engine.process_key(0x1E, false, false, false);
+        // Up
+        let res = engine.process_key(0x1E, false, true, false);
+
+        match res {
+            KeyAction::Inject(evs) => {
+                // alph_a starts with 'a' (0x1E)
+                // Actually alph_a -> a,l,p,h... 'a' is 0x1E.
+                if let InputEvent::Scancode(sc, _, _) = evs[0] {
+                    assert_eq!(sc, 0x1E, "Expected 'a' from [英数...], got {:02X}", sc);
+                }
+            }
+            _ => panic!("Expected Inject in Alpha mode, got {:?}", res),
+        }
+    }
+
+    #[test]
+    fn test_missing_section_fallback() {
+        // Layout: [ローマ字] defined. [英数] MISSING.
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+a,roma_a
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        // 1. Force Alpha Mode (Simulate IME OFF / Alpha)
+        engine.set_ime_mode(ImeMode::ForceAlpha);
+
+        // Down
+        let res_down = engine.process_key(0x1E, false, false, false);
+        assert_eq!(
+            res_down,
+            KeyAction::Pass,
+            "Should PASS immediately if section is missing"
+        );
+
+        // Up
+        let res_up = engine.process_key(0x1E, false, true, false);
+        assert_eq!(res_up, KeyAction::Pass, "Should PASS immediately on Up too");
+    }
+
+    #[test]
+    fn test_thumb_shift_filtering() {
+        // Setup: Left Thumb = 0x7B (Muhenkan)
+        // Layout: [ローマ字左親指シフト] -> a=thumb_a
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+roma_a
+
+[ローマ字左親指シフト]
+; R0
+dummy
+; R1
+dummy
+; R2
+thumb_a
+";
+        let layout = parse_yab_content(config).expect("Failed to parse");
+        let mut engine = Engine::default();
+
+        let mut profile = Profile::default();
+        profile.ime_mode = ImeMode::Ignore; // Force Japanese
+
+        // Use 0x7B as thumb key
+        let thumb_key = ScKey::new(0x7B, false);
+        let mut left_thumbs = HashSet::new();
+        left_thumbs.insert(thumb_key);
+
+        profile.thumb_keys = Some(crate::chord_engine::ThumbKeys {
+            left: left_thumbs,
+            right: HashSet::new(),
+        });
+
+        // Set profile BEFORE loading layout (although load_layout merges triggers, thumb keys are separate)
+        // Actually load_layout uses profile to determine Trigger Keys. Thumb Keys are manual.
+        // We set profile first to ensure engine has thumb keys config.
+        engine.set_profile(profile);
+        engine.load_layout(layout);
+
+        // Sequence: Thumb(Down) -> A(Down) -> A(Up) -> Thumb(Up)
+        // Note: A(Up) triggers ratio check. P1(Thumb) Down, P2(A) Up.
+        // This is valid overlap. Ratio check might pass if overlap is sufficient.
+        // Overlap = Duration of P2(A). Ratio = 1.0.
+
+        engine.process_key(0x7B, false, false, false); // Thumb Down
+        engine.process_key(0x1E, false, false, false); // A Down
+
+        // Release A (P2)
+        let res_a = engine.process_key(0x1E, false, true, false);
+
+        match res_a {
+            KeyAction::Inject(evs) => {
+                // thumb_a starts with 't' (0x14)
+                if let InputEvent::Scancode(sc, _, _) = evs[0] {
+                    assert_eq!(sc, 0x14, "Expected 't' from [ローマ字左親指シフト]");
+                } else {
+                    panic!("Expected Scancode, got {:?}", evs[0]);
+                }
+
+                // Verify Thumb Key is NOT output
+                let has_thumb = evs.iter().any(|e| match e {
+                    InputEvent::Scancode(s, _, _) => *s == 0x7B,
+                    _ => false,
+                });
+                assert!(!has_thumb, "Thumb key should be consumed and filtered");
+            }
+            _ => panic!("Expected Inject for Chord, got {:?}", res_a),
+        }
+
+        engine.process_key(0x7B, false, true, false); // Thumb Up (Consumed)
     }
 }
