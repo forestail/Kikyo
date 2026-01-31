@@ -80,6 +80,10 @@ impl Engine {
         self.chord_engine.profile.clone()
     }
 
+    pub fn get_suspend_key(&self) -> crate::chord_engine::SuspendKey {
+        self.chord_engine.profile.suspend_key
+    }
+
     fn has_thumb_shift_sections_in_layout(&self) -> bool {
         if let Some(ref layout) = self.layout {
             let targets = [
