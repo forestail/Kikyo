@@ -58,7 +58,7 @@ fn update_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         (engine.get_layout_name(), engine.is_enabled())
     };
 
-    let name_text = layout_name.unwrap_or_else(|| "未読み込み".to_string());
+    let name_text = layout_name.unwrap_or_else(|| "配列定義なし".to_string());
     // {LayoutName} (Disabled/Label)
     let item_name = MenuItem::with_id(app, "layout_name", &name_text, false, None::<&str>)?;
 
@@ -104,6 +104,17 @@ fn update_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+fn update_window_title(app: &tauri::AppHandle, layout_name: Option<&str>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let title_text = if let Some(name) = layout_name {
+            format!("桔梗 - {}", name)
+        } else {
+            "桔梗 - 配列定義なし".to_string()
+        };
+        let _ = window.set_title(&title_text);
+    }
+}
+
 #[tauri::command]
 fn load_yab(
     app: tauri::AppHandle,
@@ -116,6 +127,10 @@ fn load_yab(
 
     *state.current_yab_path.lock().unwrap() = Some(path.clone());
     let _ = update_tray_menu(&app);
+
+    // Update window title
+    let layout_name = ENGINE.lock().get_layout_name();
+    update_window_title(&app, layout_name.as_deref());
 
     // Save settings
     let settings = Settings {
@@ -196,6 +211,8 @@ pub fn run() {
                                 Ok(layout) => {
                                     ENGINE.lock().load_layout(layout);
                                     let _ = update_tray_menu(app);
+                                    let layout_name = ENGINE.lock().get_layout_name();
+                                    update_window_title(app, layout_name.as_deref());
                                     tracing::info!("Reloaded config from tray");
                                 }
                                 Err(e) => {
@@ -239,6 +256,13 @@ pub fn run() {
 
             // Update to correct initial state
             update_tray_menu(app.handle())?;
+
+            // Initial Window Title Update
+            {
+                let engine = ENGINE.lock();
+                let layout_name = engine.get_layout_name();
+                update_window_title(app.handle(), layout_name.as_deref());
+            }
 
             // Prepare Window Event for close
             if let Some(window) = app.get_webview_window("main") {
