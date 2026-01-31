@@ -149,6 +149,35 @@ impl Default for Profile {
     }
 }
 
+impl Profile {
+    pub fn update_thumb_keys(&mut self) {
+        let mut left = HashSet::new();
+        let mut right = HashSet::new();
+
+        // Scancodes
+        let sc_muhenkan = ScKey::new(0x7B, false);
+        let sc_henkan = ScKey::new(0x79, false);
+        let sc_space = ScKey::new(0x39, false);
+
+        match self.thumb_shift_key_mode {
+            ThumbShiftKeyMode::NonTransformTransform => {
+                left.insert(sc_muhenkan);
+                right.insert(sc_henkan);
+            }
+            ThumbShiftKeyMode::NonTransformSpace => {
+                left.insert(sc_muhenkan);
+                right.insert(sc_space);
+            }
+            ThumbShiftKeyMode::SpaceTransform => {
+                left.insert(sc_space);
+                right.insert(sc_henkan);
+            }
+        }
+
+        self.thumb_keys = Some(ThumbKeys { left, right });
+    }
+}
+
 pub struct ChordState {
     pub enabled: bool,
     pub pressed: HashSet<ScKey>,
@@ -156,9 +185,26 @@ pub struct ChordState {
     pub pending: Vec<PendingKey>,
     pub latch: LatchState,
     pub passed_keys: HashSet<ScKey>,
-    // pub stats: Stats,
+    // Track modifiers used in generated chords to detect single-press vs used-as-modifier
+    pub used_modifiers: HashSet<ScKey>,
+    // For Prefix Shift mode
+    pub prefix_pending: Option<ScKey>,
 }
 
+impl Default for ChordState {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pressed: HashSet::new(),
+            down_ts: HashMap::new(),
+            pending: Vec::new(),
+            latch: LatchState::None,
+            passed_keys: HashSet::new(),
+            used_modifiers: HashSet::new(),
+            prefix_pending: None,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct PendingKey {
     pub key: ScKey,
@@ -184,14 +230,7 @@ impl ChordEngine {
     pub fn new(profile: Profile) -> Self {
         Self {
             profile,
-            state: ChordState {
-                enabled: true,
-                pressed: HashSet::new(),
-                down_ts: HashMap::new(),
-                pending: Vec::new(),
-                latch: LatchState::None,
-                passed_keys: HashSet::new(),
-            },
+            state: ChordState::default(),
         }
     }
 
@@ -220,7 +259,8 @@ impl ChordEngine {
             }
             KeyEdge::Down => {
                 // Special Handling for Space Key (0x39) - Always check first
-                if event.key.sc == 0x39 {
+                // BUT only if it is NOT a modifier (thumb key)
+                if event.key.sc == 0x39 && !self.is_modifier_key(event.key) {
                     // Flush existing pending keys FIRST.
                     output.extend(self.flush_all_pending());
 
@@ -248,6 +288,24 @@ impl ChordEngine {
                 self.state.pressed.insert(event.key);
                 self.state.down_ts.insert(event.key, now);
 
+                // Handle Prefix Shift Logic
+                if let Some(prefix_thumb) = self.state.prefix_pending {
+                    // If a valid key comes in (and it's not the thumb itself, though ScKey check assumes unique)
+                    // We assume the prefix thumb is applied to this key.
+                    // Note: If the new key is also a modifier, we might chain?
+                    // For now, assume applying to any new key.
+                    self.state.prefix_pending = None;
+                    self.state.used_modifiers.insert(prefix_thumb); // Mark as used
+                                                                    // Return Chord immediately
+                    output.push(Decision::Chord(vec![prefix_thumb, event.key]));
+
+                    // We consume this key event immediately.
+                    // But we also need to consider if this key is a modifier?
+                    // If the pressed key is "A", fine.
+                    // We don't add to pending.
+                    return output;
+                }
+
                 // 2. Add to pending
                 // Avoid duplicates (if repeat comes in)
                 if !self.state.pending.iter().any(|p| p.key == event.key) {
@@ -259,9 +317,6 @@ impl ChordEngine {
                 }
 
                 // 3. Check chords
-                // Even on Down, we might trigger something if we had complete info?
-                // But with Ratio logic requiring Up time, we usually wait.
-                // However, "check_chords" handles the "Wait" logic.
                 let chords = self.check_chords(now);
                 output.extend(chords);
             }
@@ -278,10 +333,6 @@ impl ChordEngine {
                 output.extend(chords);
 
                 // 3. Flush Single Taps
-                // If a key is pending, released (t_up is Some), and has NO potential partners (e.g. it's alone),
-                // we can flush it immediately as Tap.
-                // NOTE: If there are other keys, but they are "too far" or "already processed"?
-                // Simplified: If pending count is 1, and it is released, flush it.
                 if self.state.pending.len() == 1 {
                     let p = &self.state.pending[0];
                     if p.t_up.is_some() {
@@ -293,7 +344,27 @@ impl ChordEngine {
                         self.state.down_ts.remove(&key);
 
                         if is_mod {
-                            output.push(Decision::LatchOn(LatchKind::OneShot));
+                            // Check if used
+                            if self.state.used_modifiers.contains(&key) {
+                                // Was used, so ignore single press
+                                self.state.used_modifiers.remove(&key);
+                            } else {
+                                // Trigger Single Press Logic
+                                match self.profile.thumb_shift_single_press {
+                                    ThumbShiftSinglePress::None => {
+                                        // Disable single press (swallow)
+                                    }
+                                    ThumbShiftSinglePress::Enable => {
+                                        output.push(Decision::KeyTap(key));
+                                    }
+                                    ThumbShiftSinglePress::PrefixShift => {
+                                        self.state.prefix_pending = Some(key);
+                                    }
+                                    ThumbShiftSinglePress::SpaceKey => {
+                                        output.push(Decision::KeyTap(ScKey::new(0x39, false)));
+                                    }
+                                }
+                            }
                         } else {
                             output.push(Decision::KeyTap(key));
                         }
@@ -444,12 +515,35 @@ impl ChordEngine {
 
                 if ratio >= self.profile.char_key_overlap_ratio {
                     // CHORD!
-                    consumed_indices.insert(idx1);
-                    consumed_indices.insert(idx2);
+                    let k1 = p1.key;
+                    let k2 = p2.key;
+                    let is_mod1 = self.is_modifier_key(k1);
+                    let is_mod2 = self.is_modifier_key(k2);
+
+                    if is_mod1 {
+                        self.state.used_modifiers.insert(k1);
+                    }
+                    if is_mod2 {
+                        self.state.used_modifiers.insert(k2);
+                    }
+
+                    // Consume keys unless continuous shift is enabled for a modifier
+                    if !is_mod1 || !self.profile.thumb_shift_continuous {
+                        consumed_indices.insert(idx1);
+                    }
+                    if !is_mod2 || !self.profile.thumb_shift_continuous {
+                        consumed_indices.insert(idx2);
+                    }
+
                     // Output Chord
-                    // Order depends on implementation, usually sorted? Or just vector.
-                    output.push(Decision::Chord(vec![p1.key, p2.key]));
-                    break; // Move to next i
+                    output.push(Decision::Chord(vec![k1, k2]));
+
+                    // If idx1 was consumed, we must move to next i.
+                    // If idx1 was NOT consumed (continuous modifier), we continue checking i against other js.
+                    if consumed_indices.contains(&idx1) {
+                        break;
+                    }
+                    // If not consumed, continue inner loop to find more chords for this modifier
                 } else {
                     // SEQUENTIAL!
                     // If ratio is low, it means they are effectively sequential.

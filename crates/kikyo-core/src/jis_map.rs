@@ -116,6 +116,8 @@ pub fn sc_to_key_name(sc: u16) -> Option<&'static str> {
         0x73 => Some("_"), // Backslash/Ro
 
         0x39 => Some("space"),
+        0x79 => Some("henkan"),
+        0x7B => Some("muhenkan"),
         _ => None,
     }
 }

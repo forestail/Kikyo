@@ -18,8 +18,10 @@ pub struct Engine {
 
 impl Default for Engine {
     fn default() -> Self {
+        let mut profile = Profile::default();
+        profile.update_thumb_keys();
         Self {
-            chord_engine: ChordEngine::new(Profile::default()),
+            chord_engine: ChordEngine::new(profile),
             enabled: true,
             layout: None,
         }
@@ -30,7 +32,9 @@ impl Engine {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
-            self.chord_engine = ChordEngine::new(Profile::default());
+            let mut profile = Profile::default();
+            profile.update_thumb_keys();
+            self.chord_engine = ChordEngine::new(profile);
             if let Some(_l) = &self.layout {
                 // restore profile logic if needed
             }
@@ -65,7 +69,33 @@ impl Engine {
         self.chord_engine.profile.clone()
     }
 
+    fn has_thumb_shift_sections_in_layout(&self) -> bool {
+        if let Some(ref layout) = self.layout {
+            let targets = [
+                "ローマ字左親指シフト",
+                "ローマ字右親指シフト",
+                "英数左親指シフト",
+                "英数右親指シフト",
+            ];
+            for t in &targets {
+                if layout.sections.keys().any(|k| k.starts_with(t)) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn set_profile(&mut self, mut profile: Profile) {
+        // Update thumb keys based on mode
+        profile.update_thumb_keys();
+
+        // Pattern 1: If layout does not have thumb shift sections, disable thumb keys.
+        // This ensures they act as normal keys if the layout doesn't support thumb shift.
+        if self.layout.is_some() && !self.has_thumb_shift_sections_in_layout() {
+            profile.thumb_keys = None;
+        }
+
         // Preserve layout-derived data if missing in new profile
         let current = &self.chord_engine.profile;
         if profile.target_keys.is_none() && current.target_keys.is_some() {
@@ -74,6 +104,15 @@ impl Engine {
         if profile.trigger_keys.is_empty() && !current.trigger_keys.is_empty() {
             profile.trigger_keys = current.trigger_keys.clone();
         }
+
+        // Ensure new thumb keys are in target list
+        if let Some(ref mut targets) = profile.target_keys {
+            if let Some(ref tk) = profile.thumb_keys {
+                targets.extend(tk.left.iter());
+                targets.extend(tk.right.iter());
+            }
+        }
+
         self.chord_engine.set_profile(profile);
     }
 
@@ -136,8 +175,10 @@ impl Engine {
 
         profile.target_keys = Some(target_keys);
 
-        self.chord_engine.set_profile(profile);
+        // Update layout FIRST so set_profile can check it
         self.layout = Some(layout);
+        // Then set profile (processes logic to disable thumb keys if needed)
+        self.set_profile(profile);
     }
 
     pub fn process_key(&mut self, sc: u16, ext: bool, up: bool, shift: bool) -> KeyAction {
@@ -205,6 +246,18 @@ impl Engine {
             };
 
             let section_name = format!("{}{}", prefix, suffix);
+
+            // Debug logging (temporary) - output only if not blocked to avoid spam?
+            // Better to output for specific keys or always for debugging.
+            if key.sc == 0x1E { // Limit to 'A' key or similar if spamming, but for now log all resolved attempts
+                 // tracing::info!("Resolve: IME={} Section={} Key={}", is_japanese, section_name, sc);
+            }
+            // tracing::info!(
+            //     "Resolve: IME={} Section={} Key={:02X}",
+            //     is_japanese,
+            //     section_name,
+            //     sc
+            // );
 
             // 3. Check Section Existence
             if let Some(layout) = &self.layout {
@@ -1123,5 +1176,113 @@ thumb_a
         }
 
         engine.process_key(0x7B, false, true, false); // Thumb Up (Consumed)
+    }
+    #[test]
+    fn test_thumb_shift_switching() {
+        let config = r#"
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d_base,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d_left,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字右親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d_right,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+"#;
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // 1. Default Mode: NonTransformTransform (Left=Muhenkan, Right=Henkan)
+        let sc_d = 0x20;
+        let sc_muhenkan = 0x7B;
+        let sc_henkan = 0x79;
+        let sc_space = 0x39;
+
+        // Debug assertions
+        let profile = engine.get_profile();
+        let targets = profile.target_keys.as_ref().expect("Target keys not set");
+        let thumbs = profile.thumb_keys.as_ref().expect("Thumb keys not set");
+
+        assert!(
+            targets.contains(&ScKey::new(sc_d, false)),
+            "D not in targets. Targets: {:?}",
+            targets
+        );
+        assert!(
+            targets.contains(&ScKey::new(sc_muhenkan, false)),
+            "Muhenkan not in targets"
+        );
+        assert!(
+            thumbs.left.contains(&ScKey::new(sc_muhenkan, false)),
+            "Muhenkan not in Left thumbs"
+        );
+
+        // Case 1-1: Muhenkan + D -> Left
+        engine.process_key(sc_muhenkan, false, false, false); // Muhenkan Down
+        engine.process_key(sc_d, false, false, false); // D Down
+        let res = engine.process_key(sc_d, false, true, false); // D Up (Tap with Modifier)
+        match res {
+            KeyAction::Inject(evs) => {
+                // d_left -> l (0x26)
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x26, _, _))),
+                    "Expected d_left (l) output"
+                );
+            }
+            _ => panic!("Expected Inject Left for Muhenkan+D, got {:?}", res),
+        }
+        engine.process_key(sc_muhenkan, false, true, false); // Muhenkan Up
+
+        // Case 1-2: Henkan + D -> Right
+        engine.process_key(sc_henkan, false, false, false); // Henkan Down
+        engine.process_key(sc_d, false, false, false); // D Down
+        let res = engine.process_key(sc_d, false, true, false); // D Up
+        match res {
+            KeyAction::Inject(evs) => {
+                // d_right -> r (0x13)
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x13, _, _))),
+                    "Expected d_right (r) output"
+                );
+            }
+            _ => panic!("Expected Inject Right for Henkan+D, got {:?}", res),
+        }
+        engine.process_key(sc_henkan, false, true, false); // Henkan Up
+
+        // 2. Switch Mode: NonTransformSpace (Left=Muhenkan, Right=Space)
+        let mut profile = engine.get_profile();
+        profile.thumb_shift_key_mode = crate::chord_engine::ThumbShiftKeyMode::NonTransformSpace;
+        engine.set_profile(profile);
+
+        // Case 2-1: Space + D -> Right
+        engine.process_key(sc_space, false, false, false); // Space Down
+        engine.process_key(sc_d, false, false, false); // D Down
+        let res = engine.process_key(sc_d, false, true, false); // D Up
+        match res {
+            KeyAction::Inject(evs) => {
+                // d_right -> r (0x13)
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x13, _, _))),
+                    "Expected d_right (r) output with Space"
+                );
+            }
+            _ => panic!("Expected Inject Right for Space+D, got {:?}", res),
+        }
+        engine.process_key(sc_space, false, true, false); // Space Up
     }
 }
