@@ -45,6 +45,22 @@
       </div>
 
       <div class="setting-group">
+        <h3>IME</h3>
+        <div class="setting-item">
+          <div class="setting-label">IME Mode</div>
+          <div class="setting-control">
+            <select id="ime-mode">
+              <option value="Auto">Auto (TSF -&gt; IMM)</option>
+              <option value="Tsf">TSF</option>
+              <option value="Imm">IMM</option>
+              <option value="Ignore">Ignore (always on)</option>
+            </select>
+          </div>
+          <div class="setting-desc">Controls when key replacement is active.</div>
+        </div>
+      </div>
+
+      <div class="setting-group">
         <h3>文字キーのキーリピートを有効にする</h3>
         
         <div class="setting-item">
@@ -156,9 +172,6 @@
       <div class="setting-item">
           <p>Kikyo Version 0.1.0</p>
           <p style="font-size: 0.8em; color: #888;">Emergency Stop: Ctrl + Alt + Esc</p>
-          <div style="margin-top: 10px;">
-              <button id="save-btn" class="primary">設定を保存</button>
-          </div>
           <p id="status-msg" style="margin-top: 10px;"></p>
       </div>
     </div>

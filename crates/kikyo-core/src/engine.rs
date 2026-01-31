@@ -1,4 +1,4 @@
-use crate::chord_engine::{ChordEngine, Decision, KeyEdge, KeyEvent, Profile};
+use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, Profile};
 use crate::types::{InputEvent, KeyAction, Layout, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
@@ -14,7 +14,6 @@ pub struct Engine {
     chord_engine: ChordEngine,
     enabled: bool,
     layout: Option<Layout>,
-    ignore_ime: bool,
 }
 
 impl Default for Engine {
@@ -23,7 +22,6 @@ impl Default for Engine {
             chord_engine: ChordEngine::new(Profile::default()),
             enabled: true,
             layout: None,
-            ignore_ime: false,
         }
     }
 }
@@ -40,7 +38,19 @@ impl Engine {
     }
 
     pub fn set_ignore_ime(&mut self, ignore: bool) {
-        self.ignore_ime = ignore;
+        self.chord_engine.profile.ime_mode = if ignore {
+            ImeMode::Ignore
+        } else {
+            ImeMode::Auto
+        };
+    }
+
+    pub fn set_ime_mode(&mut self, mode: ImeMode) {
+        self.chord_engine.profile.ime_mode = mode;
+    }
+
+    pub fn get_ime_mode(&self) -> ImeMode {
+        self.chord_engine.profile.ime_mode
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -134,7 +144,7 @@ impl Engine {
         if !self.enabled {
             return KeyAction::Pass;
         }
-        if !self.ignore_ime && !crate::ime::is_ime_on() {
+        if !crate::ime::is_ime_on(self.chord_engine.profile.ime_mode) {
             return KeyAction::Pass;
         }
 

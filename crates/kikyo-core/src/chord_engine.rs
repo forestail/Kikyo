@@ -76,6 +76,14 @@ pub enum ThumbShiftSinglePress {
     SpaceKey,    // Spaceキー
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImeMode {
+    Auto,
+    Imm,
+    Tsf,
+    Ignore,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessiveCfg {
     pub enabled: bool,
@@ -97,6 +105,8 @@ pub struct Profile {
     // New fields
     pub char_key_repeat_assigned: bool,
     pub char_key_repeat_unassigned: bool,
+
+    pub ime_mode: ImeMode,
 
     pub thumb_shift_key_mode: ThumbShiftKeyMode,
     pub thumb_shift_continuous: bool,
@@ -123,6 +133,8 @@ impl Default for Profile {
 
             char_key_repeat_assigned: false,
             char_key_repeat_unassigned: true,
+
+            ime_mode: ImeMode::Auto,
 
             thumb_shift_key_mode: ThumbShiftKeyMode::NonTransformTransform,
             thumb_shift_continuous: false,

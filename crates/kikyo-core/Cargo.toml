@@ -15,6 +15,7 @@ encoding_rs = "0.8" # For Shift-JIS / UTF-16 decoding if needed
 # windows crate
 windows = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_LibraryLoader",

@@ -3,7 +3,7 @@ const { invoke } = window.__TAURI__.core;
 // Elements
 let layoutPathInput, loadLayoutBtn;
 let globalEnabledCb;
-let saveBtn, statusMsg;
+let statusMsg;
 
 // Sidebar
 let navItems, sections;
@@ -17,6 +17,7 @@ let thumbKeyModeSel, thumbContinuousCb, thumbSinglePressSel, thumbRepeatCb, thum
 let charContinuousCb, charOverlapRatioInput, charOverlapVal;
 
 let currentProfile = null;
+let imeModeSel;
 
 async function loadLayout() {
   if (!layoutPathInput) return;
@@ -68,6 +69,7 @@ function updateUI(profile) {
   // Enums (Selects) - Backend returns string if Serialize is correctly set up with Enums
   if (thumbKeyModeSel) thumbKeyModeSel.value = profile.thumb_shift_key_mode;
   if (thumbSinglePressSel) thumbSinglePressSel.value = profile.thumb_shift_single_press;
+  if (imeModeSel) imeModeSel.value = profile.ime_mode || "Auto";
 
   // Ranges (Floats 0.0-1.0 to 0-100)
   if (thumbOverlapRatioInput) {
@@ -97,6 +99,7 @@ async function saveProfile() {
 
   currentProfile.char_key_continuous = charContinuousCb.checked;
   currentProfile.char_key_overlap_ratio = parseInt(charOverlapRatioInput.value, 10) / 100.0;
+  if (imeModeSel) currentProfile.ime_mode = imeModeSel.value;
 
   try {
     console.log("Saving profile:", currentProfile);
@@ -110,6 +113,29 @@ async function saveProfile() {
   } catch (e) {
     statusMsg.innerText = "保存エラー: " + e;
   }
+}
+
+function setupAutoSave() {
+  const changeTargets = [
+    charRepeatAssignedCb,
+    charRepeatUnassignedCb,
+    thumbContinuousCb,
+    thumbRepeatCb,
+    charContinuousCb,
+  ];
+  changeTargets.forEach((el) => {
+    if (el) el.addEventListener("change", saveProfile);
+  });
+
+  const selectTargets = [thumbKeyModeSel, thumbSinglePressSel, imeModeSel];
+  selectTargets.forEach((el) => {
+    if (el) el.addEventListener("change", saveProfile);
+  });
+
+  const rangeTargets = [thumbOverlapRatioInput, charOverlapRatioInput];
+  rangeTargets.forEach((el) => {
+    if (el) el.addEventListener("input", saveProfile);
+  });
 }
 
 // Sidebar logic
@@ -136,8 +162,6 @@ window.addEventListener("DOMContentLoaded", () => {
   loadLayoutBtn = document.querySelector("#load-layout-btn");
   globalEnabledCb = document.querySelector("#global-enabled");
 
-  saveBtn = document.querySelector("#save-btn");
-
   // Arr
   charRepeatAssignedCb = document.querySelector("#char-repeat-assigned");
   charRepeatUnassignedCb = document.querySelector("#char-repeat-unassigned");
@@ -154,6 +178,7 @@ window.addEventListener("DOMContentLoaded", () => {
   charContinuousCb = document.querySelector("#char-continuous");
   charOverlapRatioInput = document.querySelector("#char-overlap-ratio");
   charOverlapVal = document.querySelector("#char-overlap-val");
+  imeModeSel = document.querySelector("#ime-mode");
 
   // Sidebar
   navItems = document.querySelectorAll(".nav-item");
@@ -163,8 +188,6 @@ window.addEventListener("DOMContentLoaded", () => {
   // Listeners
   loadLayoutBtn.addEventListener("click", loadLayout);
   globalEnabledCb.addEventListener("change", toggleEnabled);
-  saveBtn.addEventListener("click", saveProfile);
-
   // Range Listeners for value update
   thumbOverlapRatioInput.addEventListener("input", (e) => {
     if (thumbOverlapVal) thumbOverlapVal.innerText = e.target.value + "%";
@@ -172,6 +195,7 @@ window.addEventListener("DOMContentLoaded", () => {
   charOverlapRatioInput.addEventListener("input", (e) => {
     if (charOverlapVal) charOverlapVal.innerText = e.target.value + "%";
   });
+  setupAutoSave();
 
   // Init
   const savedPath = localStorage.getItem("kikyo_path");
