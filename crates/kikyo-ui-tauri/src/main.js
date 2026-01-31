@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 
 // Elements
-let layoutPathInput, loadLayoutBtn;
+let layoutPathInput, loadLayoutBtn, browseLayoutBtn;
 let globalEnabledCb;
 let statusMsg;
 
@@ -16,8 +16,8 @@ let thumbKeyModeSel, thumbContinuousCb, thumbSinglePressSel, thumbRepeatCb, thum
 // Chord
 let charContinuousCb, charOverlapRatioInput, charOverlapVal;
 
-let currentProfile = null;
-let imeModeSel;
+// Operation
+let imeModeSel, suspendKeySel;
 
 async function loadLayout() {
   if (!layoutPathInput) return;
@@ -29,6 +29,27 @@ async function loadLayout() {
     localStorage.setItem("kikyo_path", path);
   } catch (e) {
     statusMsg.innerText = "エラー: " + e;
+  }
+}
+
+async function browseLayout() {
+  try {
+    // Use the global Tauri dialog API
+    const { open } = window.__TAURI_PLUGIN_DIALOG__;
+    const selected = await open({
+      multiple: false,
+      filters: [{
+        name: 'Yab Layout',
+        extensions: ['yab']
+      }]
+    });
+
+    if (selected) {
+      layoutPathInput.value = selected;
+    }
+  } catch (e) {
+    console.error("File dialog error:", e);
+    statusMsg.innerText = "ファイル選択エラー: " + e;
   }
 }
 
@@ -70,6 +91,7 @@ function updateUI(profile) {
   if (thumbKeyModeSel) thumbKeyModeSel.value = profile.thumb_shift_key_mode;
   if (thumbSinglePressSel) thumbSinglePressSel.value = profile.thumb_shift_single_press;
   if (imeModeSel) imeModeSel.value = profile.ime_mode || "Auto";
+  if (suspendKeySel) suspendKeySel.value = profile.suspend_key || "None";
 
   // Ranges (Floats 0.0-1.0 to 0-100)
   if (thumbOverlapRatioInput) {
@@ -100,6 +122,7 @@ async function saveProfile() {
   currentProfile.char_key_continuous = charContinuousCb.checked;
   currentProfile.char_key_overlap_ratio = parseInt(charOverlapRatioInput.value, 10) / 100.0;
   if (imeModeSel) currentProfile.ime_mode = imeModeSel.value;
+  if (suspendKeySel) currentProfile.suspend_key = suspendKeySel.value;
 
   try {
     console.log("Saving profile:", currentProfile);
@@ -127,7 +150,7 @@ function setupAutoSave() {
     if (el) el.addEventListener("change", saveProfile);
   });
 
-  const selectTargets = [thumbKeyModeSel, thumbSinglePressSel, imeModeSel];
+  const selectTargets = [thumbKeyModeSel, thumbSinglePressSel, imeModeSel, suspendKeySel];
   selectTargets.forEach((el) => {
     if (el) el.addEventListener("change", saveProfile);
   });
@@ -160,6 +183,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   layoutPathInput = document.querySelector("#layout-path");
   loadLayoutBtn = document.querySelector("#load-layout-btn");
+  browseLayoutBtn = document.querySelector("#browse-layout-btn");
   globalEnabledCb = document.querySelector("#global-enabled");
 
   // Arr
@@ -178,7 +202,12 @@ window.addEventListener("DOMContentLoaded", () => {
   charContinuousCb = document.querySelector("#char-continuous");
   charOverlapRatioInput = document.querySelector("#char-overlap-ratio");
   charOverlapVal = document.querySelector("#char-overlap-val");
+  charOverlapRatioInput = document.querySelector("#char-overlap-ratio");
+  charOverlapVal = document.querySelector("#char-overlap-val");
+
+  // Op
   imeModeSel = document.querySelector("#ime-mode");
+  suspendKeySel = document.querySelector("#suspend-key");
 
   // Sidebar
   navItems = document.querySelectorAll(".nav-item");
@@ -187,6 +216,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Listeners
   loadLayoutBtn.addEventListener("click", loadLayout);
+  if (browseLayoutBtn) {
+    browseLayoutBtn.addEventListener("click", browseLayout);
+  }
   globalEnabledCb.addEventListener("change", toggleEnabled);
   // Range Listeners for value update
   thumbOverlapRatioInput.addEventListener("input", (e) => {
@@ -196,7 +228,6 @@ window.addEventListener("DOMContentLoaded", () => {
     if (charOverlapVal) charOverlapVal.innerText = e.target.value + "%";
   });
   setupAutoSave();
-
   // Init
   const savedPath = localStorage.getItem("kikyo_path");
   if (savedPath) layoutPathInput.value = savedPath;

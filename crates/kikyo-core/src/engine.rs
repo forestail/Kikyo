@@ -14,6 +14,7 @@ pub struct Engine {
     chord_engine: ChordEngine,
     enabled: bool,
     layout: Option<Layout>,
+    on_enabled_change: Option<Box<dyn Fn(bool) + Send + Sync>>,
 }
 
 impl Default for Engine {
@@ -24,21 +25,31 @@ impl Default for Engine {
             chord_engine: ChordEngine::new(profile),
             enabled: true,
             layout: None,
+            on_enabled_change: None,
         }
     }
 }
 
 impl Engine {
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            let mut profile = Profile::default();
-            profile.update_thumb_keys();
-            self.chord_engine = ChordEngine::new(profile);
-            if let Some(_l) = &self.layout {
-                // restore profile logic if needed
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            if !enabled {
+                let mut profile = Profile::default();
+                profile.update_thumb_keys();
+                self.chord_engine = ChordEngine::new(profile);
+                if let Some(_l) = &self.layout {
+                    // restore profile logic if needed
+                }
+            }
+            if let Some(ref cb) = self.on_enabled_change {
+                cb(enabled);
             }
         }
+    }
+
+    pub fn set_on_enabled_change(&mut self, cb: impl Fn(bool) + Send + Sync + 'static) {
+        self.on_enabled_change = Some(Box::new(cb));
     }
 
     pub fn set_ignore_ime(&mut self, ignore: bool) {

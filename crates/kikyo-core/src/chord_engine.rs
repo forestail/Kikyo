@@ -85,6 +85,17 @@ pub enum ImeMode {
     ForceAlpha, // Force Alphanumeric
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SuspendKey {
+    None,
+    ScrollLock,
+    Pause,
+    Insert,
+    RightShift,
+    RightControl,
+    RightAlt,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessiveCfg {
     pub enabled: bool,
@@ -108,6 +119,7 @@ pub struct Profile {
     pub char_key_repeat_unassigned: bool,
 
     pub ime_mode: ImeMode,
+    pub suspend_key: SuspendKey,
 
     pub thumb_shift_key_mode: ThumbShiftKeyMode,
     pub thumb_shift_continuous: bool,
@@ -136,6 +148,7 @@ impl Default for Profile {
             char_key_repeat_unassigned: true,
 
             ime_mode: ImeMode::Auto,
+            suspend_key: SuspendKey::None,
 
             thumb_shift_key_mode: ThumbShiftKeyMode::NonTransformTransform,
             thumb_shift_continuous: false,

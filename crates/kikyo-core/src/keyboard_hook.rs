@@ -129,6 +129,36 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         return CallNextHookEx(None, code, wparam, lparam);
     }
 
+    let suspend_key_code = {
+        let engine = ENGINE.lock();
+        let profile = engine.get_profile();
+        match profile.suspend_key {
+            crate::chord_engine::SuspendKey::None => None,
+            crate::chord_engine::SuspendKey::ScrollLock => Some(0x91), // VK_SCROLL
+            crate::chord_engine::SuspendKey::Pause => Some(0x13),      // VK_PAUSE
+            crate::chord_engine::SuspendKey::Insert => Some(0x2D),     // VK_INSERT
+            crate::chord_engine::SuspendKey::RightShift => Some(0xA1), // VK_RSHIFT
+            crate::chord_engine::SuspendKey::RightControl => Some(0xA3), // VK_RCONTROL
+            crate::chord_engine::SuspendKey::RightAlt => Some(0xA5),   // VK_RMENU
+        }
+    };
+
+    if let Some(vk) = suspend_key_code {
+        if kbd.vkCode == vk && !up {
+            // Check for edge case: RightShift etc might be triggered by standard Shift if not distinguishable?
+            // VK_RSHIFT is specific extended key or just specific ScanCode?
+            // KBDLLHOOKSTRUCT has valid vkCode for L/R differentiation usually.
+
+            let mut engine = ENGINE.lock();
+            let current = engine.is_enabled();
+            engine.set_enabled(!current);
+            info!(
+                "Suspend Key triggered. Toggled enabled state to: {}",
+                !current
+            );
+        }
+    }
+
     if ctrl_pressed || alt_pressed || lwin_pressed || rwin_pressed {
         return CallNextHookEx(None, code, wparam, lparam);
     }

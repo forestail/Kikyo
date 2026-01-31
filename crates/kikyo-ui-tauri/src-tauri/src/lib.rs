@@ -154,6 +154,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             current_yab_path: Mutex::new(None),
         })
@@ -256,6 +257,13 @@ pub fn run() {
                         tracing::error!("Failed to install hook: {}", e);
                     }
                 }
+            });
+
+            // Register callback for Engine state changes
+            let handle_for_cb = app.handle().clone();
+            ENGINE.lock().set_on_enabled_change(move |enabled| {
+                let _ = handle_for_cb.emit("enabled-state-changed", enabled);
+                let _ = update_tray_menu(&handle_for_cb);
             });
 
             Ok(())

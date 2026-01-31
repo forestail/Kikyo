@@ -15,6 +15,7 @@
       <li class="nav-item active" data-target="section-array">配列</li>
       <li class="nav-item" data-target="section-thumb">親指シフト</li>
       <li class="nav-item" data-target="section-chord">文字キー同時打鍵シフト</li>
+      <li class="nav-item" data-target="section-behavior">動作モード</li>
       <li class="nav-item" data-target="section-about">桔梗について</li>
     </ul>
   </div>
@@ -24,8 +25,8 @@
       <h1>設定</h1>
       <div class="header-actions">
         <label class="toggle-switch">
-            <input type="checkbox" id="global-enabled" checked>
-            <span class="slider"></span>
+          <input type="checkbox" id="global-enabled" checked>
+          <span class="slider"></span>
         </label>
         <span style="margin-left: 10px; font-size: 0.9em;">有効</span>
       </div>
@@ -34,53 +35,40 @@
     <!-- 配列セクション -->
     <div id="section-array" class="settings-section active">
       <h2>配列</h2>
-      
+
       <div class="setting-item">
         <div class="setting-label">配列定義ファイル</div>
         <div class="setting-control row">
           <input type="text" id="layout-path" placeholder="C:\path\to\layout.yab" />
+          <button id="browse-layout-btn" style="margin-left: 5px;">参照...</button>
           <button id="load-layout-btn">読み込み</button>
         </div>
         <div class="setting-desc">使用する配列定義ファイル（.yab）のパスを指定します。</div>
       </div>
 
-      <div class="setting-group">
-        <h3>IME</h3>
-        <div class="setting-item">
-          <div class="setting-label">IME Mode</div>
-          <div class="setting-control">
-            <select id="ime-mode">
-              <option value="Auto">Auto (TSF -&gt; IMM)</option>
-              <option value="Tsf">TSF</option>
-              <option value="Imm">IMM</option>
-              <option value="Ignore">Ignore (always on)</option>
-            </select>
-          </div>
-          <div class="setting-desc">Controls when key replacement is active.</div>
-        </div>
-      </div>
+
 
       <div class="setting-group">
         <h3>文字キーのキーリピートを有効にする</h3>
-        
+
         <div class="setting-item">
-            <div class="setting-label">文字が割り当てられているキー</div>
-            <div class="setting-control">
-                <label class="toggle-switch">
-                    <input type="checkbox" id="char-repeat-assigned">
-                    <span class="slider"></span>
-                </label>
-            </div>
+          <div class="setting-label">文字が割り当てられているキー</div>
+          <div class="setting-control">
+            <label class="toggle-switch">
+              <input type="checkbox" id="char-repeat-assigned">
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
 
         <div class="setting-item">
-            <div class="setting-label">文字が割り当てられていないキー</div>
-            <div class="setting-control">
-                <label class="toggle-switch">
-                    <input type="checkbox" id="char-repeat-unassigned">
-                    <span class="slider"></span>
-                </label>
-            </div>
+          <div class="setting-label">文字が割り当てられていないキー</div>
+          <div class="setting-control">
+            <label class="toggle-switch">
+              <input type="checkbox" id="char-repeat-unassigned">
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
       </div>
     </div>
@@ -92,52 +80,52 @@
       <div class="setting-item">
         <div class="setting-label">親指シフトキー</div>
         <div class="setting-control">
-            <select id="thumb-key-mode">
-                <option value="NonTransformTransform">無変換 - 変換</option>
-                <option value="NonTransformSpace">無変換 - スペース</option>
-                <option value="SpaceTransform">スペース - 変換</option>
-            </select>
+          <select id="thumb-key-mode">
+            <option value="NonTransformTransform">無変換 - 変換</option>
+            <option value="NonTransformSpace">無変換 - スペース</option>
+            <option value="SpaceTransform">スペース - 変換</option>
+          </select>
         </div>
       </div>
 
       <div class="setting-item">
         <div class="setting-label">連続シフト</div>
         <div class="setting-control">
-            <label class="toggle-switch">
-                <input type="checkbox" id="thumb-continuous">
-                <span class="slider"></span>
-            </label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="thumb-continuous">
+            <span class="slider"></span>
+          </label>
         </div>
       </div>
 
       <div class="setting-item">
         <div class="setting-label">単独打鍵</div>
         <div class="setting-control">
-            <select id="thumb-single-press">
-                <option value="None">無効</option>
-                <option value="Enable">有効</option>
-                <option value="PrefixShift">前置シフト</option>
-                <option value="SpaceKey">Spaceキー</option>
-            </select>
+          <select id="thumb-single-press">
+            <option value="None">無効</option>
+            <option value="Enable">有効</option>
+            <option value="PrefixShift">前置シフト</option>
+            <option value="SpaceKey">Spaceキー</option>
+          </select>
         </div>
       </div>
 
       <div class="setting-item">
         <div class="setting-label">親指シフトキーリピート</div>
         <div class="setting-control">
-            <label class="toggle-switch">
-                <input type="checkbox" id="thumb-repeat">
-                <span class="slider"></span>
-            </label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="thumb-repeat">
+            <span class="slider"></span>
+          </label>
         </div>
       </div>
-      
+
       <div class="setting-item">
-          <div class="setting-label">親指シフトが同時打鍵と判定される重なり割合</div>
-          <div class="setting-control">
-              <input type="range" id="thumb-overlap-ratio" min="0" max="100" class="range-slider">
-              <span id="thumb-overlap-val" class="range-val">35%</span>
-          </div>
+        <div class="setting-label">親指シフトが同時打鍵と判定される重なり割合</div>
+        <div class="setting-control">
+          <input type="range" id="thumb-overlap-ratio" min="0" max="100" class="range-slider">
+          <span id="thumb-overlap-val" class="range-val">35%</span>
+        </div>
       </div>
 
     </div>
@@ -149,36 +137,69 @@
       <div class="setting-item">
         <div class="setting-label">連続シフト</div>
         <div class="setting-control">
-            <label class="toggle-switch">
-                <input type="checkbox" id="char-continuous">
-                <span class="slider"></span>
-            </label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="char-continuous">
+            <span class="slider"></span>
+          </label>
         </div>
       </div>
-      
+
       <div class="setting-item">
-          <div class="setting-label">文字キー同志が同時打鍵と判定される重なり割合</div>
-          <div class="setting-control">
-              <input type="range" id="char-overlap-ratio" min="0" max="100" class="range-slider">
-              <span id="char-overlap-val" class="range-val">35%</span>
-          </div>
+        <div class="setting-label">文字キー同志が同時打鍵と判定される重なり割合</div>
+        <div class="setting-control">
+          <input type="range" id="char-overlap-ratio" min="0" max="100" class="range-slider">
+          <span id="char-overlap-val" class="range-val">35%</span>
+        </div>
       </div>
-      
+
     </div>
 
-    <!-- 桔梗についてセクション -->
-    <div id="section-about" class="settings-section">
-      <h2>桔梗について</h2>
+    <!-- 動作モードセクション -->
+    <div id="section-behavior" class="settings-section">
+      <h2>動作モード</h2>
+
       <div class="setting-item">
+        <div class="setting-label">一時停止用のショートカットキー</div>
+        <div class="setting-control">
+          <select id="suspend-key">
+            <option value="None">なし</option>
+            <option value="ScrollLock">ScrollLock</option>
+            <option value="Pause">Pause</option>
+            <option value="Insert">Insert</option>
+            <option value="RightShift">RightShift</option>
+            <option value="RightControl">RightControl</option>
+            <option value="RightAlt">RightAlt</option>
+          </select>
+        </div>
+        <div class="setting-desc">押下すると一時停止・再開を切り替えます。</div>
+      </div>
+
+      <div class="setting-item">
+        <div class="setting-label">IMEへのアクセス方法</div>
+        <div class="setting-control">
+          <select id="ime-mode">
+            <option value="Auto">Auto (TSF -&gt; IMM)</option>
+            <option value="Tsf">TSF</option>
+            <option value="Imm">IMM</option>
+            <option value="Ignore">Ignore (always on)</option>
+          </select>
+        </div>
+        <div class="setting-desc">Controls when key replacement is active.</div>
+      </div>
+
+      <!-- 桔梗についてセクション -->
+      <div id="section-about" class="settings-section">
+        <h2>桔梗について</h2>
+        <div class="setting-item">
           <p>Kikyo Version 0.1.0</p>
           <p style="font-size: 0.8em; color: #888;">Emergency Stop: Ctrl + Alt + Esc</p>
           <p id="status-msg" style="margin-top: 10px;"></p>
+        </div>
       </div>
+
     </div>
 
-  </div>
-
-  <script type="module" src="/main.js"></script>
+    <script type="module" src="/main.js"></script>
 </body>
 
 </html>
