@@ -167,7 +167,7 @@ fn query_conversion_mode() -> Option<IME_CONVERSION_MODE> {
 
         let himc = ImmGetContext(hwnd_fg);
         if himc.0 == 0 {
-            tracing::warn!("query_conversion_mode: ImmGetContext failed");
+            // tracing::warn!("query_conversion_mode: ImmGetContext failed");
             return None;
         }
 
