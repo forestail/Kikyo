@@ -358,7 +358,7 @@ impl Engine {
                         for k in keys {
                             // Try to resolve as single key (unshifted)
                             let mut resolved = false;
-                            if let Some(token) = self.resolve(&[k], false, is_japanese) {
+                            if let Some(token) = self.resolve(&[k], shift, is_japanese) {
                                 if let Some(ops) = self.token_to_events(&token) {
                                     inject_ops.extend(ops);
                                     resolved = true;
@@ -805,6 +805,58 @@ xx,xx,s_base,xx,xx,xx,xx,xx,xx,xx,xx,xx
                 );
             }
             _ => panic!("Expected Inject for shifted, got {:?}", res_up),
+        }
+    }
+
+    #[test]
+    fn test_shift_rollover_chord_fallback_preserves_shift() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,n,m,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指シフト]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // D down (0x20), F down (0x21), F up -> chord detected but no chord mapping.
+        // Fallback should preserve shift and use shifted plane for both keys.
+        let res = engine.process_key(0x20, false, false, true);
+        assert_eq!(res, KeyAction::Block);
+        let res = engine.process_key(0x21, false, false, true);
+        assert_eq!(res, KeyAction::Block);
+
+        let res = engine.process_key(0x21, false, true, true);
+        match res {
+            KeyAction::Inject(evs) => {
+                let has_s = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x1F, _, _)));
+                let has_t = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x14, _, _)));
+                assert!(
+                    has_s && has_t,
+                    "Expected shifted outputs (s,t) in fallback output"
+                );
+
+                let has_n = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x31, _, _)));
+                let has_m = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x32, _, _)));
+                assert!(
+                    !has_n && !has_m,
+                    "Fallback should not use base plane outputs (n,m)"
+                );
+            }
+            _ => panic!("Expected Inject for shift rollover fallback, got {:?}", res),
         }
     }
 
