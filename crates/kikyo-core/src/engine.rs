@@ -272,6 +272,14 @@ impl Engine {
 
             // 3. Check Section Existence
             if let Some(layout) = &self.layout {
+                let is_space = key.sc == 0x39;
+                let mut is_thumb = false;
+                if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                    if tk.left.contains(&key) || tk.right.contains(&key) {
+                        is_thumb = true;
+                    }
+                }
+
                 if let Some(section) = layout.sections.get(&section_name) {
                     // Section exists. Check if key is defined.
                     let mut is_defined = false;
@@ -295,28 +303,14 @@ impl Engine {
                         }
                     }
 
-                    let mut is_thumb = false;
-                    if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-                        if tk.left.contains(&key) || tk.right.contains(&key) {
-                            is_thumb = true;
-                        }
-                    }
-
-                    if !is_defined && !is_thumb {
+                    if !is_defined && !is_thumb && !is_space {
                         // Defined section, but key is not in it -> Pass
                         return KeyAction::Pass;
                     }
                 } else {
                     // Section does NOT exist -> Pass
                     // UNLESS it is a Thumb Key
-                    let mut is_thumb = false;
-                    if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-                        if tk.left.contains(&key) || tk.right.contains(&key) {
-                            is_thumb = true;
-                        }
-                    }
-
-                    if !is_thumb {
+                    if !is_thumb && !is_space {
                         return KeyAction::Pass;
                     }
                 }
@@ -947,6 +941,90 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             KeyAction::Pass,
             "Undefined key 'RightArrow' should pass through immediately"
         );
+    }
+
+    #[test]
+    fn test_space_rollover_flushes_previous_key() {
+        // Space is not defined in the layout and not a thumb key.
+        // When Space is pressed while a defined key is pending,
+        // the pending key should flush BEFORE Space is sent.
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2 (A only defined)
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // 1. Press A -> Defined in layout. Expect BLOCK (Wait).
+        let res = engine.process_key(0x1E, false, false, false);
+        assert_eq!(res, KeyAction::Block, "Defined key 'A' should wait");
+
+        // 2. Press Space while A is still down -> Expect Inject with A then Space.
+        let res = engine.process_key(0x39, false, false, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 3, "Expected A down/up + Space down");
+                assert_eq!(evs[0], InputEvent::Scancode(0x1E, false, false));
+                assert_eq!(evs[1], InputEvent::Scancode(0x1E, false, true));
+                assert_eq!(evs[2], InputEvent::Scancode(0x39, false, false));
+            }
+            _ => panic!("Expected Inject for Space rollover, got {:?}", res),
+        }
+    }
+
+    #[test]
+    fn test_space_rollover_preserves_chord() {
+        // Space rollover should not destroy chord detection.
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2 (A,S defined)
+a,s,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<s>
+; R0
+dummy
+; R1
+dummy
+; R2 (A under <s> -> x)
+x,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // A Down
+        let res = engine.process_key(0x1E, false, false, false);
+        assert_eq!(res, KeyAction::Block);
+
+        // S Down
+        let res = engine.process_key(0x1F, false, false, false);
+        assert_eq!(res, KeyAction::Block);
+
+        // Space Down -> expect chord output (x) then space down
+        let res = engine.process_key(0x39, false, false, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 3, "Expected x down/up + Space down");
+                assert_eq!(evs[0], InputEvent::Scancode(0x2D, false, false));
+                assert_eq!(evs[1], InputEvent::Scancode(0x2D, false, true));
+                assert_eq!(evs[2], InputEvent::Scancode(0x39, false, false));
+            }
+            _ => panic!("Expected Inject for Space rollover chord, got {:?}", res),
+        }
     }
 
     #[test]

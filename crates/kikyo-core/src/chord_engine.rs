@@ -275,7 +275,7 @@ impl ChordEngine {
                 // BUT only if it is NOT a modifier (thumb key)
                 if event.key.sc == 0x39 && !self.is_modifier_key(event.key) {
                     // Flush existing pending keys FIRST.
-                    output.extend(self.flush_all_pending());
+                    output.extend(self.flush_pending_with_cutoff(now));
 
                     // Output Space as Passthrough (Down) immediately.
                     self.state.passed_keys.insert(event.key);
@@ -432,6 +432,30 @@ impl ChordEngine {
         output
     }
     */
+
+    pub fn flush_pending_with_cutoff(&mut self, now: Instant) -> Vec<Decision> {
+        // Force-release pending keys at 'now' so chord ratio can be evaluated.
+        for p in self.state.pending.iter_mut() {
+            if p.t_up.is_none() {
+                p.t_up = Some(now);
+            }
+        }
+
+        let mut output = self.check_chords(now);
+
+        if !self.state.pending.is_empty() {
+            let pending = std::mem::take(&mut self.state.pending);
+            for p in pending {
+                output.push(Decision::KeyTap(p.key));
+                // Clean up down_ts if it's not pressed
+                if !self.state.pressed.contains(&p.key) {
+                    self.state.down_ts.remove(&p.key);
+                }
+            }
+        }
+
+        output
+    }
 
     pub fn flush_all_pending(&mut self) -> Vec<Decision> {
         let mut output = Vec::new();
