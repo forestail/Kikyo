@@ -15,9 +15,10 @@ struct AppState {
     layout_name: Mutex<Option<String>>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Settings {
     last_yab_path: Option<String>,
+    profile: Option<Profile>,
 }
 
 fn get_settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -37,9 +38,7 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
             }
         }
     }
-    Settings {
-        last_yab_path: None,
-    }
+    Settings::default()
 }
 
 fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
@@ -51,6 +50,14 @@ fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
             let _ = fs::write(path, content);
         }
     }
+}
+
+fn sanitize_profile_for_save(mut profile: Profile) -> Profile {
+    // Keep only user-facing settings; derived layout data is re-built on load.
+    profile.thumb_keys = None;
+    profile.trigger_keys.clear();
+    profile.target_keys = None;
+    profile
 }
 
 fn update_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -141,10 +148,9 @@ fn load_yab(
     // Update window title
     update_window_title(&app, layout_name.as_deref());
 
-    // Save settings
-    let settings = Settings {
-        last_yab_path: Some(path),
-    };
+    // Save settings (preserve existing profile if any)
+    let mut settings = load_settings(&app);
+    settings.last_yab_path = Some(path);
     save_settings(&app, &settings);
 
     Ok(stats)
@@ -168,8 +174,11 @@ fn get_profile() -> Profile {
 }
 
 #[tauri::command]
-fn set_profile(profile: Profile) {
-    ENGINE.lock().set_profile(profile);
+fn set_profile(app: tauri::AppHandle, profile: Profile) {
+    ENGINE.lock().set_profile(profile.clone());
+    let mut settings = load_settings(&app);
+    settings.profile = Some(sanitize_profile_for_save(profile));
+    save_settings(&app, &settings);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -260,8 +269,11 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .build(app)?;
 
-            // Load settings
+            // Load settings (profile first, then layout)
             let settings = load_settings(app.handle());
+            if let Some(profile) = settings.profile {
+                ENGINE.lock().set_profile(profile);
+            }
             if let Some(path) = settings.last_yab_path {
                 if let Ok(layout) = parser::load_yab(&path) {
                     let layout_name = layout.name.clone();

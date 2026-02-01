@@ -11,6 +11,7 @@ let navItems, sections;
 // Profile Inputs
 // Array
 let charRepeatAssignedCb, charRepeatUnassignedCb;
+let currentProfile = null;
 
 // Thumb Left
 let thumbLeftKeySel, thumbLeftContinuousCb, thumbLeftSinglePressSel, thumbLeftRepeatCb;
