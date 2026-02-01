@@ -12,6 +12,7 @@ use tauri::WindowEvent;
 
 struct AppState {
     current_yab_path: Mutex<Option<String>>,
+    layout_name: Mutex<Option<String>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -57,7 +58,14 @@ fn update_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         let engine = ENGINE.lock();
         (engine.get_layout_name(), engine.is_enabled())
     };
+    update_tray_menu_with_state(app, layout_name, enabled)
+}
 
+fn update_tray_menu_with_state(
+    app: &tauri::AppHandle,
+    layout_name: Option<String>,
+    enabled: bool,
+) -> tauri::Result<()> {
     let name_text = layout_name.unwrap_or_else(|| "配列定義なし".to_string());
     // {LayoutName} (Disabled/Label)
     let item_name = MenuItem::with_id(app, "layout_name", &name_text, false, None::<&str>)?;
@@ -123,13 +131,14 @@ fn load_yab(
 ) -> Result<String, String> {
     let layout = parser::load_yab(&path).map_err(|e| e.to_string())?;
     let stats = format!("Loaded {} sections", layout.sections.len());
+    let layout_name = layout.name.clone();
     ENGINE.lock().load_layout(layout);
 
     *state.current_yab_path.lock().unwrap() = Some(path.clone());
+    *state.layout_name.lock().unwrap() = layout_name.clone();
     let _ = update_tray_menu(&app);
 
     // Update window title
-    let layout_name = ENGINE.lock().get_layout_name();
     update_window_title(&app, layout_name.as_deref());
 
     // Save settings
@@ -178,6 +187,7 @@ pub fn run() {
         }))
         .manage(AppState {
             current_yab_path: Mutex::new(None),
+            layout_name: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             load_yab,
@@ -209,9 +219,14 @@ pub fn run() {
                         if let Some(path) = path_opt {
                             match parser::load_yab(&path) {
                                 Ok(layout) => {
+                                    let layout_name = layout.name.clone();
                                     ENGINE.lock().load_layout(layout);
+                                    *app
+                                        .state::<AppState>()
+                                        .layout_name
+                                        .lock()
+                                        .unwrap() = layout_name.clone();
                                     let _ = update_tray_menu(app);
-                                    let layout_name = ENGINE.lock().get_layout_name();
                                     update_window_title(app, layout_name.as_deref());
                                     tracing::info!("Reloaded config from tray");
                                 }
@@ -249,8 +264,10 @@ pub fn run() {
             let settings = load_settings(app.handle());
             if let Some(path) = settings.last_yab_path {
                 if let Ok(layout) = parser::load_yab(&path) {
+                    let layout_name = layout.name.clone();
                     ENGINE.lock().load_layout(layout);
                     *app.state::<AppState>().current_yab_path.lock().unwrap() = Some(path);
+                    *app.state::<AppState>().layout_name.lock().unwrap() = layout_name;
                 }
             }
 
@@ -293,7 +310,13 @@ pub fn run() {
             let handle_for_cb = app.handle().clone();
             ENGINE.lock().set_on_enabled_change(move |enabled| {
                 let _ = handle_for_cb.emit("enabled-state-changed", enabled);
-                let _ = update_tray_menu(&handle_for_cb);
+                let layout_name = handle_for_cb
+                    .state::<AppState>()
+                    .layout_name
+                    .lock()
+                    .unwrap()
+                    .clone();
+                let _ = update_tray_menu_with_state(&handle_for_cb, layout_name, enabled);
             });
 
             Ok(())
