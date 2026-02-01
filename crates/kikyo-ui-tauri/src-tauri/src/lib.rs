@@ -170,7 +170,9 @@ fn get_enabled() -> bool {
 
 #[tauri::command]
 fn get_profile() -> Profile {
-    ENGINE.lock().get_profile()
+    let profile = ENGINE.lock().get_profile();
+    // Remove layout-derived fields so JSON serialization works for UI.
+    sanitize_profile_for_save(profile)
 }
 
 #[tauri::command]

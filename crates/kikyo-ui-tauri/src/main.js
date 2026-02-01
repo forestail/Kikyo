@@ -164,7 +164,14 @@ function updateUI(profile) {
 }
 
 async function saveProfile() {
-  if (!currentProfile) return;
+  if (!currentProfile) {
+    try {
+      currentProfile = await invoke("get_profile");
+    } catch (e) {
+      if (statusMsg) statusMsg.innerText = "プロファイル取得エラー: " + e;
+      return;
+    }
+  }
 
   // Gather values
   currentProfile.char_key_repeat_assigned = charRepeatAssignedCb.checked;
@@ -195,10 +202,16 @@ async function saveProfile() {
   currentProfile.thumb_right.repeat = typeof rightStoredRepeat === "boolean" ? rightStoredRepeat : false;
 
   // Common
-  currentProfile.thumb_shift_overlap_ratio = parseInt(thumbOverlapRatioInput.value, 10) / 100.0;
+  if (thumbOverlapRatioInput) {
+    currentProfile.thumb_shift_overlap_ratio =
+      parseInt(thumbOverlapRatioInput.value, 10) / 100.0;
+  }
 
-  currentProfile.char_key_continuous = charContinuousCb.checked;
-  currentProfile.char_key_overlap_ratio = parseInt(charOverlapRatioInput.value, 10) / 100.0;
+  if (charContinuousCb) currentProfile.char_key_continuous = charContinuousCb.checked;
+  if (charOverlapRatioInput) {
+    currentProfile.char_key_overlap_ratio =
+      parseInt(charOverlapRatioInput.value, 10) / 100.0;
+  }
   if (imeModeSel) currentProfile.ime_mode = imeModeSel.value;
   if (suspendKeySel) currentProfile.suspend_key = suspendKeySel.value;
 
@@ -222,6 +235,7 @@ function setupAutoSave() {
   changeTargets.forEach((el) => {
     if (el) el.addEventListener("change", saveProfile);
   });
+  if (charContinuousCb) charContinuousCb.addEventListener("input", saveProfile);
 
   const selectTargets = [
     thumbLeftKeySel,

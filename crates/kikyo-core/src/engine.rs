@@ -168,17 +168,38 @@ impl Engine {
             }
         }
 
-        // MVP: Detect trigger keys from "<...>" sections.
-        for name in layout.sections.keys() {
+        profile.trigger_keys.clear();
+
+        // MVP: Detect trigger keys from "<...>" sections and sub-planes.
+        for (name, section) in layout.sections.iter() {
             tracing::info!(" - Section: {}", name);
             if name.starts_with('<') && name.ends_with('>') {
                 let inner = &name[1..name.len() - 1];
                 if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
                     let key = ScKey::new(sc, false);
-                    profile.trigger_keys.insert(key, name.clone());
-                    tracing::info!("   -> Registered TriggerKey: {} (sc={:02X})", name, sc);
-                    // Also add to target_keys
+                    if !profile.trigger_keys.contains_key(&key) {
+                        profile.trigger_keys.insert(key, name.clone());
+                        tracing::info!("   -> Registered TriggerKey: {} (sc={:02X})", name, sc);
+                    }
                     target_keys.insert(key);
+                }
+            }
+
+            for tag in section.sub_planes.keys() {
+                if tag.starts_with('<') && tag.ends_with('>') {
+                    let inner = &tag[1..tag.len() - 1];
+                    if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
+                        let key = ScKey::new(sc, false);
+                        if !profile.trigger_keys.contains_key(&key) {
+                            profile.trigger_keys.insert(key, tag.clone());
+                            tracing::info!(
+                                "   -> Registered TriggerKey: {} (sc={:02X})",
+                                tag,
+                                sc
+                            );
+                        }
+                        target_keys.insert(key);
+                    }
                 }
             }
         }
@@ -1045,6 +1066,129 @@ xx,xx,dc,無,無,無,無,無,無,無,無,無
             }
             _ => panic!("Expected Inject for Single D on Release, got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_char_key_continuous_on() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+a,xx,d,f,xx,xx,xx,k,xx,xx,xx,xx
+
+<k>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        engine.set_profile(profile);
+
+        // Hold K as shift, then press D -> expect chord output "x".
+        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x20, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x20, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2D, _, _))),
+                    "Expected 'x' output for K+D chord"
+                );
+            }
+            _ => panic!("Expected Inject for K+D chord, got {:?}", res),
+        }
+
+        // While still holding K, press F -> expect chord output "y".
+        assert_eq!(engine.process_key(0x21, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x21, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x15, _, _))),
+                    "Expected 'y' output for continuous K+F chord"
+                );
+            }
+            _ => panic!("Expected Inject for K+F chord, got {:?}", res),
+        }
+
+        // Release K -> should not emit K base output.
+        assert_eq!(engine.process_key(0x25, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_char_key_continuous_off() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+a,xx,d,f,xx,xx,xx,k,xx,xx,xx,xx
+
+<k>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = false;
+        engine.set_profile(profile);
+
+        // Hold K as shift, then press D -> expect chord output "x".
+        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x20, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x20, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2D, _, _))),
+                    "Expected 'x' output for K+D chord"
+                );
+            }
+            _ => panic!("Expected Inject for K+D chord, got {:?}", res),
+        }
+
+        // K is still held, but continuous is off -> F should be a single tap ("f").
+        assert_eq!(engine.process_key(0x21, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x21, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x21, _, _))),
+                    "Expected 'f' output for single F when continuous is off"
+                );
+            }
+            _ => panic!("Expected Inject for single F, got {:?}", res),
+        }
+
+        assert_eq!(engine.process_key(0x25, false, true, false), KeyAction::Block);
     }
 
     #[test]

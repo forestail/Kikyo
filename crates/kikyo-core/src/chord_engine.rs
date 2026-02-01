@@ -49,13 +49,21 @@ pub enum ChordStyle {
     NNumberKey,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for ChordStyle {
+    fn default() -> Self {
+        Self::TriggerKey
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ThumbKeys {
     pub left: HashSet<ScKey>,
     pub right: HashSet<ScKey>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct AdaptiveCfg {
     pub enabled: bool,
     // Add parameters for adaptive window here later
@@ -85,6 +93,12 @@ pub enum ImeMode {
     ForceAlpha, // Force Alphanumeric
 }
 
+impl Default for ImeMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuspendKey {
     None,
@@ -96,7 +110,14 @@ pub enum SuspendKey {
     RightAlt,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for SuspendKey {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct SuccessiveCfg {
     pub enabled: bool,
     // TODO: Add details
@@ -129,6 +150,7 @@ pub enum ThumbKeySelect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ThumbSideConfig {
     pub key: ThumbKeySelect,
     pub continuous: bool,
@@ -148,29 +170,67 @@ impl Default for ThumbSideConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Profile {
+    #[serde(default)]
     pub chord_style: ChordStyle,
+    #[serde(default = "default_chord_window_ms")]
     pub chord_window_ms: u64,
+    #[serde(default = "default_max_chord_size")]
     pub max_chord_size: usize,
+    #[serde(default)]
     pub adaptive_window: AdaptiveCfg,
+    #[serde(default)]
     pub thumb_keys: Option<ThumbKeys>,
+    #[serde(default)]
     pub trigger_keys: HashMap<ScKey, PlaneTag>,
+    #[serde(default)]
     pub target_keys: Option<HashSet<ScKey>>,
+    #[serde(default)]
     pub successive: SuccessiveCfg,
 
+    #[serde(default)]
     pub char_key_repeat_assigned: bool,
+    #[serde(default = "default_char_key_repeat_unassigned")]
     pub char_key_repeat_unassigned: bool,
 
+    #[serde(default)]
     pub ime_mode: ImeMode,
+    #[serde(default)]
     pub suspend_key: SuspendKey,
 
     // New separate configurations
+    #[serde(default)]
     pub thumb_left: ThumbSideConfig,
+    #[serde(default)]
     pub thumb_right: ThumbSideConfig,
+    #[serde(default = "default_thumb_shift_overlap_ratio")]
     pub thumb_shift_overlap_ratio: f64, // Kept global as per implementation plan but not strictly required to be split by user yet
 
+    #[serde(default)]
     pub char_key_continuous: bool,
+    #[serde(default = "default_char_key_overlap_ratio")]
     pub char_key_overlap_ratio: f64,
+}
+
+fn default_chord_window_ms() -> u64 {
+    200
+}
+
+fn default_max_chord_size() -> usize {
+    2
+}
+
+fn default_char_key_repeat_unassigned() -> bool {
+    true
+}
+
+fn default_thumb_shift_overlap_ratio() -> f64 {
+    0.35
+}
+
+fn default_char_key_overlap_ratio() -> f64 {
+    0.35
 }
 
 impl Default for Profile {
@@ -283,6 +343,20 @@ impl Default for ChordState {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModifierKind {
+    None,
+    ThumbLeft,
+    ThumbRight,
+    CharShift,
+}
+
+impl ModifierKind {
+    fn is_modifier(self) -> bool {
+        !matches!(self, ModifierKind::None)
+    }
+}
 #[derive(Debug, Clone)]
 pub struct PendingKey {
     pub key: ScKey,
@@ -365,6 +439,9 @@ impl ChordEngine {
                 // 1. Update pressed state
                 self.state.pressed.insert(event.key);
                 self.state.down_ts.insert(event.key, now);
+                if matches!(self.modifier_kind(event.key), ModifierKind::CharShift) {
+                    self.state.used_modifiers.remove(&event.key);
+                }
 
                 // Handle Prefix Shift Logic
                 if let Some(prefix_thumb) = self.state.prefix_pending {
@@ -416,47 +493,57 @@ impl ChordEngine {
                     if p.t_up.is_some() {
                         // It's a lonely tap
                         let key = p.key;
-                        let is_mod = self.is_modifier_key(key);
+                        let mod_kind = self.modifier_kind(key);
 
                         self.state.pending.clear();
                         self.state.down_ts.remove(&key);
 
-                        if is_mod {
-                            // Check if used
-                            if self.state.used_modifiers.contains(&key) {
-                                // Was used, so ignore single press
-                                self.state.used_modifiers.remove(&key);
-                            } else {
-                                // Trigger Single Press Logic
-                                let mut sp_setting = ThumbShiftSinglePress::None;
-                                if let Some(ref tk) = self.profile.thumb_keys {
-                                    if tk.left.contains(&key) {
-                                        sp_setting = self.profile.thumb_left.single_press;
-                                    } else if tk.right.contains(&key) {
-                                        sp_setting = self.profile.thumb_right.single_press;
-                                    }
-                                }
+                        match mod_kind {
+                            ModifierKind::ThumbLeft | ModifierKind::ThumbRight => {
+                                if self.state.used_modifiers.contains(&key) {
+                                    // Was used, so ignore single press
+                                    self.state.used_modifiers.remove(&key);
+                                } else {
+                                    let sp_setting = match mod_kind {
+                                        ModifierKind::ThumbLeft => {
+                                            self.profile.thumb_left.single_press
+                                        }
+                                        ModifierKind::ThumbRight => {
+                                            self.profile.thumb_right.single_press
+                                        }
+                                        _ => ThumbShiftSinglePress::None,
+                                    };
 
-                                match sp_setting {
-                                    ThumbShiftSinglePress::None => {
-                                        // Disable single press (swallow)
-                                    }
-                                    ThumbShiftSinglePress::Enable => {
-                                        output.push(Decision::KeyTap(key));
-                                    }
-                                    ThumbShiftSinglePress::PrefixShift => {
-                                        self.state.prefix_pending = Some(key);
-                                    }
-                                    ThumbShiftSinglePress::SpaceKey => {
-                                        output.push(Decision::KeyTap(ScKey::new(0x39, false)));
+                                    match sp_setting {
+                                        ThumbShiftSinglePress::None => {
+                                            // Disable single press (swallow)
+                                        }
+                                        ThumbShiftSinglePress::Enable => {
+                                            output.push(Decision::KeyTap(key));
+                                        }
+                                        ThumbShiftSinglePress::PrefixShift => {
+                                            self.state.prefix_pending = Some(key);
+                                        }
+                                        ThumbShiftSinglePress::SpaceKey => {
+                                            output.push(Decision::KeyTap(ScKey::new(0x39, false)));
+                                        }
                                     }
                                 }
                             }
-                        } else {
-                            output.push(Decision::KeyTap(key));
+                            ModifierKind::CharShift => {
+                                if self.state.used_modifiers.contains(&key) {
+                                    self.state.used_modifiers.remove(&key);
+                                } else {
+                                    output.push(Decision::KeyTap(key));
+                                }
+                            }
+                            ModifierKind::None => {
+                                output.push(Decision::KeyTap(key));
+                            }
                         }
                     }
                 }
+
             }
         }
 
@@ -628,49 +715,30 @@ impl ChordEngine {
                     // CHORD!
                     let k1 = p1.key;
                     let k2 = p2.key;
-                    let is_mod1 = self.is_modifier_key(k1);
-                    let is_mod2 = self.is_modifier_key(k2);
+                    let kind1 = self.modifier_kind(k1);
+                    let kind2 = self.modifier_kind(k2);
 
-                    if is_mod1 {
+                    if kind1.is_modifier() {
                         self.state.used_modifiers.insert(k1);
                     }
-                    if is_mod2 {
+                    if kind2.is_modifier() {
                         self.state.used_modifiers.insert(k2);
                     }
 
-                    // Consume keys unless continuous shift is enabled for a modifier
-                    let mut continuous1 = false;
-                    let mut continuous2 = false;
+                    let continuous1 = self.modifier_is_continuous(kind1);
+                    let continuous2 = self.modifier_is_continuous(kind2);
 
-                    if is_mod1 {
-                        if let Some(ref tk) = self.profile.thumb_keys {
-                            if tk.left.contains(&k1) {
-                                continuous1 = self.profile.thumb_left.continuous;
-                            } else if tk.right.contains(&k1) {
-                                continuous1 = self.profile.thumb_right.continuous;
-                            }
-                        }
-                    }
-                    if is_mod2 {
-                        if let Some(ref tk) = self.profile.thumb_keys {
-                            if tk.left.contains(&k2) {
-                                continuous2 = self.profile.thumb_right.continuous; // Typo in var naming? NO, index 2 uses logic for k2
-                                                                                   // Wait, if k2 is RIGHT thumb, use right default.
-                                if tk.right.contains(&k2) {
-                                    continuous2 = self.profile.thumb_right.continuous;
-                                } else if tk.left.contains(&k2) {
-                                    continuous2 = self.profile.thumb_left.continuous;
-                                }
-                            } else if tk.right.contains(&k2) {
-                                continuous2 = self.profile.thumb_right.continuous;
-                            }
-                        }
-                    }
+                    let keep1 = kind1.is_modifier()
+                        && continuous1
+                        && self.state.pressed.contains(&k1);
+                    let keep2 = kind2.is_modifier()
+                        && continuous2
+                        && self.state.pressed.contains(&k2);
 
-                    if !is_mod1 || !continuous1 {
+                    if !keep1 {
                         consumed_indices.insert(idx1);
                     }
-                    if !is_mod2 || !continuous2 {
+                    if !keep2 {
                         consumed_indices.insert(idx2);
                     }
 
@@ -726,13 +794,34 @@ impl ChordEngine {
         output
     }
 
-    fn is_modifier_key(&self, key: ScKey) -> bool {
+    fn modifier_kind(&self, key: ScKey) -> ModifierKind {
         if let Some(ref tk) = self.profile.thumb_keys {
-            if tk.left.contains(&key) || tk.right.contains(&key) {
-                return true;
+            if tk.left.contains(&key) {
+                return ModifierKind::ThumbLeft;
+            }
+            if tk.right.contains(&key) {
+                return ModifierKind::ThumbRight;
             }
         }
-        false
+
+        if self.profile.trigger_keys.contains_key(&key) {
+            return ModifierKind::CharShift;
+        }
+
+        ModifierKind::None
+    }
+
+    fn modifier_is_continuous(&self, kind: ModifierKind) -> bool {
+        match kind {
+            ModifierKind::ThumbLeft => self.profile.thumb_left.continuous,
+            ModifierKind::ThumbRight => self.profile.thumb_right.continuous,
+            ModifierKind::CharShift => self.profile.char_key_continuous,
+            ModifierKind::None => false,
+        }
+    }
+
+    fn is_modifier_key(&self, key: ScKey) -> bool {
+        self.modifier_kind(key).is_modifier()
     }
 
     // Tests will be added later
