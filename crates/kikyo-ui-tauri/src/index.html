@@ -74,53 +74,147 @@
     </div>
 
     <!-- 親指シフトセクション -->
+    <!-- 親指シフトセクション -->
     <div id="section-thumb" class="settings-section">
       <h2>親指シフト</h2>
 
-      <div class="setting-item">
-        <div class="setting-label">親指シフトキー</div>
-        <div class="setting-control">
-          <select id="thumb-key-mode">
-            <option value="NonTransformTransform">無変換 - 変換</option>
-            <option value="NonTransformSpace">無変換 - スペース</option>
-            <option value="SpaceTransform">スペース - 変換</option>
-          </select>
+      <div class="thumb-columns" style="display: flex; gap: 20px;">
+        <!-- 左親指 -->
+        <div class="thumb-col" style="flex: 1;">
+          <h3>左親指</h3>
+
+          <div class="setting-item">
+            <div class="setting-label">左親指シフトキー</div>
+            <div class="setting-control">
+              <select id="thumb-left-key">
+                <option value="None">なし</option>
+                <option value="Esc">Esc</option>
+                <option value="Tab">Tab</option>
+                <option value="Muhenkan">無変換</option>
+                <option value="Space">Space</option>
+                <option value="Henkan">変換</option>
+                <option value="Enter">Enter</option>
+                <option value="BackSpace">BackSpace</option>
+                <option value="Delete">Delete</option>
+                <option value="Insert">Insert</option>
+                <option value="Up">上</option>
+                <option value="Left">左</option>
+                <option value="Right">右</option>
+                <option value="Down">下</option>
+                <option value="Home">Home</option>
+                <option value="End">End</option>
+                <option value="PageUp">PageUp</option>
+                <option value="PageDown">PageDown</option>
+                <option value="LeftShift">左Shift</option>
+                <option value="RightShift">右Shift</option>
+                <option value="LeftCtrl">左Ctrl</option>
+                <option value="RightCtrl">右Ctrl</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-label">連続シフト</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="thumb-left-continuous">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-label">単独打鍵</div>
+            <div class="setting-control">
+              <select id="thumb-left-single-press">
+                <option value="None">無効</option>
+                <option value="Enable">有効</option>
+                <option value="PrefixShift">前置シフト</option>
+                <option value="SpaceKey">Spaceキー</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-label">親指シフトキーリピート</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="thumb-left-repeat">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右親指 -->
+        <div class="thumb-col" style="flex: 1;">
+          <h3>右親指</h3>
+
+          <div class="setting-item">
+            <div class="setting-label">右親指シフトキー</div>
+            <div class="setting-control">
+              <select id="thumb-right-key">
+                <option value="None">なし</option>
+                <option value="Esc">Esc</option>
+                <option value="Tab">Tab</option>
+                <option value="Muhenkan">無変換</option>
+                <option value="Space">Space</option>
+                <option value="Henkan">変換</option>
+                <option value="Enter">Enter</option>
+                <option value="BackSpace">BackSpace</option>
+                <option value="Delete">Delete</option>
+                <option value="Insert">Insert</option>
+                <option value="Up">上</option>
+                <option value="Left">左</option>
+                <option value="Right">右</option>
+                <option value="Down">下</option>
+                <option value="Home">Home</option>
+                <option value="End">End</option>
+                <option value="PageUp">PageUp</option>
+                <option value="PageDown">PageDown</option>
+                <option value="LeftShift">左Shift</option>
+                <option value="RightShift">右Shift</option>
+                <option value="LeftCtrl">左Ctrl</option>
+                <option value="RightCtrl">右Ctrl</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-label">連続シフト</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="thumb-right-continuous">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-label">単独打鍵</div>
+            <div class="setting-control">
+              <select id="thumb-right-single-press">
+                <option value="None">無効</option>
+                <option value="Enable">有効</option>
+                <option value="PrefixShift">前置シフト</option>
+                <option value="SpaceKey">Spaceキー</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-label">親指シフトキーリピート</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="thumb-right-repeat">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="setting-item">
-        <div class="setting-label">連続シフト</div>
-        <div class="setting-control">
-          <label class="toggle-switch">
-            <input type="checkbox" id="thumb-continuous">
-            <span class="slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="setting-item">
-        <div class="setting-label">単独打鍵</div>
-        <div class="setting-control">
-          <select id="thumb-single-press">
-            <option value="None">無効</option>
-            <option value="Enable">有効</option>
-            <option value="PrefixShift">前置シフト</option>
-            <option value="SpaceKey">Spaceキー</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="setting-item">
-        <div class="setting-label">親指シフトキーリピート</div>
-        <div class="setting-control">
-          <label class="toggle-switch">
-            <input type="checkbox" id="thumb-repeat">
-            <span class="slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="setting-item">
+      <div class="setting-item" style="margin-top: 20px;">
         <div class="setting-label">親指シフトが同時打鍵と判定される重なり割合</div>
         <div class="setting-control">
           <input type="range" id="thumb-overlap-ratio" min="0" max="100" class="range-slider">

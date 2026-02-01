@@ -846,15 +846,23 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
         let res = engine.process_key(0x21, false, true, true);
         match res {
             KeyAction::Inject(evs) => {
-                let has_s = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x1F, _, _)));
-                let has_t = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x14, _, _)));
+                let has_s = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x1F, _, _)));
+                let has_t = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x14, _, _)));
                 assert!(
                     has_s && has_t,
                     "Expected shifted outputs (s,t) in fallback output"
                 );
 
-                let has_n = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x31, _, _)));
-                let has_m = evs.iter().any(|e| matches!(e, InputEvent::Scancode(0x32, _, _)));
+                let has_n = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x31, _, _)));
+                let has_m = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x32, _, _)));
                 assert!(
                     !has_n && !has_m,
                     "Fallback should not use base plane outputs (n,m)"
@@ -1410,7 +1418,8 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
         // 2. Switch Mode: NonTransformSpace (Left=Muhenkan, Right=Space)
         let mut profile = engine.get_profile();
-        profile.thumb_shift_key_mode = crate::chord_engine::ThumbShiftKeyMode::NonTransformSpace;
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::Muhenkan;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::Space;
         engine.set_profile(profile);
 
         // Case 2-1: Space + D -> Right

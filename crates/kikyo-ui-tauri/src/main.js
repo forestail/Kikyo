@@ -11,8 +11,15 @@ let navItems, sections;
 // Profile Inputs
 // Array
 let charRepeatAssignedCb, charRepeatUnassignedCb;
-// Thumb
-let thumbKeyModeSel, thumbContinuousCb, thumbSinglePressSel, thumbRepeatCb, thumbOverlapRatioInput, thumbOverlapVal;
+
+// Thumb Left
+let thumbLeftKeySel, thumbLeftContinuousCb, thumbLeftSinglePressSel, thumbLeftRepeatCb;
+// Thumb Right
+let thumbRightKeySel, thumbRightContinuousCb, thumbRightSinglePressSel, thumbRightRepeatCb;
+
+// Thumb Common
+let thumbOverlapRatioInput, thumbOverlapVal;
+
 // Chord
 let charContinuousCb, charOverlapRatioInput, charOverlapVal;
 
@@ -64,10 +71,6 @@ async function loadProfile() {
   try {
     let profile = await invoke("get_profile");
     console.log("Loaded profile:", profile);
-
-    // Migration helper: if old field exists in JSON but new one doesn't (unlikely with struct, but for safety)
-    // Actually backend returns default struct if missing fields, so we rely on backend default.
-
     currentProfile = profile;
     updateUI(profile);
   } catch (e) {
@@ -82,18 +85,28 @@ function updateUI(profile) {
   if (charRepeatAssignedCb) charRepeatAssignedCb.checked = profile.char_key_repeat_assigned;
   if (charRepeatUnassignedCb) charRepeatUnassignedCb.checked = profile.char_key_repeat_unassigned;
 
-  if (thumbContinuousCb) thumbContinuousCb.checked = profile.thumb_shift_continuous;
-  if (thumbRepeatCb) thumbRepeatCb.checked = profile.thumb_shift_repeat;
-
   if (charContinuousCb) charContinuousCb.checked = profile.char_key_continuous;
 
-  // Enums (Selects) - Backend returns string if Serialize is correctly set up with Enums
-  if (thumbKeyModeSel) thumbKeyModeSel.value = profile.thumb_shift_key_mode;
-  if (thumbSinglePressSel) thumbSinglePressSel.value = profile.thumb_shift_single_press;
+  // Left Thumb
+  if (profile.thumb_left) {
+    if (thumbLeftKeySel) thumbLeftKeySel.value = profile.thumb_left.key;
+    if (thumbLeftContinuousCb) thumbLeftContinuousCb.checked = profile.thumb_left.continuous;
+    if (thumbLeftSinglePressSel) thumbLeftSinglePressSel.value = profile.thumb_left.single_press;
+    if (thumbLeftRepeatCb) thumbLeftRepeatCb.checked = profile.thumb_left.repeat;
+  }
+  // Right Thumb
+  if (profile.thumb_right) {
+    if (thumbRightKeySel) thumbRightKeySel.value = profile.thumb_right.key;
+    if (thumbRightContinuousCb) thumbRightContinuousCb.checked = profile.thumb_right.continuous;
+    if (thumbRightSinglePressSel) thumbRightSinglePressSel.value = profile.thumb_right.single_press;
+    if (thumbRightRepeatCb) thumbRightRepeatCb.checked = profile.thumb_right.repeat;
+  }
+
+  // Common
   if (imeModeSel) imeModeSel.value = profile.ime_mode || "Auto";
   if (suspendKeySel) suspendKeySel.value = profile.suspend_key || "None";
 
-  // Ranges (Floats 0.0-1.0 to 0-100)
+  // Ranges
   if (thumbOverlapRatioInput) {
     const val = Math.round(profile.thumb_shift_overlap_ratio * 100);
     thumbOverlapRatioInput.value = val;
@@ -113,10 +126,21 @@ async function saveProfile() {
   currentProfile.char_key_repeat_assigned = charRepeatAssignedCb.checked;
   currentProfile.char_key_repeat_unassigned = charRepeatUnassignedCb.checked;
 
-  currentProfile.thumb_shift_key_mode = thumbKeyModeSel.value;
-  currentProfile.thumb_shift_continuous = thumbContinuousCb.checked;
-  currentProfile.thumb_shift_single_press = thumbSinglePressSel.value;
-  currentProfile.thumb_shift_repeat = thumbRepeatCb.checked;
+  // Left Thumb
+  if (!currentProfile.thumb_left) currentProfile.thumb_left = {};
+  currentProfile.thumb_left.key = thumbLeftKeySel.value;
+  currentProfile.thumb_left.continuous = thumbLeftContinuousCb.checked;
+  currentProfile.thumb_left.single_press = thumbLeftSinglePressSel.value;
+  currentProfile.thumb_left.repeat = thumbLeftRepeatCb.checked;
+
+  // Right Thumb
+  if (!currentProfile.thumb_right) currentProfile.thumb_right = {};
+  currentProfile.thumb_right.key = thumbRightKeySel.value;
+  currentProfile.thumb_right.continuous = thumbRightContinuousCb.checked;
+  currentProfile.thumb_right.single_press = thumbRightSinglePressSel.value;
+  currentProfile.thumb_right.repeat = thumbRightRepeatCb.checked;
+
+  // Common
   currentProfile.thumb_shift_overlap_ratio = parseInt(thumbOverlapRatioInput.value, 10) / 100.0;
 
   currentProfile.char_key_continuous = charContinuousCb.checked;
@@ -128,11 +152,6 @@ async function saveProfile() {
     console.log("Saving profile:", currentProfile);
     await invoke("set_profile", { profile: currentProfile });
     statusMsg.innerText = "設定を保存しました";
-
-    // Save minimal local storage if needed, or just rely on backend? 
-    // User didn't ask for persistence beyond session/backend, but we probably should.
-    // For now, relying on backend (in-memory) and localStorage for PATH.
-    // Ideally backend should save to disk.
   } catch (e) {
     statusMsg.innerText = "保存エラー: " + e;
   }
@@ -142,15 +161,19 @@ function setupAutoSave() {
   const changeTargets = [
     charRepeatAssignedCb,
     charRepeatUnassignedCb,
-    thumbContinuousCb,
-    thumbRepeatCb,
+    thumbLeftContinuousCb, thumbLeftRepeatCb,
+    thumbRightContinuousCb, thumbRightRepeatCb,
     charContinuousCb,
   ];
   changeTargets.forEach((el) => {
     if (el) el.addEventListener("change", saveProfile);
   });
 
-  const selectTargets = [thumbKeyModeSel, thumbSinglePressSel, imeModeSel, suspendKeySel];
+  const selectTargets = [
+    thumbLeftKeySel, thumbLeftSinglePressSel,
+    thumbRightKeySel, thumbRightSinglePressSel,
+    imeModeSel, suspendKeySel
+  ];
   selectTargets.forEach((el) => {
     if (el) el.addEventListener("change", saveProfile);
   });
@@ -190,18 +213,24 @@ window.addEventListener("DOMContentLoaded", () => {
   charRepeatAssignedCb = document.querySelector("#char-repeat-assigned");
   charRepeatUnassignedCb = document.querySelector("#char-repeat-unassigned");
 
-  // Thumb
-  thumbKeyModeSel = document.querySelector("#thumb-key-mode");
-  thumbContinuousCb = document.querySelector("#thumb-continuous");
-  thumbSinglePressSel = document.querySelector("#thumb-single-press");
-  thumbRepeatCb = document.querySelector("#thumb-repeat");
+  // Thumb Left
+  thumbLeftKeySel = document.querySelector("#thumb-left-key");
+  thumbLeftContinuousCb = document.querySelector("#thumb-left-continuous");
+  thumbLeftSinglePressSel = document.querySelector("#thumb-left-single-press");
+  thumbLeftRepeatCb = document.querySelector("#thumb-left-repeat");
+
+  // Thumb Right
+  thumbRightKeySel = document.querySelector("#thumb-right-key");
+  thumbRightContinuousCb = document.querySelector("#thumb-right-continuous");
+  thumbRightSinglePressSel = document.querySelector("#thumb-right-single-press");
+  thumbRightRepeatCb = document.querySelector("#thumb-right-repeat");
+
+  // Reset old binding if any
   thumbOverlapRatioInput = document.querySelector("#thumb-overlap-ratio");
   thumbOverlapVal = document.querySelector("#thumb-overlap-val");
 
   // Chord
   charContinuousCb = document.querySelector("#char-continuous");
-  charOverlapRatioInput = document.querySelector("#char-overlap-ratio");
-  charOverlapVal = document.querySelector("#char-overlap-val");
   charOverlapRatioInput = document.querySelector("#char-overlap-ratio");
   charOverlapVal = document.querySelector("#char-overlap-val");
 

@@ -102,11 +102,55 @@ pub struct SuccessiveCfg {
     // TODO: Add details
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThumbKeySelect {
+    None,
+    Esc,
+    Tab,
+    Muhenkan,
+    Space,
+    Henkan,
+    Enter,
+    BackSpace,
+    Delete,
+    Insert,
+    Up,
+    Left,
+    Right,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    LeftShift,
+    RightShift,
+    LeftCtrl,
+    RightCtrl,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThumbSideConfig {
+    pub key: ThumbKeySelect,
+    pub continuous: bool,
+    pub single_press: ThumbShiftSinglePress,
+    pub repeat: bool,
+}
+
+impl Default for ThumbSideConfig {
+    fn default() -> Self {
+        Self {
+            key: ThumbKeySelect::None,
+            continuous: false,
+            single_press: ThumbShiftSinglePress::None,
+            repeat: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub chord_style: ChordStyle,
     pub chord_window_ms: u64,
-    // min_overlap_ms removed
     pub max_chord_size: usize,
     pub adaptive_window: AdaptiveCfg,
     pub thumb_keys: Option<ThumbKeys>,
@@ -114,21 +158,19 @@ pub struct Profile {
     pub target_keys: Option<HashSet<ScKey>>,
     pub successive: SuccessiveCfg,
 
-    // New fields
     pub char_key_repeat_assigned: bool,
     pub char_key_repeat_unassigned: bool,
 
     pub ime_mode: ImeMode,
     pub suspend_key: SuspendKey,
 
-    pub thumb_shift_key_mode: ThumbShiftKeyMode,
-    pub thumb_shift_continuous: bool,
-    pub thumb_shift_single_press: ThumbShiftSinglePress,
-    pub thumb_shift_repeat: bool,
-    pub thumb_shift_overlap_ratio: f64,
+    // New separate configurations
+    pub thumb_left: ThumbSideConfig,
+    pub thumb_right: ThumbSideConfig,
+    pub thumb_shift_overlap_ratio: f64, // Kept global as per implementation plan but not strictly required to be split by user yet
 
     pub char_key_continuous: bool,
-    pub char_key_overlap_ratio: f64, // Renamed from overlap_ratio_threshold
+    pub char_key_overlap_ratio: f64,
 }
 
 impl Default for Profile {
@@ -136,7 +178,6 @@ impl Default for Profile {
         Self {
             chord_style: ChordStyle::TriggerKey,
             chord_window_ms: 200,
-            // min_overlap_ms: 50, // Removed
             max_chord_size: 2,
             adaptive_window: AdaptiveCfg { enabled: false },
             thumb_keys: None,
@@ -150,14 +191,51 @@ impl Default for Profile {
             ime_mode: ImeMode::Auto,
             suspend_key: SuspendKey::None,
 
-            thumb_shift_key_mode: ThumbShiftKeyMode::NonTransformTransform,
-            thumb_shift_continuous: false,
-            thumb_shift_single_press: ThumbShiftSinglePress::None,
-            thumb_shift_repeat: false,
+            thumb_left: ThumbSideConfig {
+                key: ThumbKeySelect::Muhenkan,
+                continuous: false,
+                single_press: ThumbShiftSinglePress::None,
+                repeat: false,
+            },
+            thumb_right: ThumbSideConfig {
+                key: ThumbKeySelect::Henkan,
+                continuous: false,
+                single_press: ThumbShiftSinglePress::None,
+                repeat: false,
+            },
             thumb_shift_overlap_ratio: 0.35,
 
             char_key_continuous: false,
-            char_key_overlap_ratio: 0.35, // Renamed from overlap_ratio_threshold
+            char_key_overlap_ratio: 0.35,
+        }
+    }
+}
+
+impl ThumbKeySelect {
+    pub fn to_sckey(&self) -> Option<ScKey> {
+        match self {
+            ThumbKeySelect::None => None,
+            ThumbKeySelect::Esc => Some(ScKey::new(0x01, false)),
+            ThumbKeySelect::Tab => Some(ScKey::new(0x0F, false)),
+            ThumbKeySelect::Muhenkan => Some(ScKey::new(0x7B, false)),
+            ThumbKeySelect::Space => Some(ScKey::new(0x39, false)),
+            ThumbKeySelect::Henkan => Some(ScKey::new(0x79, false)),
+            ThumbKeySelect::Enter => Some(ScKey::new(0x1C, false)),
+            ThumbKeySelect::BackSpace => Some(ScKey::new(0x0E, false)),
+            ThumbKeySelect::Delete => Some(ScKey::new(0x53, true)),
+            ThumbKeySelect::Insert => Some(ScKey::new(0x52, true)),
+            ThumbKeySelect::Up => Some(ScKey::new(0x48, true)),
+            ThumbKeySelect::Left => Some(ScKey::new(0x4B, true)),
+            ThumbKeySelect::Right => Some(ScKey::new(0x4D, true)),
+            ThumbKeySelect::Down => Some(ScKey::new(0x50, true)),
+            ThumbKeySelect::Home => Some(ScKey::new(0x47, true)),
+            ThumbKeySelect::End => Some(ScKey::new(0x4F, true)),
+            ThumbKeySelect::PageUp => Some(ScKey::new(0x49, true)),
+            ThumbKeySelect::PageDown => Some(ScKey::new(0x51, true)),
+            ThumbKeySelect::LeftShift => Some(ScKey::new(0x2A, false)),
+            ThumbKeySelect::RightShift => Some(ScKey::new(0x36, false)),
+            ThumbKeySelect::LeftCtrl => Some(ScKey::new(0x1D, false)),
+            ThumbKeySelect::RightCtrl => Some(ScKey::new(0x1D, true)),
         }
     }
 }
@@ -167,24 +245,11 @@ impl Profile {
         let mut left = HashSet::new();
         let mut right = HashSet::new();
 
-        // Scancodes
-        let sc_muhenkan = ScKey::new(0x7B, false);
-        let sc_henkan = ScKey::new(0x79, false);
-        let sc_space = ScKey::new(0x39, false);
-
-        match self.thumb_shift_key_mode {
-            ThumbShiftKeyMode::NonTransformTransform => {
-                left.insert(sc_muhenkan);
-                right.insert(sc_henkan);
-            }
-            ThumbShiftKeyMode::NonTransformSpace => {
-                left.insert(sc_muhenkan);
-                right.insert(sc_space);
-            }
-            ThumbShiftKeyMode::SpaceTransform => {
-                left.insert(sc_space);
-                right.insert(sc_henkan);
-            }
+        if let Some(sck) = self.thumb_left.key.to_sckey() {
+            left.insert(sck);
+        }
+        if let Some(sck) = self.thumb_right.key.to_sckey() {
+            right.insert(sck);
         }
 
         self.thumb_keys = Some(ThumbKeys { left, right });
@@ -363,7 +428,16 @@ impl ChordEngine {
                                 self.state.used_modifiers.remove(&key);
                             } else {
                                 // Trigger Single Press Logic
-                                match self.profile.thumb_shift_single_press {
+                                let mut sp_setting = ThumbShiftSinglePress::None;
+                                if let Some(ref tk) = self.profile.thumb_keys {
+                                    if tk.left.contains(&key) {
+                                        sp_setting = self.profile.thumb_left.single_press;
+                                    } else if tk.right.contains(&key) {
+                                        sp_setting = self.profile.thumb_right.single_press;
+                                    }
+                                }
+
+                                match sp_setting {
                                     ThumbShiftSinglePress::None => {
                                         // Disable single press (swallow)
                                     }
@@ -565,10 +639,38 @@ impl ChordEngine {
                     }
 
                     // Consume keys unless continuous shift is enabled for a modifier
-                    if !is_mod1 || !self.profile.thumb_shift_continuous {
+                    let mut continuous1 = false;
+                    let mut continuous2 = false;
+
+                    if is_mod1 {
+                        if let Some(ref tk) = self.profile.thumb_keys {
+                            if tk.left.contains(&k1) {
+                                continuous1 = self.profile.thumb_left.continuous;
+                            } else if tk.right.contains(&k1) {
+                                continuous1 = self.profile.thumb_right.continuous;
+                            }
+                        }
+                    }
+                    if is_mod2 {
+                        if let Some(ref tk) = self.profile.thumb_keys {
+                            if tk.left.contains(&k2) {
+                                continuous2 = self.profile.thumb_right.continuous; // Typo in var naming? NO, index 2 uses logic for k2
+                                                                                   // Wait, if k2 is RIGHT thumb, use right default.
+                                if tk.right.contains(&k2) {
+                                    continuous2 = self.profile.thumb_right.continuous;
+                                } else if tk.left.contains(&k2) {
+                                    continuous2 = self.profile.thumb_left.continuous;
+                                }
+                            } else if tk.right.contains(&k2) {
+                                continuous2 = self.profile.thumb_right.continuous;
+                            }
+                        }
+                    }
+
+                    if !is_mod1 || !continuous1 {
                         consumed_indices.insert(idx1);
                     }
-                    if !is_mod2 || !self.profile.thumb_shift_continuous {
+                    if !is_mod2 || !continuous2 {
                         consumed_indices.insert(idx2);
                     }
 
