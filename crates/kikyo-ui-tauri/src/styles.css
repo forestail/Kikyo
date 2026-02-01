@@ -126,6 +126,10 @@ h3 {
   font-size: 14px;
 }
 
+.setting-label.is-disabled {
+  color: #777777;
+}
+
 .setting-desc {
   font-size: 12px;
   color: #888;

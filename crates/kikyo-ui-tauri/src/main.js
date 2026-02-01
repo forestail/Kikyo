@@ -12,11 +12,14 @@ let navItems, sections;
 // Array
 let charRepeatAssignedCb, charRepeatUnassignedCb;
 let currentProfile = null;
+let thumbLeftRepeatSetting = null;
+let thumbRightRepeatSetting = null;
 
 // Thumb Left
 let thumbLeftKeySel, thumbLeftContinuousCb, thumbLeftSinglePressSel, thumbLeftRepeatCb;
 // Thumb Right
 let thumbRightKeySel, thumbRightContinuousCb, thumbRightSinglePressSel, thumbRightRepeatCb;
+let thumbLeftRepeatLabel, thumbRightRepeatLabel;
 
 // Thumb Common
 let thumbOverlapRatioInput, thumbOverlapVal;
@@ -79,6 +82,41 @@ async function loadProfile() {
   }
 }
 
+function singlePressAllowsRepeat(value) {
+  return value === "Enable" || value === "SpaceKey";
+}
+
+function getThumbRepeatSetting(side) {
+  return side === "left" ? thumbLeftRepeatSetting : thumbRightRepeatSetting;
+}
+
+function setThumbRepeatSetting(side, value) {
+  if (side === "left") {
+    thumbLeftRepeatSetting = value;
+  } else {
+    thumbRightRepeatSetting = value;
+  }
+}
+
+function syncThumbRepeatUI(side) {
+  const singlePressSel = side === "left" ? thumbLeftSinglePressSel : thumbRightSinglePressSel;
+  const repeatCb = side === "left" ? thumbLeftRepeatCb : thumbRightRepeatCb;
+  const repeatLabel = side === "left" ? thumbLeftRepeatLabel : thumbRightRepeatLabel;
+  if (!singlePressSel || !repeatCb) return;
+
+  const allowRepeat = singlePressAllowsRepeat(singlePressSel.value);
+  if (allowRepeat) {
+    repeatCb.disabled = false;
+    const stored = getThumbRepeatSetting(side);
+    if (typeof stored === "boolean") repeatCb.checked = stored;
+    if (repeatLabel) repeatLabel.classList.remove("is-disabled");
+  } else {
+    repeatCb.checked = false;
+    repeatCb.disabled = true;
+    if (repeatLabel) repeatLabel.classList.add("is-disabled");
+  }
+}
+
 function updateUI(profile) {
   if (!profile) return;
 
@@ -94,6 +132,7 @@ function updateUI(profile) {
     if (thumbLeftContinuousCb) thumbLeftContinuousCb.checked = profile.thumb_left.continuous;
     if (thumbLeftSinglePressSel) thumbLeftSinglePressSel.value = profile.thumb_left.single_press;
     if (thumbLeftRepeatCb) thumbLeftRepeatCb.checked = profile.thumb_left.repeat;
+    setThumbRepeatSetting("left", profile.thumb_left.repeat);
   }
   // Right Thumb
   if (profile.thumb_right) {
@@ -101,6 +140,7 @@ function updateUI(profile) {
     if (thumbRightContinuousCb) thumbRightContinuousCb.checked = profile.thumb_right.continuous;
     if (thumbRightSinglePressSel) thumbRightSinglePressSel.value = profile.thumb_right.single_press;
     if (thumbRightRepeatCb) thumbRightRepeatCb.checked = profile.thumb_right.repeat;
+    setThumbRepeatSetting("right", profile.thumb_right.repeat);
   }
 
   // Common
@@ -118,6 +158,9 @@ function updateUI(profile) {
     charOverlapRatioInput.value = val;
     if (charOverlapVal) charOverlapVal.innerText = val + "%";
   }
+
+  syncThumbRepeatUI("left");
+  syncThumbRepeatUI("right");
 }
 
 async function saveProfile() {
@@ -132,14 +175,24 @@ async function saveProfile() {
   currentProfile.thumb_left.key = thumbLeftKeySel.value;
   currentProfile.thumb_left.continuous = thumbLeftContinuousCb.checked;
   currentProfile.thumb_left.single_press = thumbLeftSinglePressSel.value;
-  currentProfile.thumb_left.repeat = thumbLeftRepeatCb.checked;
+  const leftAllowsRepeat = singlePressAllowsRepeat(thumbLeftSinglePressSel.value);
+  if (leftAllowsRepeat) {
+    setThumbRepeatSetting("left", thumbLeftRepeatCb.checked);
+  }
+  const leftStoredRepeat = getThumbRepeatSetting("left");
+  currentProfile.thumb_left.repeat = typeof leftStoredRepeat === "boolean" ? leftStoredRepeat : false;
 
   // Right Thumb
   if (!currentProfile.thumb_right) currentProfile.thumb_right = {};
   currentProfile.thumb_right.key = thumbRightKeySel.value;
   currentProfile.thumb_right.continuous = thumbRightContinuousCb.checked;
   currentProfile.thumb_right.single_press = thumbRightSinglePressSel.value;
-  currentProfile.thumb_right.repeat = thumbRightRepeatCb.checked;
+  const rightAllowsRepeat = singlePressAllowsRepeat(thumbRightSinglePressSel.value);
+  if (rightAllowsRepeat) {
+    setThumbRepeatSetting("right", thumbRightRepeatCb.checked);
+  }
+  const rightStoredRepeat = getThumbRepeatSetting("right");
+  currentProfile.thumb_right.repeat = typeof rightStoredRepeat === "boolean" ? rightStoredRepeat : false;
 
   // Common
   currentProfile.thumb_shift_overlap_ratio = parseInt(thumbOverlapRatioInput.value, 10) / 100.0;
@@ -171,13 +224,26 @@ function setupAutoSave() {
   });
 
   const selectTargets = [
-    thumbLeftKeySel, thumbLeftSinglePressSel,
-    thumbRightKeySel, thumbRightSinglePressSel,
+    thumbLeftKeySel,
+    thumbRightKeySel,
     imeModeSel, suspendKeySel
   ];
   selectTargets.forEach((el) => {
     if (el) el.addEventListener("change", saveProfile);
   });
+
+  if (thumbLeftSinglePressSel) {
+    thumbLeftSinglePressSel.addEventListener("change", () => {
+      syncThumbRepeatUI("left");
+      saveProfile();
+    });
+  }
+  if (thumbRightSinglePressSel) {
+    thumbRightSinglePressSel.addEventListener("change", () => {
+      syncThumbRepeatUI("right");
+      saveProfile();
+    });
+  }
 
   const rangeTargets = [thumbOverlapRatioInput, charOverlapRatioInput];
   rangeTargets.forEach((el) => {
@@ -219,12 +285,14 @@ window.addEventListener("DOMContentLoaded", () => {
   thumbLeftContinuousCb = document.querySelector("#thumb-left-continuous");
   thumbLeftSinglePressSel = document.querySelector("#thumb-left-single-press");
   thumbLeftRepeatCb = document.querySelector("#thumb-left-repeat");
+  thumbLeftRepeatLabel = document.querySelector("#thumb-left-repeat-label");
 
   // Thumb Right
   thumbRightKeySel = document.querySelector("#thumb-right-key");
   thumbRightContinuousCb = document.querySelector("#thumb-right-continuous");
   thumbRightSinglePressSel = document.querySelector("#thumb-right-single-press");
   thumbRightRepeatCb = document.querySelector("#thumb-right-repeat");
+  thumbRightRepeatLabel = document.querySelector("#thumb-right-repeat-label");
 
   // Reset old binding if any
   thumbOverlapRatioInput = document.querySelector("#thumb-overlap-ratio");
