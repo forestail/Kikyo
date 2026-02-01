@@ -44,12 +44,54 @@ impl Rc {
     }
 }
 
+/// Modifier keys applied to a keystroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub win: bool,
+}
+
+impl Modifiers {
+    pub const fn none() -> Self {
+        Self {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            win: false,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        !(self.ctrl || self.shift || self.alt || self.win)
+    }
+}
+
+/// Key specification inside a keystroke sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeySpec {
+    /// A character to be mapped to a scancode (fallback to Unicode if unknown).
+    Char(char),
+    /// Explicit scancode (scancode, ext).
+    Scancode(u16, bool),
+    /// Virtual key code (VK).
+    VirtualKey(u16),
+}
+
+/// A single keystroke with optional modifiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyStroke {
+    pub key: KeySpec,
+    pub mods: Modifiers,
+}
+
 /// Output token from a layout cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     /// Character sequence to be injected via key presses (e.g. "ni", "ka").
     /// In MVP, we might treat this as a sequence of keys.
-    KeySequence(String),
+    KeySequence(Vec<KeyStroke>),
 
     /// Character to be injected via Unicode input (IME-like behavior).
     /// Quoted with single quotes in .yab (e.g. '－').

@@ -1,10 +1,11 @@
-use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, Profile};
-use crate::types::{InputEvent, KeyAction, Layout, ScKey, Token};
+﻿use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, Profile};
+use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::time::Instant;
 use tracing::debug;
+use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
 
 lazy_static::lazy_static! {
     pub static ref ENGINE: Mutex<Engine> = Mutex::new(Engine::default());
@@ -539,16 +540,8 @@ impl Engine {
             Token::None => None,
             Token::KeySequence(seq) => {
                 let mut events = Vec::new();
-                for c in seq.chars() {
-                    if let Some((sc, ext)) = char_to_scancode(c) {
-                        events.push(InputEvent::Scancode(sc, ext, false));
-                        events.push(InputEvent::Scancode(sc, ext, true));
-                    } else {
-                        // Fallback to Unicode injection
-                        // warn!("Unknown char: {}", c);
-                        events.push(InputEvent::Unicode(c, false)); // Down
-                        events.push(InputEvent::Unicode(c, true)); // Up
-                    }
+                for stroke in seq {
+                    append_keystroke_events(&mut events, stroke);
                 }
                 if events.is_empty() {
                     None
@@ -556,9 +549,72 @@ impl Engine {
                     Some(events)
                 }
             }
-            _ => None,
+            Token::ImeChar(text) | Token::DirectChar(text) => {
+                let mut events = Vec::new();
+                for c in text.chars() {
+                    events.push(InputEvent::Unicode(c, false));
+                    events.push(InputEvent::Unicode(c, true));
+                }
+                if events.is_empty() {
+                    None
+                } else {
+                    Some(events)
+                }
+            }
         }
     }
+}
+
+fn append_keystroke_events(events: &mut Vec<InputEvent>, stroke: &KeyStroke) {
+    let key_events = match stroke.key {
+        KeySpec::Scancode(sc, ext) => Some((sc, ext)),
+        KeySpec::VirtualKey(vk) => vk_to_scancode(vk),
+        KeySpec::Char(c) => char_to_scancode(c),
+    };
+
+    if let Some((sc, ext)) = key_events {
+        let mods = modifier_scancodes(stroke.mods);
+        for (mod_sc, mod_ext) in mods.iter() {
+            events.push(InputEvent::Scancode(*mod_sc, *mod_ext, false));
+        }
+        events.push(InputEvent::Scancode(sc, ext, false));
+        events.push(InputEvent::Scancode(sc, ext, true));
+        for (mod_sc, mod_ext) in mods.iter().rev() {
+            events.push(InputEvent::Scancode(*mod_sc, *mod_ext, true));
+        }
+        return;
+    }
+
+    if let KeySpec::Char(c) = stroke.key {
+        events.push(InputEvent::Unicode(c, false));
+        events.push(InputEvent::Unicode(c, true));
+    }
+}
+
+fn modifier_scancodes(mods: Modifiers) -> Vec<(u16, bool)> {
+    let mut scancodes = Vec::new();
+    if mods.ctrl {
+        scancodes.push((0x1D, false));
+    }
+    if mods.shift {
+        scancodes.push((0x2A, false));
+    }
+    if mods.alt {
+        scancodes.push((0x38, false));
+    }
+    if mods.win {
+        scancodes.push((0x5B, true));
+    }
+    scancodes
+}
+
+fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
+    if scan == 0 {
+        return None;
+    }
+    let ext = (scan & 0xFF00) == 0xE000;
+    Some(((scan & 0x00FF) as u16, ext))
 }
 
 fn char_to_scancode(c: char) -> Option<(u16, bool)> {
@@ -592,12 +648,33 @@ fn char_to_scancode(c: char) -> Option<(u16, bool)> {
             'z' => Some((0x2C, false)),
             _ => None,
         },
+        '1' => Some((0x02, false)),
+        '2' => Some((0x03, false)),
+        '3' => Some((0x04, false)),
+        '4' => Some((0x05, false)),
+        '5' => Some((0x06, false)),
+        '6' => Some((0x07, false)),
+        '7' => Some((0x08, false)),
+        '8' => Some((0x09, false)),
+        '9' => Some((0x0A, false)),
+        '0' => Some((0x0B, false)),
+        '-' => Some((0x0C, false)),
+        '^' => Some((0x0D, false)),
+        '\\' | '¥' | '￥' => Some((0x7D, false)), // Yen
+        '@' => Some((0x1A, false)),
+        '[' => Some((0x1B, false)),
+        ';' => Some((0x27, false)),
+        ':' => Some((0x28, false)),
+        ']' => Some((0x2B, false)),
+        '_' => Some((0x73, false)), // JIS backslash/ro key
+        ',' => Some((0x33, false)),
+        '.' => Some((0x34, false)),
+        '/' => Some((0x35, false)),
+        ' ' => Some((0x39, false)),
         '\u{0008}' => Some((0x0E, false)), // BS
         '\u{000D}' => Some((0x1C, false)), // Enter
         '\u{F702}' => Some((0x4B, true)),  // Left Arrow (Extended)
         '\u{F703}' => Some((0x4D, true)),  // Right Arrow (Extended)
-        ',' => Some((0x33, false)),
-        '.' => Some((0x34, false)),
         '－' | 'ー' => Some((0x0C, false)), // Minus / Long Vowel
         _ => None,
     }
@@ -611,6 +688,7 @@ mod tests {
     fn test_char_to_scancode() {
         assert_eq!(char_to_scancode('－'), Some((0x0C, false)));
         assert_eq!(char_to_scancode('ー'), Some((0x0C, false)));
+        assert_eq!(char_to_scancode('1'), Some((0x02, false)));
         assert_eq!(char_to_scancode('a'), Some((0x1E, false)));
     }
 
@@ -872,7 +950,10 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
     #[test]
     fn test_unicode_fallback() {
         let engine = Engine::default();
-        let token = Token::KeySequence("→".to_string());
+        let token = Token::KeySequence(vec![KeyStroke {
+            key: KeySpec::Char('あ'),
+            mods: Modifiers::none(),
+        }]);
         // We can access private methods in tests module of the same file
         let events = engine
             .token_to_events(&token)
@@ -881,14 +962,14 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
         assert_eq!(events.len(), 2);
         match events[0] {
             InputEvent::Unicode(c, up) => {
-                assert_eq!(c, '→');
+                assert_eq!(c, 'あ');
                 assert_eq!(up, false);
             }
             _ => panic!("Expected Unicode down"),
         }
         match events[1] {
             InputEvent::Unicode(c, up) => {
-                assert_eq!(c, '→');
+                assert_eq!(c, 'あ');
                 assert_eq!(up, true);
             }
             _ => panic!("Expected Unicode up"),
@@ -1451,3 +1532,4 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         );
     }
 }
+

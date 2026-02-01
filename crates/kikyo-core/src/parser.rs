@@ -1,4 +1,4 @@
-use crate::types::{Layout, Plane, Rc, Section, Token};
+﻿use crate::types::{KeySpec, KeyStroke, Layout, Modifiers, Plane, Rc, Section, Token};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -57,39 +57,6 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
             sec.base_plane = plane;
         }
     };
-
-    let mut iter = content.lines();
-
-    // Check first line for layout name (starts with ;)
-    if let Some(first_line) = iter.next() {
-        let first_line_trim = first_line.trim();
-        if first_line_trim.starts_with(';') {
-            // remove leading ';'
-            let name = first_line_trim.trim_start_matches(';').trim().to_string();
-            if !name.is_empty() {
-                layout.name = Some(name);
-            }
-        } else {
-            // If not a comment line, treat it as normal content?
-            // Actually, usually headers are optional. If it's not a name, we should process it.
-            // But for simplicity in this iterator approach, let's just re-process it if not handled?
-            // Or better: Re-create iterator or handle the first line specially.
-            // Given the requirements: "{読み込んでいる配列定義の名称}は読み込んだyabファイルの先頭行を表示する。ただし１文字目は";"のため非表示にする。"
-            // It implies the name IS on the first line.
-            // However, we should be robust.
-
-            // To properly handle the "peek" or "process", let's rewrite the loop slightly.
-            // But actually, `iter` is stateful.
-
-            // If the first line was NOT a name comment, we need to process it as normal line.
-            // Just duplicate the line processing logic or use a helper is tedious.
-            // Let's iterate `content.lines()` again but skip 0 if we consumed it as name?
-            // No, `content.lines()` creates a new iterator.
-        }
-    }
-
-    // Re-iterate from start for full parsing, but this time we already have the name if found.
-    // Wait, simpler approach:
 
     for (i, line) in content.lines().enumerate() {
         let line = line.trim();
@@ -165,85 +132,378 @@ fn parse_token(raw: &str) -> Token {
         return Token::None;
     }
 
-    // Check quotes
-    if raw.starts_with('\'') && raw.ends_with('\'') && raw.len() >= 2 {
-        return Token::ImeChar(raw[1..raw.len() - 1].to_string());
-    }
-    if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
-        return Token::DirectChar(raw[1..raw.len() - 1].to_string());
+    if let Some((quote, inner)) = strip_quotes(raw) {
+        let parsed = parse_quoted(inner, quote);
+        return if quote == '\'' {
+            Token::ImeChar(parsed)
+        } else {
+            Token::DirectChar(parsed)
+        };
     }
 
-    // Convert full-width to half-width and handle special tokens
-    let mut seq = String::new();
+    if let Some(token) = parse_modded_single_token(raw) {
+        return token;
+    }
+
+    let seq = parse_key_sequence(raw);
+    if seq.is_empty() {
+        Token::None
+    } else {
+        Token::KeySequence(seq)
+    }
+}
+
+fn strip_quotes(raw: &str) -> Option<(char, &str)> {
+    let mut chars = raw.chars();
+    let first = chars.next()?;
+    let last = raw.chars().last()?;
+    if (first == '\'' || first == '"') && first == last && raw.len() >= 2 {
+        Some((first, &raw[first.len_utf8()..raw.len() - last.len_utf8()]))
+    } else {
+        None
+    }
+}
+
+fn parse_quoted(raw: &str, quote: char) -> String {
+    let mut out = String::new();
     let mut chars = raw.chars();
     while let Some(c) = chars.next() {
-        match c {
-            // Full-width a-z (U+FF41 to U+FF5A)
-            '\u{FF41}'..='\u{FF5A}' => {
-                let half = std::char::from_u32(c as u32 - 0xFEE0).unwrap();
-                seq.push(half);
-            }
-            // Full-width A-Z (U+FF21 to U+FF3A)
-            '\u{FF21}'..='\u{FF3A}' => {
-                let half = std::char::from_u32(c as u32 - 0xFEE0).unwrap();
-                seq.push(half);
-            }
-            // Special tokens handling
-            // Since we iterate chars, we need to handle multi-char strings like "無" (handled above),
-            // but for "後", "左" etc which might be mixed?
-            // The request implies these are standalone or part of a sequence?
-            // "aキーに"n""o"のシーケンスを割り当てるのであれば、"ｎｏ"のように記述される" -> Sequence of chars.
-            // "後" etc are likely single tokens standing for a key press.
-            // If "後" is mixed like "a後", it's probably "a" + "BackSpace".
-            // Let's assume we replace them in the sequence.
-            '後' => seq.push('\u{0008}'), // BS
-            '入' => seq.push('\u{000D}'), // CR (Enter)
-            '左' => seq.push('\u{F702}'), // Left Arrow (PUA)
-            '右' => seq.push('\u{F703}'), // Right Arrow (PUA)
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
 
-            // Punctuation
-            '，' => seq.push(','),
-            '．' => seq.push('.'),
-
-            // Pass through others (number, half-width etc)
-            _ => seq.push(c),
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('u') => {
+                let mut hex = String::new();
+                while let Some(next) = chars.clone().next() {
+                    if next.is_ascii_hexdigit() {
+                        hex.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if hex.is_empty() {
+                    out.push('u');
+                } else if let Ok(value) = u32::from_str_radix(&hex, 16) {
+                    if let Some(ch) = char::from_u32(value) {
+                        out.push(ch);
+                    }
+                }
+            }
+            Some('\'') if quote == '\'' => out.push('\''),
+            Some('"') if quote == '"' => out.push('"'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
         }
     }
+    out
+}
 
-    Token::KeySequence(seq)
+fn parse_modded_single_token(raw: &str) -> Option<Token> {
+    let (mods, rest) = parse_modifiers(raw);
+    if mods.is_empty() || rest.is_empty() {
+        return None;
+    }
+
+    if let Some(key) = parse_key_spec(rest) {
+        return Some(Token::KeySequence(vec![KeyStroke { key, mods }]));
+    }
+
+    None
+}
+
+fn parse_modifiers(raw: &str) -> (Modifiers, &str) {
+    let mut mods = Modifiers::none();
+    let mut idx = 0;
+    let mut iter = raw.char_indices().peekable();
+    while let Some((offset, c)) = iter.next() {
+        let is_mod = matches!(c, 'C' | 'S' | 'A' | 'W');
+        if !is_mod {
+            break;
+        }
+        if iter.peek().is_none() {
+            break;
+        }
+        match c {
+            'C' => mods.ctrl = true,
+            'S' => mods.shift = true,
+            'A' => mods.alt = true,
+            'W' => mods.win = true,
+            _ => {}
+        }
+        idx = offset + c.len_utf8();
+    }
+    (mods, &raw[idx..])
+}
+
+fn parse_key_spec(raw: &str) -> Option<KeySpec> {
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = raw.strip_prefix('機') {
+        let num: u8 = rest.parse().ok()?;
+        let sc = function_key_scancode(num)?;
+        return Some(KeySpec::Scancode(sc, false));
+    }
+
+    if let Some(rest) = raw.strip_prefix('V') {
+        if rest.is_empty() {
+            return None;
+        }
+        let value = u32::from_str_radix(rest, 16).ok()?;
+        if value <= 0xFF {
+            return Some(KeySpec::VirtualKey(value as u16));
+        }
+        return None;
+    }
+
+    let mut chars = raw.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+
+    Some(parse_single_key_char(c))
+}
+
+fn parse_key_sequence(raw: &str) -> Vec<KeyStroke> {
+    let mut seq = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '機' {
+            let mut j = i + 1;
+            let mut digits = String::new();
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                digits.push(chars[j]);
+                j += 1;
+            }
+            if let Ok(num) = digits.parse::<u8>() {
+                if let Some(sc) = function_key_scancode(num) {
+                    seq.push(KeyStroke {
+                        key: KeySpec::Scancode(sc, false),
+                        mods: Modifiers::none(),
+                    });
+                    i = j;
+                    continue;
+                }
+            }
+        } else if c == 'V' {
+            let mut j = i + 1;
+            let mut digits = String::new();
+            while j < chars.len() && chars[j].is_ascii_hexdigit() {
+                digits.push(chars[j]);
+                j += 1;
+            }
+            if !digits.is_empty() {
+                if let Ok(value) = u32::from_str_radix(&digits, 16) {
+                    if value <= 0xFF {
+                        seq.push(KeyStroke {
+                            key: KeySpec::VirtualKey(value as u16),
+                            mods: Modifiers::none(),
+                        });
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        seq.push(KeyStroke {
+            key: parse_single_key_char(c),
+            mods: Modifiers::none(),
+        });
+        i += 1;
+    }
+    seq
+}
+
+fn parse_single_key_char(c: char) -> KeySpec {
+    if let Some((sc, ext)) = special_key_scancode(c) {
+        return KeySpec::Scancode(sc, ext);
+    }
+    KeySpec::Char(normalize_key_char(c))
+}
+
+fn normalize_key_char(c: char) -> char {
+    match c {
+        '\u{FF41}'..='\u{FF5A}' | '\u{FF21}'..='\u{FF3A}' => {
+            let half = std::char::from_u32(c as u32 - 0xFEE0).unwrap_or(c);
+            half.to_ascii_lowercase()
+        }
+        '\u{FF10}'..='\u{FF19}' => std::char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+        '，' => ',',
+        '．' => '.',
+        '／' => '/',
+        '：' => ':',
+        '；' => ';',
+        '＠' => '@',
+        '［' => '[',
+        '］' => ']',
+        '＼' | '￥' => '\\',
+        '＾' => '^',
+        '－' => '-',
+        '＋' => '+',
+        '＊' => '*',
+        '（' => '(',
+        '）' => ')',
+        '　' => ' ',
+        _ => c.to_ascii_lowercase(),
+    }
+}
+
+fn special_key_scancode(c: char) -> Option<(u16, bool)> {
+    match c {
+        '逃' => Some((0x01, false)), // Esc
+        '入' => Some((0x1C, false)), // Enter
+        '空' => Some((0x39, false)), // Space
+        '後' => Some((0x0E, false)), // Backspace
+        '消' => Some((0x53, true)),  // Delete
+        '挿' => Some((0x52, true)),  // Insert
+        '上' => Some((0x48, true)),  // Up
+        '左' => Some((0x4B, true)),  // Left
+        '右' => Some((0x4D, true)),  // Right
+        '下' => Some((0x50, true)),  // Down
+        '家' => Some((0x47, true)),  // Home
+        '終' => Some((0x4F, true)),  // End
+        '前' => Some((0x49, true)),  // Page Up
+        '次' => Some((0x51, true)),  // Page Down
+        _ => None,
+    }
+}
+
+fn function_key_scancode(num: u8) -> Option<u16> {
+    match num {
+        1 => Some(0x3B),
+        2 => Some(0x3C),
+        3 => Some(0x3D),
+        4 => Some(0x3E),
+        5 => Some(0x3F),
+        6 => Some(0x40),
+        7 => Some(0x41),
+        8 => Some(0x42),
+        9 => Some(0x43),
+        10 => Some(0x44),
+        11 => Some(0x57),
+        12 => Some(0x58),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn stroke_char(c: char) -> KeyStroke {
+        KeyStroke {
+            key: KeySpec::Char(c),
+            mods: Modifiers::none(),
+        }
+    }
+
+    fn stroke_scancode(sc: u16, ext: bool) -> KeyStroke {
+        KeyStroke {
+            key: KeySpec::Scancode(sc, ext),
+            mods: Modifiers::none(),
+        }
+    }
+
+    fn stroke_vk(vk: u16) -> KeyStroke {
+        KeyStroke {
+            key: KeySpec::VirtualKey(vk),
+            mods: Modifiers::none(),
+        }
+    }
+
     #[test]
     fn test_parse_token() {
-        assert_eq!(parse_token("ni"), Token::KeySequence("ni".into()));
+        assert_eq!(
+            parse_token("ni"),
+            Token::KeySequence(vec![stroke_char('n'), stroke_char('i')])
+        );
         assert_eq!(parse_token("'あ'"), Token::ImeChar("あ".into()));
         assert_eq!(parse_token("\"A\""), Token::DirectChar("A".into()));
         assert_eq!(parse_token("無"), Token::None);
         assert_eq!(parse_token(""), Token::None);
+        assert_eq!(parse_token("'a\\n'"), Token::ImeChar("a\n".into()));
+        assert_eq!(parse_token("\"\\u0041\""), Token::DirectChar("A".into()));
 
         // Full-width conversion
-        assert_eq!(parse_token("ｎｏ"), Token::KeySequence("no".into()));
-        assert_eq!(parse_token("ａｂｃ"), Token::KeySequence("abc".into()));
+        assert_eq!(
+            parse_token("ｎｏ"),
+            Token::KeySequence(vec![stroke_char('n'), stroke_char('o')])
+        );
+        assert_eq!(
+            parse_token("ａｂｃ"),
+            Token::KeySequence(vec![stroke_char('a'), stroke_char('b'), stroke_char('c')])
+        );
 
         // Special tokens
-        assert_eq!(parse_token("後"), Token::KeySequence("\u{0008}".into()));
-        assert_eq!(parse_token("入"), Token::KeySequence("\u{000D}".into()));
-        assert_eq!(parse_token("左"), Token::KeySequence("\u{F702}".into()));
-        assert_eq!(parse_token("右"), Token::KeySequence("\u{F703}".into()));
+        assert_eq!(
+            parse_token("後"),
+            Token::KeySequence(vec![stroke_scancode(0x0E, false)])
+        );
+        assert_eq!(
+            parse_token("入"),
+            Token::KeySequence(vec![stroke_scancode(0x1C, false)])
+        );
+        assert_eq!(
+            parse_token("左"),
+            Token::KeySequence(vec![stroke_scancode(0x4B, true)])
+        );
+        assert_eq!(
+            parse_token("右"),
+            Token::KeySequence(vec![stroke_scancode(0x4D, true)])
+        );
 
         // Mixed
-        assert_eq!(parse_token("a後b"), Token::KeySequence("a\u{0008}b".into()));
-
-        // Uppercase conversion
-        assert_eq!(parse_token("ＡＢＣ"), Token::KeySequence("ABC".into()));
+        assert_eq!(
+            parse_token("a後b"),
+            Token::KeySequence(vec![
+                stroke_char('a'),
+                stroke_scancode(0x0E, false),
+                stroke_char('b')
+            ])
+        );
 
         // Punctuation
-        assert_eq!(parse_token("，．"), Token::KeySequence(",.".into()));
+        assert_eq!(
+            parse_token("，．"),
+            Token::KeySequence(vec![stroke_char(','), stroke_char('.')])
+        );
+
+        // Function key / VK
+        assert_eq!(
+            parse_token("機10"),
+            Token::KeySequence(vec![stroke_scancode(0x44, false)])
+        );
+        assert_eq!(
+            parse_token("V1B"),
+            Token::KeySequence(vec![stroke_vk(0x1B)])
+        );
+
+        // Modifiers (single-stroke)
+        assert_eq!(
+            parse_token("CA"),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('a'),
+                mods: Modifiers {
+                    ctrl: true,
+                    shift: false,
+                    alt: false,
+                    win: false,
+                },
+            }])
+        );
     }
+
     #[test]
     fn test_parse_layout_name() {
         let content_with_name = "; 新下駄配列
