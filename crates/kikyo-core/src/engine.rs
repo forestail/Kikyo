@@ -35,12 +35,9 @@ impl Engine {
         if self.enabled != enabled {
             self.enabled = enabled;
             if !enabled {
-                let mut profile = Profile::default();
-                profile.update_thumb_keys();
+                // Reset state without discarding the user's profile.
+                let profile = self.chord_engine.profile.clone();
                 self.chord_engine = ChordEngine::new(profile);
-                if let Some(_l) = &self.layout {
-                    // restore profile logic if needed
-                }
             }
             if let Some(ref cb) = self.on_enabled_change {
                 cb(enabled);
@@ -1438,5 +1435,19 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             _ => panic!("Expected Inject Right for Space+D, got {:?}", res),
         }
         engine.process_key(sc_space, false, true, false); // Space Up
+    }
+
+    #[test]
+    fn test_suspend_key_persists_when_disabled() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.suspend_key = crate::chord_engine::SuspendKey::Pause;
+        engine.set_profile(profile);
+
+        engine.set_enabled(false);
+        assert_eq!(
+            engine.get_profile().suspend_key,
+            crate::chord_engine::SuspendKey::Pause
+        );
     }
 }
