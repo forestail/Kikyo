@@ -2,8 +2,8 @@
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
-use std::collections::HashSet;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 use tracing::debug;
 use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
 
@@ -16,6 +16,7 @@ pub struct Engine {
     enabled: bool,
     layout: Option<Layout>,
     on_enabled_change: Option<Box<dyn Fn(bool) + Send + Sync>>,
+    repeat_plans: HashMap<ScKey, Vec<ScKey>>,
 }
 
 impl Default for Engine {
@@ -27,6 +28,7 @@ impl Default for Engine {
             enabled: true,
             layout: None,
             on_enabled_change: None,
+            repeat_plans: HashMap::new(),
         }
     }
 }
@@ -39,6 +41,7 @@ impl Engine {
                 // Reset state without discarding the user's profile.
                 let profile = self.chord_engine.profile.clone();
                 self.chord_engine = ChordEngine::new(profile);
+                self.repeat_plans.clear();
             }
             if let Some(ref cb) = self.on_enabled_change {
                 cb(enabled);
@@ -217,6 +220,10 @@ impl Engine {
 
         let key = ScKey::new(sc, ext);
 
+        if !up && self.is_repeat_event(key) {
+            return self.handle_repeat_event(key, shift, is_japanese);
+        }
+
         // Pre-check: Verify if the key is defined in the current section.
         // If not, we pass immediately to avoid ChordEngine buffering.
         {
@@ -339,6 +346,9 @@ impl Engine {
                     }
                 }
                 Decision::KeyTap(k) => {
+                    if self.repeat_plans.contains_key(&k) {
+                        continue;
+                    }
                     if let Some(token) = self.resolve(&[k], shift, is_japanese) {
                         if let Some(ops) = self.token_to_events(&token) {
                             inject_ops.extend(ops);
@@ -383,6 +393,10 @@ impl Engine {
                     debug!("LatchOff");
                 }
             }
+        }
+
+        if up {
+            self.repeat_plans.remove(&key);
         }
 
         if !inject_ops.is_empty() {
@@ -561,6 +575,220 @@ impl Engine {
                     Some(events)
                 }
             }
+        }
+    }
+
+    fn is_repeat_event(&self, key: ScKey) -> bool {
+        self.chord_engine.state.pressed.contains(&key)
+    }
+
+    fn handle_repeat_event(&mut self, key: ScKey, shift: bool, is_japanese: bool) -> KeyAction {
+        let now = Instant::now();
+        let (keys, consume_pending) = if let Some(keys) = self.repeat_plans.get(&key) {
+            (keys.clone(), false)
+        } else {
+            self.compute_repeat_plan(key, now)
+        };
+
+        let token = self.resolve(&keys, shift, is_japanese);
+        let allow_repeat = self.repeat_allowed_for_token(token.as_ref());
+        if !allow_repeat {
+            return KeyAction::Block;
+        }
+
+        let events = if let Some(token) = token {
+            self.token_to_events(&token)
+                .unwrap_or_else(|| self.repeat_fallback_events(&keys, shift, is_japanese))
+        } else {
+            self.repeat_fallback_events(&keys, shift, is_japanese)
+        };
+
+        if events.is_empty() {
+            return KeyAction::Block;
+        }
+
+        if consume_pending {
+            self.consume_pending_for_repeat(&keys);
+        }
+        self.repeat_plans.entry(key).or_insert(keys);
+        KeyAction::Inject(events)
+    }
+
+    fn compute_repeat_plan(&self, key: ScKey, now: Instant) -> (Vec<ScKey>, bool) {
+        let (mut keys, consume_pending) = if let Some(chord_keys) = self.detect_repeat_chord(key, now)
+        {
+            (chord_keys, true)
+        } else {
+            (self.repeat_single_keys(key), false)
+        };
+
+        if keys.is_empty() {
+            keys.push(key);
+        }
+
+        (keys, consume_pending)
+    }
+
+    fn repeat_single_keys(&self, key: ScKey) -> Vec<ScKey> {
+        let mut keys = vec![key];
+        if self.is_thumb_key(key) {
+            return keys;
+        }
+
+        if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+            let left = tk
+                .left
+                .iter()
+                .find(|k| self.is_active_thumb_key(**k));
+            let right = tk
+                .right
+                .iter()
+                .find(|k| self.is_active_thumb_key(**k));
+
+            if let Some(k) = left.or(right) {
+                keys.push(*k);
+            }
+        }
+
+        keys
+    }
+
+    fn detect_repeat_chord(&self, key: ScKey, now: Instant) -> Option<Vec<ScKey>> {
+        let pending = &self.chord_engine.state.pending;
+        if pending.len() < 2 {
+            return None;
+        }
+
+        let primary = pending.iter().find(|p| p.key == key)?;
+        let mut best_ratio = 0.0;
+        let mut best_key = None;
+        let threshold = self.chord_engine.profile.char_key_overlap_ratio;
+
+        for other in pending.iter() {
+            if other.key == key {
+                continue;
+            }
+
+            let (p1, p2) = if primary.t_down <= other.t_down {
+                (primary, other)
+            } else {
+                (other, primary)
+            };
+
+            let ratio = Self::pending_overlap_ratio(p1, p2, now);
+            if ratio >= threshold && (best_key.is_none() || ratio > best_ratio) {
+                best_ratio = ratio;
+                best_key = Some(other.key);
+            }
+        }
+
+        best_key.map(|other_key| vec![key, other_key])
+    }
+
+    fn pending_overlap_ratio(
+        p1: &crate::chord_engine::PendingKey,
+        p2: &crate::chord_engine::PendingKey,
+        now: Instant,
+    ) -> f64 {
+        let p1_end = p1.t_up.unwrap_or(now);
+        let p2_end = p2.t_up.unwrap_or(now);
+        if p2_end <= p2.t_down {
+            return 0.0;
+        }
+
+        let overlap_start = p2.t_down;
+        let overlap_end = if p1_end < p2_end { p1_end } else { p2_end };
+        let overlap_dur = if overlap_end > overlap_start {
+            overlap_end.duration_since(overlap_start)
+        } else {
+            Duration::ZERO
+        };
+
+        let p2_dur = p2_end.duration_since(p2.t_down);
+        if p2_dur.as_micros() == 0 {
+            return 0.0;
+        }
+        overlap_dur.as_secs_f64() / p2_dur.as_secs_f64()
+    }
+
+    fn consume_pending_for_repeat(&mut self, keys: &[ScKey]) {
+        if keys.len() < 2 {
+            return;
+        }
+
+        let mut remove = HashSet::new();
+        for k in keys {
+            remove.insert(*k);
+        }
+
+        let mut new_pending = Vec::new();
+        for p in self.chord_engine.state.pending.iter() {
+            if remove.contains(&p.key) {
+                if !self.chord_engine.state.pressed.contains(&p.key) {
+                    self.chord_engine.state.down_ts.remove(&p.key);
+                }
+                continue;
+            }
+            new_pending.push(p.clone());
+        }
+        self.chord_engine.state.pending = new_pending;
+    }
+
+    fn is_thumb_key(&self, key: ScKey) -> bool {
+        if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+            return tk.left.contains(&key) || tk.right.contains(&key);
+        }
+        false
+    }
+
+    fn is_active_thumb_key(&self, key: ScKey) -> bool {
+        if !self.chord_engine.state.pressed.contains(&key) {
+            return false;
+        }
+        self.chord_engine
+            .state
+            .pending
+            .iter()
+            .any(|p| p.key == key)
+    }
+
+    fn repeat_allowed_for_token(&self, token: Option<&Token>) -> bool {
+        let profile = &self.chord_engine.profile;
+        match token {
+            Some(t) if Self::is_character_assignment(t) => profile.char_key_repeat_assigned,
+            Some(_) => profile.char_key_repeat_unassigned,
+            None => profile.char_key_repeat_unassigned,
+        }
+    }
+
+    fn repeat_fallback_events(
+        &self,
+        keys: &[ScKey],
+        shift: bool,
+        is_japanese: bool,
+    ) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+        for k in keys {
+            if let Some(token) = self.resolve(&[*k], shift, is_japanese) {
+                if let Some(ops) = self.token_to_events(&token) {
+                    events.extend(ops);
+                    continue;
+                }
+            }
+            events.push(InputEvent::Scancode(k.sc, k.ext, false));
+            events.push(InputEvent::Scancode(k.sc, k.ext, true));
+        }
+        events
+    }
+
+    fn is_character_assignment(token: &Token) -> bool {
+        match token {
+            Token::ImeChar(_) | Token::DirectChar(_) => true,
+            Token::KeySequence(seq) => !seq.is_empty()
+                && seq.iter().all(|stroke| {
+                    stroke.mods.is_empty() && matches!(stroke.key, KeySpec::Char(_))
+                }),
+            Token::None => false,
         }
     }
 }
@@ -973,6 +1201,132 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
                 assert_eq!(up, true);
             }
             _ => panic!("Expected Unicode up"),
+        }
+    }
+
+    #[test]
+    fn test_repeat_assigned_key_emits_repeat_and_suppresses_release() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_repeat_assigned = true;
+        profile.char_key_repeat_unassigned = false;
+        engine.set_profile(profile);
+
+        let res_down = engine.process_key(0x20, false, false, false);
+        assert_eq!(res_down, KeyAction::Block);
+
+        let res_repeat = engine.process_key(0x20, false, false, false);
+        match res_repeat {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 2);
+                assert_eq!(evs[0], InputEvent::Scancode(0x1E, false, false));
+                assert_eq!(evs[1], InputEvent::Scancode(0x1E, false, true));
+            }
+            _ => panic!("Expected Inject for repeat, got {:?}", res_repeat),
+        }
+
+        let res_up = engine.process_key(0x20, false, true, false);
+        assert_eq!(res_up, KeyAction::Block);
+    }
+
+    #[test]
+    fn test_repeat_assigned_key_disabled_allows_release_output() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_repeat_assigned = false;
+        profile.char_key_repeat_unassigned = false;
+        engine.set_profile(profile);
+
+        let res_down = engine.process_key(0x20, false, false, false);
+        assert_eq!(res_down, KeyAction::Block);
+
+        let res_repeat = engine.process_key(0x20, false, false, false);
+        assert_eq!(res_repeat, KeyAction::Block);
+
+        let res_up = engine.process_key(0x20, false, true, false);
+        match res_up {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 2);
+                assert_eq!(evs[0], InputEvent::Scancode(0x1E, false, false));
+                assert_eq!(evs[1], InputEvent::Scancode(0x1E, false, true));
+            }
+            _ => panic!("Expected Inject on release, got {:?}", res_up),
+        }
+    }
+
+    #[test]
+    fn test_repeat_start_uses_chord_definition() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+無
+; R1
+無
+; R2
+a,無,無,無,無,無,無,無,無,無,無,無
+; R3
+無,無,無,無,b,無,無,無,無,無,無
+
+<a>
+; R0
+無
+; R1
+無
+; R2
+無,無,無,無,無,無,無,無,無,無,無,無
+; R3
+無,無,無,無,x,無,無,無,無,無,無
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_repeat_assigned = true;
+        profile.char_key_repeat_unassigned = false;
+        engine.set_profile(profile);
+
+        let res_a_down = engine.process_key(0x1E, false, false, false);
+        assert_eq!(res_a_down, KeyAction::Block);
+
+        let res_b_down = engine.process_key(0x30, false, false, false);
+        assert_eq!(res_b_down, KeyAction::Block);
+
+        let res_repeat = engine.process_key(0x1E, false, false, false);
+        match res_repeat {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 2);
+                assert_eq!(evs[0], InputEvent::Scancode(0x2D, false, false));
+                assert_eq!(evs[1], InputEvent::Scancode(0x2D, false, true));
+            }
+            _ => panic!("Expected Inject for chord repeat, got {:?}", res_repeat),
         }
     }
 
