@@ -278,6 +278,11 @@ fn parse_key_sequence(raw: &str) -> Vec<KeyStroke> {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        if let Some(stroke) = fullwidth_shifted_keystroke(c) {
+            seq.push(stroke);
+            i += 1;
+            continue;
+        }
         if c == '機' {
             let mut j = i + 1;
             let mut digits = String::new();
@@ -330,6 +335,22 @@ fn parse_single_key_char(c: char) -> KeySpec {
         return KeySpec::Scancode(sc, ext);
     }
     KeySpec::Char(normalize_key_char(c))
+}
+
+fn fullwidth_shifted_keystroke(c: char) -> Option<KeyStroke> {
+    let key_char = match c {
+        '（' => '8',
+        '）' => '9',
+        '＋' => ';',
+        '＊' => ':',
+        _ => return None,
+    };
+    let mut mods = Modifiers::none();
+    mods.shift = true;
+    Some(KeyStroke {
+        key: KeySpec::Char(key_char),
+        mods,
+    })
 }
 
 fn normalize_key_char(c: char) -> char {
@@ -422,6 +443,15 @@ mod tests {
         }
     }
 
+    fn stroke_shift_char(c: char) -> KeyStroke {
+        let mut mods = Modifiers::none();
+        mods.shift = true;
+        KeyStroke {
+            key: KeySpec::Char(c),
+            mods,
+        }
+    }
+
     #[test]
     fn test_parse_token() {
         assert_eq!(
@@ -477,6 +507,17 @@ mod tests {
         assert_eq!(
             parse_token("，．"),
             Token::KeySequence(vec![stroke_char(','), stroke_char('.')])
+        );
+        assert_eq!(
+            parse_token("（）"),
+            Token::KeySequence(vec![stroke_shift_char('8'), stroke_shift_char('9')])
+        );
+        assert_eq!(
+            parse_token("＋＊"),
+            Token::KeySequence(vec![
+                stroke_shift_char(';'),
+                stroke_shift_char(':'),
+            ])
         );
 
         // Function key / VK

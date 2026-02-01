@@ -350,7 +350,7 @@ impl Engine {
                         continue;
                     }
                     if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                        if let Some(ops) = self.token_to_events(&token) {
+                        if let Some(ops) = self.token_to_events(&token, shift) {
                             inject_ops.extend(ops);
                         }
                     } else {
@@ -362,7 +362,7 @@ impl Engine {
                 }
                 Decision::Chord(keys) => {
                     if let Some(token) = self.resolve(&keys, shift, is_japanese) {
-                        if let Some(ops) = self.token_to_events(&token) {
+                        if let Some(ops) = self.token_to_events(&token, shift) {
                             inject_ops.extend(ops);
                         }
                     } else {
@@ -371,7 +371,7 @@ impl Engine {
                             // Try to resolve as single key (unshifted)
                             let mut resolved = false;
                             if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                if let Some(ops) = self.token_to_events(&token) {
+                                if let Some(ops) = self.token_to_events(&token, shift) {
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -549,13 +549,13 @@ impl Engine {
             .map(|(_, rc)| *rc)
     }
 
-    fn token_to_events(&self, token: &Token) -> Option<Vec<InputEvent>> {
+    fn token_to_events(&self, token: &Token, shift_held: bool) -> Option<Vec<InputEvent>> {
         match token {
             Token::None => None,
             Token::KeySequence(seq) => {
                 let mut events = Vec::new();
                 for stroke in seq {
-                    append_keystroke_events(&mut events, stroke);
+                    append_keystroke_events(&mut events, stroke, shift_held);
                 }
                 if events.is_empty() {
                     None
@@ -597,7 +597,7 @@ impl Engine {
         }
 
         let events = if let Some(token) = token {
-            self.token_to_events(&token)
+            self.token_to_events(&token, shift)
                 .unwrap_or_else(|| self.repeat_fallback_events(&keys, shift, is_japanese))
         } else {
             self.repeat_fallback_events(&keys, shift, is_japanese)
@@ -770,7 +770,7 @@ impl Engine {
         let mut events = Vec::new();
         for k in keys {
             if let Some(token) = self.resolve(&[*k], shift, is_japanese) {
-                if let Some(ops) = self.token_to_events(&token) {
+                if let Some(ops) = self.token_to_events(&token, shift) {
                     events.extend(ops);
                     continue;
                 }
@@ -793,7 +793,7 @@ impl Engine {
     }
 }
 
-fn append_keystroke_events(events: &mut Vec<InputEvent>, stroke: &KeyStroke) {
+fn append_keystroke_events(events: &mut Vec<InputEvent>, stroke: &KeyStroke, shift_held: bool) {
     let key_events = match stroke.key {
         KeySpec::Scancode(sc, ext) => Some((sc, ext)),
         KeySpec::VirtualKey(vk) => vk_to_scancode(vk),
@@ -801,7 +801,11 @@ fn append_keystroke_events(events: &mut Vec<InputEvent>, stroke: &KeyStroke) {
     };
 
     if let Some((sc, ext)) = key_events {
-        let mods = modifier_scancodes(stroke.mods);
+        let mut mods = stroke.mods;
+        if mods.shift && shift_held {
+            mods.shift = false;
+        }
+        let mods = modifier_scancodes(mods);
         for (mod_sc, mod_ext) in mods.iter() {
             events.push(InputEvent::Scancode(*mod_sc, *mod_ext, false));
         }
@@ -1184,7 +1188,7 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
         }]);
         // We can access private methods in tests module of the same file
         let events = engine
-            .token_to_events(&token)
+            .token_to_events(&token, false)
             .expect("Should return events");
 
         assert_eq!(events.len(), 2);
