@@ -1,4 +1,4 @@
-﻿use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, Profile};
+﻿use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile};
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
@@ -17,6 +17,7 @@ pub struct Engine {
     layout: Option<Layout>,
     on_enabled_change: Option<Box<dyn Fn(bool) + Send + Sync>>,
     repeat_plans: HashMap<ScKey, Vec<ScKey>>,
+    pending_nonshift_for_shift: HashSet<ScKey>,
 }
 
 impl Default for Engine {
@@ -29,6 +30,7 @@ impl Default for Engine {
             layout: None,
             on_enabled_change: None,
             repeat_plans: HashMap::new(),
+            pending_nonshift_for_shift: HashSet::new(),
         }
     }
 }
@@ -42,6 +44,7 @@ impl Engine {
                 let profile = self.chord_engine.profile.clone();
                 self.chord_engine = ChordEngine::new(profile);
                 self.repeat_plans.clear();
+                self.pending_nonshift_for_shift.clear();
             }
             if let Some(ref cb) = self.on_enabled_change {
                 cb(enabled);
@@ -245,6 +248,8 @@ impl Engine {
             return self.handle_repeat_event(key, shift, is_japanese);
         }
 
+        self.handle_deferred_nonshift_before_event(key, up, shift, is_japanese);
+
         // Pre-check: Verify if the key is defined in the current section.
         // If not, we pass immediately to avoid ChordEngine buffering.
         {
@@ -382,14 +387,31 @@ impl Engine {
                     }
                 }
                 Decision::Chord(keys) => {
-                    if let Some(token) = self.resolve(&keys, shift, is_japanese) {
+                    let (token, modifier) = self.resolve_with_modifier(&keys, shift, is_japanese);
+                    if let Some(token) = token {
                         if let Some(ops) = self.token_to_events(&token, shift) {
                             inject_ops.extend(ops);
                         }
+                        if let Some(mod_key) = modifier {
+                            self.consume_non_modifier_keys(&keys, mod_key);
+                        }
                     } else {
-                        // Fallback: undefined chord -> treat as sequential inputs
-                        for k in keys {
-                            // Try to resolve as single key (unshifted)
+                        // Continuous shift rollover case:
+                        // if an older still-held key and a later key formed an undefined chord,
+                        // emit only the later key to avoid leaking the older key's single output.
+                        let undefined_rollover_pair =
+                            self.chord_engine.profile.char_key_continuous && keys.len() == 2;
+                        let older_pressed =
+                            undefined_rollover_pair && self.chord_engine.state.pressed.contains(&keys[0]);
+                        let newer_pressed =
+                            undefined_rollover_pair && self.chord_engine.state.pressed.contains(&keys[1]);
+                        let older_is_continuous_used_modifier = undefined_rollover_pair
+                            && self.is_char_shift_key(keys[0])
+                            && self.chord_engine.state.used_modifiers.contains(&keys[0]);
+
+                        if undefined_rollover_pair && older_pressed && !newer_pressed {
+                            let k = keys[1];
+                            self.chord_engine.state.used_modifiers.remove(&k);
                             let mut resolved = false;
                             if let Some(token) = self.resolve(&[k], shift, is_japanese) {
                                 if let Some(ops) = self.token_to_events(&token, shift) {
@@ -397,12 +419,51 @@ impl Engine {
                                     resolved = true;
                                 }
                             }
-
                             if !resolved {
-                                // Ultimate fallback: raw scancode
-                                inject_ops.push(InputEvent::Scancode(k.sc, k.ext, false)); // Down
+                                inject_ops.push(InputEvent::Scancode(k.sc, k.ext, false));
                                 inject_ops.push(InputEvent::Scancode(k.sc, k.ext, true));
-                                // Up
+                            }
+                        } else if undefined_rollover_pair && !older_pressed && newer_pressed {
+                            // Older key was released first during rollover.
+                            // Suppress older key output and let newer key resolve on its own Up.
+                            self.chord_engine.state.used_modifiers.remove(&keys[1]);
+                        } else if undefined_rollover_pair
+                            && !older_pressed
+                            && !newer_pressed
+                            && older_is_continuous_used_modifier
+                        {
+                            // Both keys are up and the older key is a carried-over continuous modifier.
+                            // Emit only the later key to avoid leaking the older key's single output.
+                            let k = keys[1];
+                            let mut resolved = false;
+                            if let Some(token) = self.resolve(&[k], shift, is_japanese) {
+                                if let Some(ops) = self.token_to_events(&token, shift) {
+                                    inject_ops.extend(ops);
+                                    resolved = true;
+                                }
+                            }
+                            if !resolved {
+                                inject_ops.push(InputEvent::Scancode(k.sc, k.ext, false));
+                                inject_ops.push(InputEvent::Scancode(k.sc, k.ext, true));
+                            }
+                        } else {
+                            // Fallback: undefined chord -> treat as sequential inputs
+                            for k in keys {
+                                // Try to resolve as single key (unshifted)
+                                let mut resolved = false;
+                                if let Some(token) = self.resolve(&[k], shift, is_japanese) {
+                                    if let Some(ops) = self.token_to_events(&token, shift) {
+                                        inject_ops.extend(ops);
+                                        resolved = true;
+                                    }
+                                }
+
+                                if !resolved {
+                                    // Ultimate fallback: raw scancode
+                                    inject_ops.push(InputEvent::Scancode(k.sc, k.ext, false)); // Down
+                                    inject_ops.push(InputEvent::Scancode(k.sc, k.ext, true));
+                                    // Up
+                                }
                             }
                         }
                     }
@@ -437,7 +498,19 @@ impl Engine {
     }
 
     fn resolve(&self, keys: &[ScKey], shift: bool, is_japanese: bool) -> Option<Token> {
-        let layout = self.layout.as_ref()?;
+        self.resolve_with_modifier(keys, shift, is_japanese).0
+    }
+
+    fn resolve_with_modifier(
+        &self,
+        keys: &[ScKey],
+        shift: bool,
+        is_japanese: bool,
+    ) -> (Option<Token>, Option<ScKey>) {
+        let layout = match self.layout.as_ref() {
+            Some(layout) => layout,
+            None => return (None, None),
+        };
 
         // 1. Determine "Thumb Shift" status
         let mut has_left_thumb = false;
@@ -483,7 +556,10 @@ impl Engine {
         let section_name = format!("{}{}", prefix, suffix);
         // tracing::info!("Resolve: section={} keys={:?}", section_name, keys);
 
-        let section = layout.sections.get(&section_name)?;
+        let section = match layout.sections.get(&section_name) {
+            Some(section) => section,
+            None => return (None, None),
+        };
 
         // 4. Update keys for lookup (Remove Thumb Modifiers)
         let lookup_keys: Vec<ScKey> = if has_left_thumb || has_right_thumb {
@@ -510,7 +586,7 @@ impl Engine {
         };
 
         if lookup_keys.is_empty() {
-            return None;
+            return (None, None);
         }
 
         if lookup_keys.len() == 1 {
@@ -523,28 +599,28 @@ impl Engine {
                 if let Some(sub) = section.sub_planes.get(tag) {
                     if let Some(rc) = self.key_to_rc(key) {
                         if let Some(token) = sub.map.get(&rc) {
-                            return Some(token.clone());
+                            return (Some(token.clone()), None);
                         }
                     }
                 }
             }
 
             if let Some(rc) = self.key_to_rc(key) {
-                return section.base_plane.map.get(&rc).cloned();
+                return (section.base_plane.map.get(&rc).cloned(), None);
             }
         } else if lookup_keys.len() == 2 {
             let k1 = lookup_keys[0];
             let k2 = lookup_keys[1];
 
             if let Some(token) = self.try_resolve_modifier(section, k1, k2) {
-                return Some(token);
+                return (Some(token), Some(k1));
             }
             if let Some(token) = self.try_resolve_modifier(section, k2, k1) {
-                return Some(token);
+                return (Some(token), Some(k2));
             }
         }
 
-        None
+        (None, None)
     }
 
     fn try_resolve_modifier(
@@ -557,10 +633,123 @@ impl Engine {
         let tag = format!("<{}>", mod_name);
         if let Some(sub) = section.sub_planes.get(&tag) {
             if let Some(rc) = self.key_to_rc(target_key) {
-                return sub.map.get(&rc).cloned();
+                if let Some(token) = sub.map.get(&rc) {
+                    if !matches!(token, Token::None) {
+                        return Some(token.clone());
+                    }
+                }
             }
         }
         None
+    }
+
+    fn is_char_shift_key(&self, key: ScKey) -> bool {
+        self.chord_engine.profile.trigger_keys.contains_key(&key)
+    }
+
+    fn deferred_key_can_form_chord_with(&self, deferred_key: ScKey, next_key: ScKey, shift: bool, is_japanese: bool) -> bool {
+        let (token, modifier) = self.resolve_with_modifier(&[deferred_key, next_key], shift, is_japanese);
+        token.is_some() && modifier.is_some()
+    }
+
+    fn handle_deferred_nonshift_before_event(&mut self, key: ScKey, up: bool, shift: bool, is_japanese: bool) {
+        if self.pending_nonshift_for_shift.is_empty() {
+            return;
+        }
+
+        if up {
+            if self.pending_nonshift_for_shift.remove(&key) {
+                let mut remove = HashSet::new();
+                remove.insert(key);
+                self.remove_keys_from_pending(&remove, true);
+            }
+            return;
+        }
+
+        if self.is_char_shift_key(key) {
+            let deferred_keys: Vec<ScKey> = self.pending_nonshift_for_shift.iter().copied().collect();
+            let has_valid_chord = deferred_keys
+                .into_iter()
+                .filter(|k| self.chord_engine.state.pressed.contains(k))
+                .any(|k| self.deferred_key_can_form_chord_with(k, key, shift, is_japanese));
+            if has_valid_chord {
+                return;
+            }
+        }
+
+        let remove: HashSet<ScKey> = self.pending_nonshift_for_shift.drain().collect();
+        self.remove_keys_from_pending(&remove, true);
+    }
+
+    fn ensure_pending_key(&mut self, key: ScKey) {
+        if let Some(p) = self.chord_engine.state.pending.iter_mut().find(|p| p.key == key) {
+            p.t_up = None;
+            return;
+        }
+
+        let t_down = self
+            .chord_engine
+            .state
+            .down_ts
+            .get(&key)
+            .copied()
+            .unwrap_or_else(Instant::now);
+
+        self.chord_engine.state.pending.push(PendingKey {
+            key,
+            t_down,
+            t_up: None,
+        });
+    }
+
+    fn remove_keys_from_pending(&mut self, remove: &HashSet<ScKey>, clear_down_ts: bool) {
+        if remove.is_empty() {
+            return;
+        }
+
+        let mut new_pending = Vec::new();
+        for p in self.chord_engine.state.pending.iter() {
+            if remove.contains(&p.key) {
+                if clear_down_ts || !self.chord_engine.state.pressed.contains(&p.key) {
+                    self.chord_engine.state.down_ts.remove(&p.key);
+                }
+                continue;
+            }
+            new_pending.push(p.clone());
+        }
+        self.chord_engine.state.pending = new_pending;
+    }
+
+    fn consume_non_modifier_keys(&mut self, keys: &[ScKey], keep: ScKey) {
+        let mut remove = HashSet::new();
+        let continuous = self.chord_engine.profile.char_key_continuous;
+
+        for k in keys {
+            if *k == keep {
+                continue;
+            }
+
+            let is_thumb = self.is_thumb_key(*k);
+
+            if continuous && !is_thumb && self.chord_engine.state.pressed.contains(k) {
+                self.pending_nonshift_for_shift.insert(*k);
+                self.ensure_pending_key(*k);
+                continue;
+            }
+
+            remove.insert(*k);
+        }
+
+        if remove.is_empty() {
+            return;
+        }
+
+        self.chord_engine
+            .state
+            .used_modifiers
+            .retain(|k| !remove.contains(k));
+
+        self.remove_keys_from_pending(&remove, false);
     }
 
     fn key_to_rc(&self, key: ScKey) -> Option<crate::types::Rc> {
@@ -2018,6 +2207,504 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             _ => panic!("Expected Inject Right for Space+D, got {:?}", res),
         }
         engine.process_key(sc_space, false, true, false); // Space Up
+    }
+
+    #[test]
+    fn test_nonshift_continues_only_for_next_shift() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+a,xx,d,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<k>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+x,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<s>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+y,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        engine.set_profile(profile);
+
+        // Hold A, chord with K -> expect "x"
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x25, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2D, _, _))),
+                    "Expected 'x' output for A+K chord"
+                );
+            }
+            _ => panic!("Expected Inject for A+K chord, got {:?}", res),
+        }
+
+        // Next key is shift (S) -> A should remain and chord to "y"
+        assert_eq!(engine.process_key(0x1F, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x1F, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x15, _, _))),
+                    "Expected 'y' output for A+S chord"
+                );
+            }
+            _ => panic!("Expected Inject for A+S chord, got {:?}", res),
+        }
+
+        // Next key is non-shift (D) -> A should be flushed, only D outputs
+        assert_eq!(engine.process_key(0x20, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x20, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x20, _, _))),
+                    "Expected 'd' output after flush"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x1E, _, _))),
+                    "Did not expect 'a' output after flush"
+                );
+            }
+            _ => panic!("Expected Inject for D tap, got {:?}", res),
+        }
+
+        // Release A -> should not emit A
+        assert_eq!(engine.process_key(0x1E, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_continuous_shift_keeps_non_modifier_even_if_trigger_key() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,xx,f,xx,xx,xx,k,si,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<k>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,xx,mo,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<l>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,xx,ri,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<f>
+; R0
+無,無,無,無,無,無,無,無,無,無,無,無
+; R1
+無,無,無,無,無,無,無,無,無,無,無,無
+; R2
+無,無,無,無,無,無,無,無,無,無,無,無
+; R3
+無,無,無,無,無,無,無,無,無,無,無,無
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.0;
+        engine.set_profile(profile);
+        // Hold F, then chord F+K -> "mo"
+        assert_eq!(engine.process_key(0x21, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x25, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x32, _, _))),
+                    "Expected 'mo' output for F+K chord"
+                );
+            }
+            _ => panic!("Expected Inject for F+K chord, got {:?}", res),
+        }
+
+        // Keep holding F, then press L. F must remain pending and resolve with <l> to "ri".
+        assert_eq!(engine.process_key(0x26, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x26, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x13, _, _))),
+                    "Expected 'ri' output for F+L chord"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x1F, _, _))),
+                    "Did not expect base 'si' output"
+                );
+            }
+            _ => panic!("Expected Inject for F+L chord, got {:?}", res),
+        }
+
+        // Release F -> should not emit extra output.
+        assert_eq!(engine.process_key(0x21, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_continuous_shift_undefined_rollover_emits_only_later_key() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,t,xx,xx,xx,g,xx,xx,xx
+; R2
+xx,xx,xx,xx,xx,xx,u,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<o>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,nyu,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,xx,xx,xx,xx,無,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<j>
+; R0
+無,無,無,無,無,無,無,無,無,無,無,無
+; R1
+無,無,無,無,無,無,無,無,無,無,無,無
+; R2
+無,無,無,無,無,無,無,無,無,無,無,無
+; R3
+無,無,無,無,無,無,無,無,無,無,無
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.0;
+        engine.set_profile(profile);
+
+        // T + O => "nyu" (O modifier), keep O physically held.
+        assert_eq!(engine.process_key(0x14, false, false, false), KeyAction::Block); // T down
+        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block); // O down
+        let res = engine.process_key(0x14, false, true, false); // T up
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x31, _, _))),
+                    "Expected 'nyu' output for T+O chord"
+                );
+            }
+            _ => panic!("Expected Inject for T+O chord, got {:?}", res),
+        }
+
+        // O is still down; J rolls over, but O+J mapping is undefined.
+        // Only J single output should be emitted (not O single output).
+        assert_eq!(engine.process_key(0x24, false, false, false), KeyAction::Block); // J down
+        let res = engine.process_key(0x24, false, true, false); // J up
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x16, _, _))),
+                    "Expected only later J output ('u')"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x22, _, _))),
+                    "Did not expect older O output ('g')"
+                );
+            }
+            _ => panic!("Expected Inject for J tap, got {:?}", res),
+        }
+
+        // O release should not emit base output.
+        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_continuous_shift_undefined_rollover_when_older_released_first() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,t,xx,xx,xx,g,xx,xx,xx
+; R2
+xx,xx,xx,xx,xx,xx,u,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<o>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,nyu,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,xx,xx,xx,xx,無,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<j>
+; R0
+無,無,無,無,無,無,無,無,無,無,無,無
+; R1
+無,無,無,無,無,無,無,無,無,無,無,無
+; R2
+無,無,無,無,無,無,無,無,無,無,無,無
+; R3
+無,無,無,無,無,無,無,無,無,無,無
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        engine.set_profile(profile);
+
+        // T + O => "nyu"
+        assert_eq!(engine.process_key(0x14, false, false, false), KeyAction::Block); // T down
+        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block); // O down
+        let res = engine.process_key(0x14, false, true, false); // T up
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x31, _, _))),
+                    "Expected 'nyu' output for T+O chord"
+                );
+            }
+            _ => panic!("Expected Inject for T+O chord, got {:?}", res),
+        }
+
+        // J down while O is held.
+        assert_eq!(engine.process_key(0x24, false, false, false), KeyAction::Block);
+
+        // O up comes before J up. This must not emit O single output.
+        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+
+        // J up emits only J single output ('u').
+        let res = engine.process_key(0x24, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x16, _, _))),
+                    "Expected only J output ('u')"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x22, _, _))),
+                    "Did not expect O output ('g')"
+                );
+            }
+            _ => panic!("Expected Inject for J tap, got {:?}", res),
+        }
+    }
+
+    #[test]
+    fn test_continuous_shift_undefined_rollover_non_modifier_later_key() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,ku,xx,xx,g,xx,xx,xx
+; R2
+ri,xx,xx,xx,xx,ku,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<o>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,無,xx,xx,xx,xx,xx,xx
+; R2
+ryo,xx,xx,xx,xx,無,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.0;
+        engine.set_profile(profile);
+
+        // A + O => "ryo"
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block); // A down
+        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block); // O down
+        let res = engine.process_key(0x1E, false, true, false); // A up
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x13, _, _))),
+                    "Expected 'ryo' output for A+O chord"
+                );
+            }
+            _ => panic!("Expected Inject for A+O chord, got {:?}", res),
+        }
+
+        // H down while O is still held.
+        assert_eq!(engine.process_key(0x23, false, false, false), KeyAction::Block);
+
+        // O up before H up should not emit O single output ('g').
+        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+
+        // H up emits only "ku" (no leaked 'g').
+        let res = engine.process_key(0x23, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x25, _, _))),
+                    "Expected 'ku' output on H"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x22, _, _))),
+                    "Did not expect O single output ('g')"
+                );
+            }
+            _ => panic!("Expected Inject for H tap, got {:?}", res),
+        }
+    }
+
+    #[test]
+    fn test_continuous_shift_sequential_rollover_does_not_leak_old_modifier_tap() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,ku,xx,xx,g,xx,xx,xx
+; R2
+ri,xx,xx,xx,xx,ku,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<o>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,無,xx,xx,xx,xx,xx,xx
+; R2
+ryo,xx,xx,xx,xx,無,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.2;
+        engine.set_profile(profile);
+
+        // A + O => "ryo"
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block);
+        let res = engine.process_key(0x1E, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x13, _, _))),
+                    "Expected 'ryo' output for A+O chord"
+                );
+            }
+            _ => panic!("Expected Inject for A+O chord, got {:?}", res),
+        }
+
+        // H down while O is held, then quickly O up and later H up to force sequential decision.
+        assert_eq!(engine.process_key(0x23, false, false, false), KeyAction::Block);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+        std::thread::sleep(Duration::from_millis(40));
+        let res = engine.process_key(0x23, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x25, _, _))),
+                    "Expected 'ku' output on H"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x22, _, _))),
+                    "Did not expect O single output ('g')"
+                );
+            }
+            _ => panic!("Expected Inject for H tap, got {:?}", res),
+        }
     }
 
     #[test]

@@ -680,14 +680,31 @@ impl ChordEngine {
                 // BUT if p1 is still pressed, and p2 is pressed... Min(p1.up, p2.up) is unknown.
                 // So we WAIT if p2 is pressed.
 
-                if p2.t_up.is_none() {
-                    // P2 still down. Wait.
-                    continue;
-                }
-
-                // P2 is Up. P1 might be Up or Down.
                 let p1_end = p1.t_up.unwrap_or(now);
-                let p2_end = p2.t_up.unwrap(); // Known
+                let p2_end = p2.t_up.unwrap_or(now);
+
+                let ratio_den = if p2.t_up.is_none() {
+                    let kind2 = self.modifier_kind(p2.key);
+                    let continuous2 = self.modifier_is_continuous(kind2);
+                    if continuous2 && p1.t_up.is_some() {
+                        let p1_dur = p1_end.duration_since(p1.t_down);
+                        if p1_dur.as_micros() > 0 {
+                            p1_dur.as_secs_f64()
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        // P2 still down and no special-case.
+                        continue;
+                    }
+                } else {
+                    let p2_dur = p2_end.duration_since(p2.t_down);
+                    if p2_dur.as_micros() > 0 {
+                        p2_dur.as_secs_f64()
+                    } else {
+                        0.0
+                    }
+                };
 
                 // Overlap = Intersection of [p1.down, p1_end] and [p2.down, p2_end]
                 // Since p1.down <= p2.down, Intersection start is p2.down.
@@ -702,11 +719,8 @@ impl ChordEngine {
                     Duration::ZERO
                 };
 
-                let p2_dur = p2_end.duration_since(p2.t_down);
-
-                // Avoid division by zero (should be rare/impossible for real key press)
-                let ratio = if p2_dur.as_micros() > 0 {
-                    overlap_dur.as_secs_f64() / p2_dur.as_secs_f64()
+                let ratio = if ratio_den > 0.0 {
+                    overlap_dur.as_secs_f64() / ratio_den
                 } else {
                     0.0
                 };
@@ -759,7 +773,15 @@ impl ChordEngine {
                     // P2 remains pending (might chord with next).
                     // BUT: If P1 is flushed, we must mark it.
                     flushed_indices.insert(idx1);
-                    output.push(Decision::KeyTap(p1.key));
+
+                    let kind1 = self.modifier_kind(p1.key);
+                    let suppress_p1_tap = kind1.is_modifier()
+                        && self.modifier_is_continuous(kind1)
+                        && self.state.used_modifiers.contains(&p1.key);
+
+                    if !suppress_p1_tap {
+                        output.push(Decision::KeyTap(p1.key));
+                    }
 
                     // We do NOT break here, because p1 is now flushed, we continue outer loop?
                     // Actually if p1 is flushed, we shouldn't continue checking p1 against others.
