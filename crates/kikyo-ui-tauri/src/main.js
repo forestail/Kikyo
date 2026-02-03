@@ -1,9 +1,10 @@
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+let globalEnabledCb;
+let statusMsg;
 
 // Elements
 let layoutPathInput, loadLayoutBtn, browseLayoutBtn;
-let globalEnabledCb;
-let statusMsg;
 
 // Sidebar
 let navItems, sections;
@@ -357,6 +358,9 @@ window.addEventListener("DOMContentLoaded", () => {
     if (globalEnabledCb) globalEnabledCb.checked = enabled;
     statusMsg.innerText = enabled ? "有効" : "無効";
   });
+
+  // Autostart init
+  initAutoLaunch();
 });
 
 async function refreshEnabledState() {
@@ -368,4 +372,31 @@ async function refreshEnabledState() {
   } catch (e) {
     console.error(e);
   }
+}
+
+async function initAutoLaunch() {
+  const autoLaunchCb = document.querySelector("#auto-launch");
+  if (!autoLaunchCb) return;
+
+  try {
+    const cur = await invoke('plugin:autostart|is_enabled');
+    autoLaunchCb.checked = cur;
+  } catch (e) {
+    console.error("Autostart check failed:", e);
+  }
+
+  autoLaunchCb.addEventListener("change", async () => {
+    try {
+      if (autoLaunchCb.checked) {
+        await invoke('plugin:autostart|enable');
+      } else {
+        await invoke('plugin:autostart|disable');
+      }
+    } catch (e) {
+      console.error("Autostart toggle failed:", e);
+      statusMsg.innerText = "自動起動設定エラー: " + e;
+      // Revert
+      autoLaunchCb.checked = !autoLaunchCb.checked;
+    }
+  });
 }

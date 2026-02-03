@@ -235,6 +235,10 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![]),
+        ))
         .manage(AppState {
             current_yab_path: Mutex::new(None),
             layout_name: Mutex::new(None),
