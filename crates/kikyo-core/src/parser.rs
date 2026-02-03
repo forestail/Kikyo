@@ -60,7 +60,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
 
     for (i, line) in content.lines().enumerate() {
         let line = line.trim();
-        if i == 0 && line.starts_with(';') {
+        if layout.name.is_none() && line.starts_with(';') {
             let name = line.trim_start_matches(';').trim().to_string();
             if !name.is_empty() {
                 layout.name = Some(name);
@@ -514,10 +514,7 @@ mod tests {
         );
         assert_eq!(
             parse_token("＋＊"),
-            Token::KeySequence(vec![
-                stroke_shift_char(';'),
-                stroke_shift_char(':'),
-            ])
+            Token::KeySequence(vec![stroke_shift_char(';'), stroke_shift_char(':'),])
         );
 
         // Function key / VK
@@ -547,6 +544,7 @@ mod tests {
 
     #[test]
     fn test_parse_layout_name() {
+        // Case 1: Standard (First line)
         let content_with_name = "; 新下駄配列
 [Main]
 a,b
@@ -554,17 +552,28 @@ a,b
         let layout = parse_yab_content(content_with_name).expect("Failed to parse");
         assert_eq!(layout.name, Some("新下駄配列".to_string()));
 
-        let content_without_name = "
+        // Case 2: Skip empty lines and empty comments
+        let content_skip = "
+
+;
+;
+;   Real Name
 [Main]
 a,b
 ";
-        // Note: Our current logic checks the VERY FIRST line of the string.
-        // In the string literal above, the first line is empty (newline).
-        // Let's adjust the test string to be precise.
-        let layout_no_name = parse_yab_content(content_without_name.trim_start()).expect("Failed");
-        // If it starts with [Main], it's not a comment, so name should be None.
+        let layout_skip = parse_yab_content(content_skip).expect("Failed to parse");
+        assert_eq!(layout_skip.name, Some("Real Name".to_string()));
+
+        // Case 3: No name found (starts with section)
+        let content_no_name = "
+;
+[Main]
+a,b
+";
+        let layout_no_name = parse_yab_content(content_no_name).expect("Failed");
         assert_eq!(layout_no_name.name, None);
 
+        // Case 4: Name variation
         let content_name_variation = ";My Layout  ";
         let layout_var = parse_yab_content(content_name_variation).expect("Failed");
         assert_eq!(layout_var.name, Some("My Layout".to_string()));
