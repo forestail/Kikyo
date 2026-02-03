@@ -1,4 +1,4 @@
-﻿use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile};
+use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile};
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
@@ -195,11 +195,7 @@ impl Engine {
                         let key = ScKey::new(sc, false);
                         if !profile.trigger_keys.contains_key(&key) {
                             profile.trigger_keys.insert(key, tag.clone());
-                            tracing::info!(
-                                "   -> Registered TriggerKey: {} (sc={:02X})",
-                                tag,
-                                sc
-                            );
+                            tracing::info!("   -> Registered TriggerKey: {} (sc={:02X})", tag, sc);
                         }
                         target_keys.insert(key);
                     }
@@ -401,10 +397,10 @@ impl Engine {
                         // emit only the later key to avoid leaking the older key's single output.
                         let undefined_rollover_pair =
                             self.chord_engine.profile.char_key_continuous && keys.len() == 2;
-                        let older_pressed =
-                            undefined_rollover_pair && self.chord_engine.state.pressed.contains(&keys[0]);
-                        let newer_pressed =
-                            undefined_rollover_pair && self.chord_engine.state.pressed.contains(&keys[1]);
+                        let older_pressed = undefined_rollover_pair
+                            && self.chord_engine.state.pressed.contains(&keys[0]);
+                        let newer_pressed = undefined_rollover_pair
+                            && self.chord_engine.state.pressed.contains(&keys[1]);
                         let older_is_continuous_used_modifier = undefined_rollover_pair
                             && self.is_char_shift_key(keys[0])
                             && self.chord_engine.state.used_modifiers.contains(&keys[0]);
@@ -647,12 +643,25 @@ impl Engine {
         self.chord_engine.profile.trigger_keys.contains_key(&key)
     }
 
-    fn deferred_key_can_form_chord_with(&self, deferred_key: ScKey, next_key: ScKey, shift: bool, is_japanese: bool) -> bool {
-        let (token, modifier) = self.resolve_with_modifier(&[deferred_key, next_key], shift, is_japanese);
+    fn deferred_key_can_form_chord_with(
+        &self,
+        deferred_key: ScKey,
+        next_key: ScKey,
+        shift: bool,
+        is_japanese: bool,
+    ) -> bool {
+        let (token, modifier) =
+            self.resolve_with_modifier(&[deferred_key, next_key], shift, is_japanese);
         token.is_some() && modifier.is_some()
     }
 
-    fn handle_deferred_nonshift_before_event(&mut self, key: ScKey, up: bool, shift: bool, is_japanese: bool) {
+    fn handle_deferred_nonshift_before_event(
+        &mut self,
+        key: ScKey,
+        up: bool,
+        shift: bool,
+        is_japanese: bool,
+    ) {
         if self.pending_nonshift_for_shift.is_empty() {
             return;
         }
@@ -666,15 +675,13 @@ impl Engine {
             return;
         }
 
-        if self.is_char_shift_key(key) {
-            let deferred_keys: Vec<ScKey> = self.pending_nonshift_for_shift.iter().copied().collect();
-            let has_valid_chord = deferred_keys
-                .into_iter()
-                .filter(|k| self.chord_engine.state.pressed.contains(k))
-                .any(|k| self.deferred_key_can_form_chord_with(k, key, shift, is_japanese));
-            if has_valid_chord {
-                return;
-            }
+        let deferred_keys: Vec<ScKey> = self.pending_nonshift_for_shift.iter().copied().collect();
+        let has_valid_chord = deferred_keys
+            .into_iter()
+            .filter(|k| self.chord_engine.state.pressed.contains(k))
+            .any(|k| self.deferred_key_can_form_chord_with(k, key, shift, is_japanese));
+        if has_valid_chord {
+            return;
         }
 
         let remove: HashSet<ScKey> = self.pending_nonshift_for_shift.drain().collect();
@@ -682,7 +689,13 @@ impl Engine {
     }
 
     fn ensure_pending_key(&mut self, key: ScKey) {
-        if let Some(p) = self.chord_engine.state.pending.iter_mut().find(|p| p.key == key) {
+        if let Some(p) = self
+            .chord_engine
+            .state
+            .pending
+            .iter_mut()
+            .find(|p| p.key == key)
+        {
             p.t_up = None;
             return;
         }
@@ -825,12 +838,12 @@ impl Engine {
     }
 
     fn compute_repeat_plan(&self, key: ScKey, now: Instant) -> (Vec<ScKey>, bool) {
-        let (mut keys, consume_pending) = if let Some(chord_keys) = self.detect_repeat_chord(key, now)
-        {
-            (chord_keys, true)
-        } else {
-            (self.repeat_single_keys(key), false)
-        };
+        let (mut keys, consume_pending) =
+            if let Some(chord_keys) = self.detect_repeat_chord(key, now) {
+                (chord_keys, true)
+            } else {
+                (self.repeat_single_keys(key), false)
+            };
 
         if keys.is_empty() {
             keys.push(key);
@@ -846,14 +859,8 @@ impl Engine {
         }
 
         if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-            let left = tk
-                .left
-                .iter()
-                .find(|k| self.is_active_thumb_key(**k));
-            let right = tk
-                .right
-                .iter()
-                .find(|k| self.is_active_thumb_key(**k));
+            let left = tk.left.iter().find(|k| self.is_active_thumb_key(**k));
+            let right = tk.right.iter().find(|k| self.is_active_thumb_key(**k));
 
             if let Some(k) = left.or(right) {
                 keys.push(*k);
@@ -955,11 +962,7 @@ impl Engine {
         if !self.chord_engine.state.pressed.contains(&key) {
             return false;
         }
-        self.chord_engine
-            .state
-            .pending
-            .iter()
-            .any(|p| p.key == key)
+        self.chord_engine.state.pending.iter().any(|p| p.key == key)
     }
 
     fn repeat_allowed_for_token(&self, token: Option<&Token>) -> bool {
@@ -994,10 +997,12 @@ impl Engine {
     fn is_character_assignment(token: &Token) -> bool {
         match token {
             Token::ImeChar(_) | Token::DirectChar(_) => true,
-            Token::KeySequence(seq) => !seq.is_empty()
-                && seq.iter().all(|stroke| {
-                    stroke.mods.is_empty() && matches!(stroke.key, KeySpec::Char(_))
-                }),
+            Token::KeySequence(seq) => {
+                !seq.is_empty()
+                    && seq.iter().all(|stroke| {
+                        stroke.mods.is_empty() && matches!(stroke.key, KeySpec::Char(_))
+                    })
+            }
             Token::None => false,
         }
     }
@@ -1113,10 +1118,10 @@ fn char_to_scancode(c: char) -> Option<(u16, bool)> {
         '.' => Some((0x34, false)),
         '/' => Some((0x35, false)),
         ' ' => Some((0x39, false)),
-        '\u{0008}' => Some((0x0E, false)), // BS
-        '\u{000D}' => Some((0x1C, false)), // Enter
-        '\u{F702}' => Some((0x4B, true)),  // Left Arrow (Extended)
-        '\u{F703}' => Some((0x4D, true)),  // Right Arrow (Extended)
+        '\u{0008}' => Some((0x0E, false)),  // BS
+        '\u{000D}' => Some((0x1C, false)),  // Enter
+        '\u{F702}' => Some((0x4B, true)),   // Left Arrow (Extended)
+        '\u{F703}' => Some((0x4D, true)),   // Right Arrow (Extended)
         '－' | 'ー' => Some((0x0C, false)), // Minus / Long Vowel
         _ => None,
     }
@@ -1287,8 +1292,14 @@ xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // Hold K as shift, then press D -> expect chord output "x".
-        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x20, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x25, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x20, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -1302,7 +1313,10 @@ xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // While still holding K, press F -> expect chord output "y".
-        assert_eq!(engine.process_key(0x21, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x21, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x21, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -1316,7 +1330,10 @@ xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // Release K -> should not emit K base output.
-        assert_eq!(engine.process_key(0x25, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x25, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -1349,8 +1366,14 @@ xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // Hold K as shift, then press D -> expect chord output "x".
-        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x20, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x25, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x20, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -1364,7 +1387,10 @@ xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // K is still held, but continuous is off -> F should be a single tap ("f").
-        assert_eq!(engine.process_key(0x21, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x21, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x21, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -1377,7 +1403,10 @@ xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
             _ => panic!("Expected Inject for single F, got {:?}", res),
         }
 
-        assert_eq!(engine.process_key(0x25, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x25, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -2253,8 +2282,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // Hold A, chord with K -> expect "x"
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x25, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x25, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -2268,7 +2303,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // Next key is shift (S) -> A should remain and chord to "y"
-        assert_eq!(engine.process_key(0x1F, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x1F, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x1F, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -2282,7 +2320,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // Next key is non-shift (D) -> A should be flushed, only D outputs
-        assert_eq!(engine.process_key(0x20, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x20, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -2301,7 +2342,100 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // Release A -> should not emit A
-        assert_eq!(engine.process_key(0x1E, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x1E, false, true, false),
+            KeyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_continuous_shift_case4_outputs_ab_then_bc_with_non_trigger_c() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+a,xx,d,f,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<a>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,x,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<d>
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+xx,xx,xx,z,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.0;
+        engine.set_profile(profile);
+
+        // A_d - D_d - A_u - F_d - F_u - D_u
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        ); // A down
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        ); // D down
+        assert_eq!(
+            engine.process_key(0x1E, false, true, false),
+            KeyAction::Block
+        ); // A up
+
+        // F down decides A+D by case4 ratio and emits "x".
+        let res = engine.process_key(0x21, false, false, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2D, _, _))),
+                    "Expected 'x' output for A+D chord"
+                );
+            }
+            _ => panic!("Expected Inject for A+D decision on F down, got {:?}", res),
+        }
+
+        // F up resolves D+F and emits "z" even though F is not a trigger key.
+        let res = engine.process_key(0x21, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2C, _, _))),
+                    "Expected 'z' output for D+F chord"
+                );
+            }
+            _ => panic!("Expected Inject for D+F chord, got {:?}", res),
+        }
+
+        assert_eq!(
+            engine.process_key(0x20, false, true, false),
+            KeyAction::Block
+        ); // D up
     }
 
     #[test]
@@ -2358,8 +2492,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         profile.char_key_overlap_ratio = 0.0;
         engine.set_profile(profile);
         // Hold F, then chord F+K -> "mo"
-        assert_eq!(engine.process_key(0x21, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x25, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x21, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x25, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x25, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -2373,7 +2513,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // Keep holding F, then press L. F must remain pending and resolve with <l> to "ri".
-        assert_eq!(engine.process_key(0x26, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x26, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x26, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -2392,7 +2535,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // Release F -> should not emit extra output.
-        assert_eq!(engine.process_key(0x21, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x21, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -2440,8 +2586,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // T + O => "nyu" (O modifier), keep O physically held.
-        assert_eq!(engine.process_key(0x14, false, false, false), KeyAction::Block); // T down
-        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block); // O down
+        assert_eq!(
+            engine.process_key(0x14, false, false, false),
+            KeyAction::Block
+        ); // T down
+        assert_eq!(
+            engine.process_key(0x18, false, false, false),
+            KeyAction::Block
+        ); // O down
         let res = engine.process_key(0x14, false, true, false); // T up
         match res {
             KeyAction::Inject(evs) => {
@@ -2456,7 +2608,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
         // O is still down; J rolls over, but O+J mapping is undefined.
         // Only J single output should be emitted (not O single output).
-        assert_eq!(engine.process_key(0x24, false, false, false), KeyAction::Block); // J down
+        assert_eq!(
+            engine.process_key(0x24, false, false, false),
+            KeyAction::Block
+        ); // J down
         let res = engine.process_key(0x24, false, true, false); // J up
         match res {
             KeyAction::Inject(evs) => {
@@ -2475,7 +2630,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // O release should not emit base output.
-        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x18, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -2522,8 +2680,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // T + O => "nyu"
-        assert_eq!(engine.process_key(0x14, false, false, false), KeyAction::Block); // T down
-        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block); // O down
+        assert_eq!(
+            engine.process_key(0x14, false, false, false),
+            KeyAction::Block
+        ); // T down
+        assert_eq!(
+            engine.process_key(0x18, false, false, false),
+            KeyAction::Block
+        ); // O down
         let res = engine.process_key(0x14, false, true, false); // T up
         match res {
             KeyAction::Inject(evs) => {
@@ -2537,10 +2701,16 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // J down while O is held.
-        assert_eq!(engine.process_key(0x24, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x24, false, false, false),
+            KeyAction::Block
+        );
 
         // O up comes before J up. This must not emit O single output.
-        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x18, false, true, false),
+            KeyAction::Block
+        );
 
         // J up emits only J single output ('u').
         let res = engine.process_key(0x24, false, true, false);
@@ -2596,8 +2766,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // A + O => "ryo"
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block); // A down
-        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block); // O down
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        ); // A down
+        assert_eq!(
+            engine.process_key(0x18, false, false, false),
+            KeyAction::Block
+        ); // O down
         let res = engine.process_key(0x1E, false, true, false); // A up
         match res {
             KeyAction::Inject(evs) => {
@@ -2611,10 +2787,16 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // H down while O is still held.
-        assert_eq!(engine.process_key(0x23, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x23, false, false, false),
+            KeyAction::Block
+        );
 
         // O up before H up should not emit O single output ('g').
-        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x18, false, true, false),
+            KeyAction::Block
+        );
 
         // H up emits only "ku" (no leaked 'g').
         let res = engine.process_key(0x23, false, true, false);
@@ -2670,8 +2852,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // A + O => "ryo"
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x18, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x18, false, false, false),
+            KeyAction::Block
+        );
         let res = engine.process_key(0x1E, false, true, false);
         match res {
             KeyAction::Inject(evs) => {
@@ -2685,9 +2873,15 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         }
 
         // H down while O is held, then quickly O up and later H up to force sequential decision.
-        assert_eq!(engine.process_key(0x23, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x23, false, false, false),
+            KeyAction::Block
+        );
         std::thread::sleep(Duration::from_millis(5));
-        assert_eq!(engine.process_key(0x18, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x18, false, true, false),
+            KeyAction::Block
+        );
         std::thread::sleep(Duration::from_millis(40));
         let res = engine.process_key(0x23, false, true, false);
         match res {
@@ -2721,4 +2915,3 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         );
     }
 }
-

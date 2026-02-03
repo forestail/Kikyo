@@ -472,7 +472,7 @@ impl ChordEngine {
                 }
 
                 // 3. Check chords
-                let chords = self.check_chords(now);
+                let chords = self.check_chords(now, Some((event.key, event.edge)));
                 output.extend(chords);
             }
             KeyEdge::Up => {
@@ -484,7 +484,7 @@ impl ChordEngine {
                 }
 
                 // 2. Check for chord formation
-                let chords = self.check_chords(now);
+                let chords = self.check_chords(now, Some((event.key, event.edge)));
                 output.extend(chords);
 
                 // 3. Flush Single Taps
@@ -543,7 +543,6 @@ impl ChordEngine {
                         }
                     }
                 }
-
             }
         }
 
@@ -602,7 +601,7 @@ impl ChordEngine {
             }
         }
 
-        let mut output = self.check_chords(now);
+        let mut output = self.check_chords(now, None);
 
         if !self.state.pending.is_empty() {
             let pending = std::mem::take(&mut self.state.pending);
@@ -634,99 +633,46 @@ impl ChordEngine {
         output
     }
 
-    fn check_chords(&mut self, now: Instant) -> Vec<Decision> {
+    fn check_chords(&mut self, now: Instant, trigger: Option<(ScKey, KeyEdge)>) -> Vec<Decision> {
         let mut output = Vec::new();
         if self.state.pending.len() < 2 {
             return output;
         }
 
-        // Iterate all pairs in pending
         let mut consumed_indices = HashSet::new();
-        let mut flushed_indices = HashSet::new(); // Keys decided as Sequential (Tap)
+        let mut flushed_indices = HashSet::new();
 
-        // Use indices to avoid cloning
-        for i in 0..self.state.pending.len() {
-            if consumed_indices.contains(&i) || flushed_indices.contains(&i) {
+        let mut ordered_indices: Vec<usize> = (0..self.state.pending.len()).collect();
+        ordered_indices.sort_by(|a, b| {
+            self.state.pending[*a]
+                .t_down
+                .cmp(&self.state.pending[*b].t_down)
+        });
+
+        for oi in 0..ordered_indices.len() {
+            let idx1 = ordered_indices[oi];
+            if consumed_indices.contains(&idx1) || flushed_indices.contains(&idx1) {
                 continue;
             }
 
-            for j in (i + 1)..self.state.pending.len() {
-                if consumed_indices.contains(&j) || flushed_indices.contains(&j) {
+            for oj in (oi + 1)..ordered_indices.len() {
+                let idx2 = ordered_indices[oj];
+                if consumed_indices.contains(&idx2) || flushed_indices.contains(&idx2) {
                     continue;
                 }
-
-                // Determine First (p1) and Second (p2) based on t_down
-                let (idx1, idx2) = if self.state.pending[i].t_down <= self.state.pending[j].t_down {
-                    (i, j)
-                } else {
-                    (j, i)
-                };
 
                 let p1 = &self.state.pending[idx1];
                 let p2 = &self.state.pending[idx2];
 
-                // 1. Time difference check using chord_window
-                // REMOVED: chord_window check. We now only rely on overlap ratio.
-                /*
-                let t_diff = p2.t_down.duration_since(p1.t_down);
-                if t_diff.as_millis() as u64 > self.profile.chord_window_ms {
-                    continue;
-                }
-                */
-
-                // 2. Overlap Ratio Check
-                // We need p2 to be released (t_up known) to calculate ratio denominator.
-                // Exception: if p2 is pressed, we can't determine ratio definitively generally.
-                // BUT if p1 is still pressed, and p2 is pressed... Min(p1.up, p2.up) is unknown.
-                // So we WAIT if p2 is pressed.
-
-                let p1_end = p1.t_up.unwrap_or(now);
-                let p2_end = p2.t_up.unwrap_or(now);
-
-                let ratio_den = if p2.t_up.is_none() {
-                    let kind2 = self.modifier_kind(p2.key);
-                    let continuous2 = self.modifier_is_continuous(kind2);
-                    if continuous2 && p1.t_up.is_some() {
-                        let p1_dur = p1_end.duration_since(p1.t_down);
-                        if p1_dur.as_micros() > 0 {
-                            p1_dur.as_secs_f64()
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        // P2 still down and no special-case.
-                        continue;
+                let ratio = match self.pair_overlap_ratio(p1, p2, now, trigger) {
+                    Some(ratio) => ratio,
+                    None => {
+                        // Wait for the first unresolved newer key (time-order preserving).
+                        break;
                     }
-                } else {
-                    let p2_dur = p2_end.duration_since(p2.t_down);
-                    if p2_dur.as_micros() > 0 {
-                        p2_dur.as_secs_f64()
-                    } else {
-                        0.0
-                    }
-                };
-
-                // Overlap = Intersection of [p1.down, p1_end] and [p2.down, p2_end]
-                // Since p1.down <= p2.down, Intersection start is p2.down.
-                // Intersection end is min(p1_end, p2_end).
-
-                let overlap_start = p2.t_down;
-                let overlap_end = if p1_end < p2_end { p1_end } else { p2_end };
-
-                let overlap_dur = if overlap_end > overlap_start {
-                    overlap_end.duration_since(overlap_start)
-                } else {
-                    Duration::ZERO
-                };
-
-                let ratio = if ratio_den > 0.0 {
-                    overlap_dur.as_secs_f64() / ratio_den
-                } else {
-                    0.0
                 };
 
                 if ratio >= self.profile.char_key_overlap_ratio {
-                    // CHORD!
                     let k1 = p1.key;
                     let k2 = p2.key;
                     let kind1 = self.modifier_kind(k1);
@@ -742,12 +688,10 @@ impl ChordEngine {
                     let continuous1 = self.modifier_is_continuous(kind1);
                     let continuous2 = self.modifier_is_continuous(kind2);
 
-                    let keep1 = kind1.is_modifier()
-                        && continuous1
-                        && self.state.pressed.contains(&k1);
-                    let keep2 = kind2.is_modifier()
-                        && continuous2
-                        && self.state.pressed.contains(&k2);
+                    let keep1 =
+                        kind1.is_modifier() && continuous1 && self.state.pressed.contains(&k1);
+                    let keep2 =
+                        kind2.is_modifier() && continuous2 && self.state.pressed.contains(&k2);
 
                     if !keep1 {
                         consumed_indices.insert(idx1);
@@ -756,22 +700,12 @@ impl ChordEngine {
                         consumed_indices.insert(idx2);
                     }
 
-                    // Output Chord
                     output.push(Decision::Chord(vec![k1, k2]));
 
-                    // If idx1 was consumed, we must move to next i.
-                    // If idx1 was NOT consumed (continuous modifier), we continue checking i against other js.
                     if consumed_indices.contains(&idx1) {
                         break;
                     }
-                    // If not consumed, continue inner loop to find more chords for this modifier
                 } else {
-                    // SEQUENTIAL!
-                    // If ratio is low, it means they are effectively sequential.
-                    // A(Down)->A(Up)->B(Down) or partial overlap failure.
-                    // We should flush P1 as Tap.
-                    // P2 remains pending (might chord with next).
-                    // BUT: If P1 is flushed, we must mark it.
                     flushed_indices.insert(idx1);
 
                     let kind1 = self.modifier_kind(p1.key);
@@ -783,26 +717,21 @@ impl ChordEngine {
                         output.push(Decision::KeyTap(p1.key));
                     }
 
-                    // We do NOT break here, because p1 is now flushed, we continue outer loop?
-                    // Actually if p1 is flushed, we shouldn't continue checking p1 against others.
-                    break; // Move to next i (which will skip because p1 is flushed)
+                    break;
                 }
             }
         }
 
-        // Remove consumed or flushed
         if !consumed_indices.is_empty() || !flushed_indices.is_empty() {
             let mut new_pending = Vec::new();
             for (i, p) in self.state.pending.iter().enumerate() {
                 if consumed_indices.contains(&i) {
-                    // Consumed by chord
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
                     continue;
                 }
                 if flushed_indices.contains(&i) {
-                    // Flushed as Tap
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
@@ -814,6 +743,75 @@ impl ChordEngine {
         }
 
         output
+    }
+
+    fn pair_overlap_ratio(
+        &self,
+        p1: &PendingKey,
+        p2: &PendingKey,
+        now: Instant,
+        trigger: Option<(ScKey, KeyEdge)>,
+    ) -> Option<f64> {
+        let p1_end = p1.t_up.unwrap_or(now);
+
+        let (p2_end, ratio_den) = if let Some(p2_up) = p2.t_up {
+            let p2_dur = p2_up.duration_since(p2.t_down);
+            if p2_dur.as_micros() > 0 {
+                (p2_up, p2_dur.as_secs_f64())
+            } else {
+                (p2_up, 0.0)
+            }
+        } else {
+            if p1.t_up.is_none() {
+                return None;
+            }
+
+            let kind1 = self.modifier_kind(p1.key);
+            let kind2 = self.modifier_kind(p2.key);
+            let immediate_continuous_modifier =
+                kind2.is_modifier() && self.modifier_is_continuous(kind2) && !kind1.is_modifier();
+
+            if immediate_continuous_modifier {
+                let p1_dur = p1_end.duration_since(p1.t_down);
+                if p1_dur.as_micros() > 0 {
+                    (p1_end, p1_dur.as_secs_f64())
+                } else {
+                    (p1_end, 0.0)
+                }
+            } else {
+                let is_char_pair =
+                    !matches!(kind1, ModifierKind::ThumbLeft | ModifierKind::ThumbRight)
+                        && !matches!(kind2, ModifierKind::ThumbLeft | ModifierKind::ThumbRight);
+                let third_key_down = matches!(
+                    trigger,
+                    Some((k, KeyEdge::Down)) if k != p1.key && k != p2.key
+                ) && now > p2.t_down;
+
+                if !(self.profile.char_key_continuous && is_char_pair && third_key_down) {
+                    return None;
+                }
+
+                let p2_dur = now.duration_since(p2.t_down);
+                if p2_dur.as_micros() == 0 {
+                    return None;
+                }
+                (now, p2_dur.as_secs_f64())
+            }
+        };
+
+        let overlap_start = p2.t_down;
+        let overlap_end = if p1_end < p2_end { p1_end } else { p2_end };
+        let overlap_dur = if overlap_end > overlap_start {
+            overlap_end.duration_since(overlap_start)
+        } else {
+            Duration::ZERO
+        };
+
+        if ratio_den > 0.0 {
+            Some(overlap_dur.as_secs_f64() / ratio_den)
+        } else {
+            Some(0.0)
+        }
     }
 
     fn modifier_kind(&self, key: ScKey) -> ModifierKind {
@@ -864,6 +862,26 @@ mod tests {
             edge,
             injected: false,
             t,
+        }
+    }
+
+    fn continuous_char_profile(threshold: f64, modifiers: &[ScKey]) -> Profile {
+        let mut profile = Profile::default();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = threshold;
+        for key in modifiers {
+            profile
+                .trigger_keys
+                .insert(*key, format!("<{:02X}>", key.sc));
+        }
+        profile
+    }
+
+    fn assert_single_chord(res: &[Decision], k1: ScKey, k2: ScKey) {
+        assert_eq!(res.len(), 1, "Expected single decision, got {:?}", res);
+        match &res[0] {
+            Decision::Chord(keys) => assert_eq!(keys, &vec![k1, k2]),
+            _ => panic!("Expected Chord({:?}, {:?}), got {:?}", k1, k2, res),
         }
     }
 
@@ -1064,5 +1082,239 @@ mod tests {
             KeyEdge::Up,
             t_b_up + Duration::from_millis(100),
         ));
+    }
+
+    #[test]
+    fn test_char_continuous_case1_ab_then_ac() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.35, &[k_a]));
+
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_b,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(10)
+            ))
+            .is_empty());
+        let res = engine.on_event(make_event(k_b, KeyEdge::Up, t0 + Duration::from_millis(40)));
+        assert_single_chord(&res, k_a, k_b);
+
+        assert!(engine
+            .on_event(make_event(
+                k_c,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(50)
+            ))
+            .is_empty());
+        let res = engine.on_event(make_event(k_c, KeyEdge::Up, t0 + Duration::from_millis(90)));
+        assert_single_chord(&res, k_a, k_c);
+    }
+
+    #[test]
+    fn test_char_continuous_case2_rollover_ab_then_ac() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.35, &[k_a]));
+
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_b,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(10)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_c,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(20)
+            ))
+            .is_empty());
+
+        let res = engine.on_event(make_event(k_b, KeyEdge::Up, t0 + Duration::from_millis(50)));
+        assert_single_chord(&res, k_a, k_b);
+
+        let res = engine.on_event(make_event(k_c, KeyEdge::Up, t0 + Duration::from_millis(90)));
+        assert_single_chord(&res, k_a, k_c);
+    }
+
+    #[test]
+    fn test_char_continuous_case3_a_up_before_c_up_ratio_pass() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.5, &[k_a]));
+
+        engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k_b,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        let res = engine.on_event(make_event(k_b, KeyEdge::Up, t0 + Duration::from_millis(40)));
+        assert_single_chord(&res, k_a, k_b);
+
+        assert!(engine
+            .on_event(make_event(
+                k_c,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(50)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Up, t0 + Duration::from_millis(70)))
+            .is_empty());
+
+        let res = engine.on_event(make_event(k_c, KeyEdge::Up, t0 + Duration::from_millis(85)));
+        assert_single_chord(&res, k_a, k_c);
+    }
+
+    #[test]
+    fn test_char_continuous_case3_a_up_before_c_up_ratio_fail() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.5, &[k_a]));
+
+        engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k_b,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        let res = engine.on_event(make_event(k_b, KeyEdge::Up, t0 + Duration::from_millis(40)));
+        assert_single_chord(&res, k_a, k_b);
+
+        assert!(engine
+            .on_event(make_event(
+                k_c,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(50)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Up, t0 + Duration::from_millis(70)))
+            .is_empty());
+
+        let res = engine.on_event(make_event(
+            k_c,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(130),
+        ));
+        assert_eq!(res, vec![Decision::KeyTap(k_c)]);
+    }
+
+    #[test]
+    fn test_char_continuous_case4_ab_judged_on_third_down_then_bc() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.6, &[k_a, k_b]));
+
+        engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k_b,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Up, t0 + Duration::from_millis(40)))
+            .is_empty());
+
+        let res = engine.on_event(make_event(
+            k_c,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        ));
+        assert_single_chord(&res, k_a, k_b);
+
+        let res = engine.on_event(make_event(k_c, KeyEdge::Up, t0 + Duration::from_millis(90)));
+        assert_single_chord(&res, k_b, k_c);
+    }
+
+    #[test]
+    fn test_char_continuous_case4_ab_fail_then_a_tap_and_bc() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.8, &[k_a, k_b]));
+
+        engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k_b,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Up, t0 + Duration::from_millis(40)))
+            .is_empty());
+
+        let res = engine.on_event(make_event(
+            k_c,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        ));
+        assert_eq!(res, vec![Decision::KeyTap(k_a)]);
+
+        let res = engine.on_event(make_event(k_c, KeyEdge::Up, t0 + Duration::from_millis(90)));
+        assert_single_chord(&res, k_b, k_c);
+    }
+
+    #[test]
+    fn test_char_continuous_case4_b_up_before_c_up_ratio_fail_for_bc() {
+        let t0 = Instant::now();
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x20);
+        let k_c = make_key(0x21);
+
+        let mut engine = ChordEngine::new(continuous_char_profile(0.5, &[k_a, k_b]));
+
+        engine.on_event(make_event(k_a, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k_b,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Up, t0 + Duration::from_millis(40)))
+            .is_empty());
+
+        let res = engine.on_event(make_event(
+            k_c,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        ));
+        assert_single_chord(&res, k_a, k_b);
+
+        let res = engine.on_event(make_event(k_b, KeyEdge::Up, t0 + Duration::from_millis(60)));
+        assert!(res.is_empty());
+
+        let res = engine.on_event(make_event(
+            k_c,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(130),
+        ));
+        assert_eq!(res, vec![Decision::KeyTap(k_c)]);
     }
 }
