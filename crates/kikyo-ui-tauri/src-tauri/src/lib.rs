@@ -1,9 +1,11 @@
+use image::GenericImageView;
 use kikyo_core::chord_engine::Profile;
 use kikyo_core::engine::ENGINE;
 use kikyo_core::{keyboard_hook, parser};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::Emitter;
@@ -114,6 +116,43 @@ fn update_tray_menu_with_state(
     if let Some(tray) = app.tray_by_id("kikyo-tray") {
         tray.set_menu(Some(menu))?;
         tray.set_tooltip(Some(format!("Kikyo: {}", name_text)))?;
+
+        let icon_bytes = include_bytes!("../icons/128x128.png");
+        match image::load_from_memory(icon_bytes) {
+            Ok(mut img) => {
+                let (width, height) = img.dimensions();
+
+                if !enabled {
+                    // Draw a red diagonal line
+                    // Simple algorithm: line thickness = 10% of width
+                    let thickness = (width as i32) / 10;
+                    let mut rgba_img = img.to_rgba8();
+
+                    for x in 0..width {
+                        for y in 0..height {
+                            // Check if point (x, y) is close to the diagonal x=y
+                            let dist = (x as i32 - y as i32).abs();
+                            if dist < thickness / 2 {
+                                // Set to Red (255, 0, 0, 255)
+                                rgba_img.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+                            }
+                        }
+                    }
+                    img = image::DynamicImage::ImageRgba8(rgba_img);
+                }
+
+                let rgba_bytes = img.into_rgba8().into_raw();
+                let icon = Image::new(&rgba_bytes, width, height);
+                if let Err(e) = tray.set_icon(Some(icon)) {
+                    tracing::error!("Failed to set tray icon: {}", e);
+                } else {
+                    tracing::info!("Tray icon updated successfully");
+                }
+            }
+            Err(e) => tracing::error!("Failed to load icon from memory: {}", e),
+        }
+    } else {
+        tracing::warn!("Tray 'kikyo-tray' not found");
     }
 
     Ok(())
@@ -232,11 +271,8 @@ pub fn run() {
                                 Ok(layout) => {
                                     let layout_name = layout.name.clone();
                                     ENGINE.lock().load_layout(layout);
-                                    *app
-                                        .state::<AppState>()
-                                        .layout_name
-                                        .lock()
-                                        .unwrap() = layout_name.clone();
+                                    *app.state::<AppState>().layout_name.lock().unwrap() =
+                                        layout_name.clone();
                                     let _ = update_tray_menu(app);
                                     update_window_title(app, layout_name.as_deref());
                                     tracing::info!("Reloaded config from tray");
