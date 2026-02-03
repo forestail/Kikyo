@@ -51,7 +51,7 @@ async function browseLayout() {
       multiple: false,
       filters: [{
         name: 'Yab Layout',
-        extensions: ['yab']
+        extensions: ['yab', 'bnz']
       }]
     });
 
