@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "kikyo-ui-tauri",
+  "productName": "Kikyo",
   "version": "0.1.0",
-  "identifier": "com.morio.kikyo-ui-tauri",
+  "identifier": "com.forestail.kikyo",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "kikyo-ui-tauri",
+        "title": "Kikyo",
         "width": 800,
         "height": 600,
         "visible": false

@@ -3,11 +3,12 @@
   font-size: 13px;
   color: #cccccc;
   background-color: #1e1e1e;
-  
+
   --sidebar-bg: #252526;
   --sidebar-hover: #2a2d2e;
   --sidebar-active: #37373d;
-  --header-bg: #1e1e1e; /* or same as content */
+  --header-bg: #1e1e1e;
+  /* or same as content */
   --input-bg: #3c3c3c;
   --input-border: #3c3c3c;
   --input-focus-border: #007fd4;
@@ -111,8 +112,15 @@ h3 {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0.9; transform: translateY(2px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0.9;
+    transform: translateY(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Form Elements */
@@ -142,7 +150,7 @@ h3 {
 }
 
 .setting-control.row {
-    gap: 10px;
+  gap: 10px;
 }
 
 input[type="text"],
@@ -225,12 +233,12 @@ button.primary:hover {
   border-radius: 50%;
 }
 
-input:checked + .slider {
+input:checked+.slider {
   background-color: var(--button-bg);
   border-color: var(--button-bg);
 }
 
-input:checked + .slider:before {
+input:checked+.slider:before {
   transform: translateX(20px);
   background-color: white;
 }
@@ -239,7 +247,7 @@ input:checked + .slider:before {
 input[type=range] {
   -webkit-appearance: none;
   width: 100%;
-  max-width: 200px;
+  max-width: 400px;
   background: transparent;
 }
 
@@ -267,6 +275,6 @@ input[type=range]:focus::-webkit-slider-runnable-track {
 }
 
 .range-val {
-    margin-left: 10px;
-    min-width: 30px;
+  margin-left: 10px;
+  min-width: 30px;
 }
