@@ -222,6 +222,11 @@ fn set_profile(app: tauri::AppHandle, profile: Profile) {
     save_settings(&app, &settings);
 }
 
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -248,7 +253,8 @@ pub fn run() {
             set_enabled,
             get_enabled,
             get_profile,
-            set_profile
+            set_profile,
+            get_app_version
         ])
         .setup(|app| {
             // Setup Tray with initial menu

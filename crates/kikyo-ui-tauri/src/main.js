@@ -361,6 +361,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Autostart init
   initAutoLaunch();
+  initVersion();
 });
 
 async function refreshEnabledState() {
@@ -371,6 +372,17 @@ async function refreshEnabledState() {
     statusMsg.innerText = enabled ? "有効" : "無効";
   } catch (e) {
     console.error(e);
+  }
+}
+
+async function initVersion() {
+  const el = document.getElementById("app-version-label");
+  if (!el) return;
+  try {
+    const ver = await invoke("get_app_version");
+    el.innerText = "Version " + ver;
+  } catch (e) {
+    console.error("Failed to get version:", e);
   }
 }
 
