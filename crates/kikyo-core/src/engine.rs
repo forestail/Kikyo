@@ -773,12 +773,14 @@ impl Engine {
     }
 
     fn token_to_events(&self, token: &Token, shift_held: bool) -> Option<Vec<InputEvent>> {
+        let is_japanese = crate::ime::is_japanese_input_active(self.chord_engine.profile.ime_mode);
         match token {
             Token::None => None,
             Token::KeySequence(seq) => {
                 let mut events = Vec::new();
                 for stroke in seq {
-                    append_keystroke_events(&mut events, stroke, shift_held);
+                    // Strict scancode only for KeySequence (which now comes from single-quote/bare tokens)
+                    append_keystroke_events(&mut events, stroke, shift_held, false, is_japanese);
                 }
                 if events.is_empty() {
                     None
@@ -789,6 +791,13 @@ impl Engine {
             Token::ImeChar(text) | Token::DirectChar(text) => {
                 let mut events = Vec::new();
                 for c in text.chars() {
+                    // DirectChar/ImeChar implies we WANT unicode fallback if scancode fails
+                    // But actually DirectChar IS unicode.
+                    // However, we reuse append for uniformity if we want to map some chars to scancodes even in quotes?
+                    // User said: "..." is Unicode (Confirmed Input).
+                    // So we should just use inject_unicode logic here.
+                    // But maybe we want '!' in "..." to be scancode?
+                    // Usually "..." means literal string. inject_unicode is best for that.
                     events.push(InputEvent::Unicode(c, false));
                     events.push(InputEvent::Unicode(c, true));
                 }
@@ -800,6 +809,28 @@ impl Engine {
             }
         }
     }
+
+    fn repeat_fallback_events(
+        &self,
+        keys: &[ScKey],
+        shift: bool,
+        is_japanese: bool,
+    ) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+        for k in keys {
+            if let Some(token) = self.resolve(&[*k], shift, is_japanese) {
+                if let Some(ops) = self.token_to_events(&token, shift) {
+                    events.extend(ops);
+                    continue;
+                }
+            }
+            events.push(InputEvent::Scancode(k.sc, k.ext, false));
+            events.push(InputEvent::Scancode(k.sc, k.ext, true));
+        }
+        events
+    }
+
+    // ...
 
     fn is_repeat_event(&self, key: ScKey) -> bool {
         self.chord_engine.state.pressed.contains(&key)
@@ -974,26 +1005,6 @@ impl Engine {
         }
     }
 
-    fn repeat_fallback_events(
-        &self,
-        keys: &[ScKey],
-        shift: bool,
-        is_japanese: bool,
-    ) -> Vec<InputEvent> {
-        let mut events = Vec::new();
-        for k in keys {
-            if let Some(token) = self.resolve(&[*k], shift, is_japanese) {
-                if let Some(ops) = self.token_to_events(&token, shift) {
-                    events.extend(ops);
-                    continue;
-                }
-            }
-            events.push(InputEvent::Scancode(k.sc, k.ext, false));
-            events.push(InputEvent::Scancode(k.sc, k.ext, true));
-        }
-        events
-    }
-
     fn is_character_assignment(token: &Token) -> bool {
         match token {
             Token::ImeChar(_) | Token::DirectChar(_) => true,
@@ -1008,33 +1019,46 @@ impl Engine {
     }
 }
 
-fn append_keystroke_events(events: &mut Vec<InputEvent>, stroke: &KeyStroke, shift_held: bool) {
+fn append_keystroke_events(
+    events: &mut Vec<InputEvent>,
+    stroke: &KeyStroke,
+    shift_held: bool,
+    allow_unicode_fallback: bool,
+    is_japanese: bool,
+) {
     let key_events = match stroke.key {
-        KeySpec::Scancode(sc, ext) => Some((sc, ext)),
-        KeySpec::VirtualKey(vk) => vk_to_scancode(vk),
-        KeySpec::Char(c) => char_to_scancode(c),
+        KeySpec::Scancode(sc, ext) => Some((sc, ext, false)),
+        KeySpec::VirtualKey(vk) => vk_to_scancode(vk).map(|(s, e)| (s, e, false)),
+        KeySpec::Char(c) => char_to_scancode(c, is_japanese),
     };
 
-    if let Some((sc, ext)) = key_events {
+    if let Some((sc, ext, needs_shift)) = key_events {
         let mut mods = stroke.mods;
+        if needs_shift {
+            mods.shift = true;
+        }
+
         if mods.shift && shift_held {
             mods.shift = false;
         }
-        let mods = modifier_scancodes(mods);
-        for (mod_sc, mod_ext) in mods.iter() {
+
+        let mods_evs = modifier_scancodes(mods);
+        for (mod_sc, mod_ext) in mods_evs.iter() {
             events.push(InputEvent::Scancode(*mod_sc, *mod_ext, false));
         }
         events.push(InputEvent::Scancode(sc, ext, false));
         events.push(InputEvent::Scancode(sc, ext, true));
-        for (mod_sc, mod_ext) in mods.iter().rev() {
+        for (mod_sc, mod_ext) in mods_evs.iter().rev() {
             events.push(InputEvent::Scancode(*mod_sc, *mod_ext, true));
         }
         return;
     }
 
-    if let KeySpec::Char(c) = stroke.key {
-        events.push(InputEvent::Unicode(c, false));
-        events.push(InputEvent::Unicode(c, true));
+    if allow_unicode_fallback {
+        if let KeySpec::Char(c) = stroke.key {
+            events.push(InputEvent::Unicode(c, false));
+            events.push(InputEvent::Unicode(c, true));
+        }
     }
 }
 
@@ -1064,65 +1088,137 @@ fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
     Some(((scan & 0x00FF) as u16, ext))
 }
 
-fn char_to_scancode(c: char) -> Option<(u16, bool)> {
+fn char_to_scancode(c: char, is_japanese: bool) -> Option<(u16, bool, bool)> {
+    // JP-Specific overrides
+    if is_japanese {
+        match c {
+            '、' => return Some((0x33, false, false)), // ,
+            '。' => return Some((0x34, false, false)), // .
+            '・' => return Some((0x35, false, false)), // /
+            '「' => return Some((0x1B, false, false)), // [
+            '」' => return Some((0x2B, false, false)), // ]
+            _ => {}
+        }
+    }
+
     match c {
-        'a'..='z' | 'A'..='Z' => match c.to_ascii_lowercase() {
-            'a' => Some((0x1E, false)),
-            'b' => Some((0x30, false)),
-            'c' => Some((0x2E, false)),
-            'd' => Some((0x20, false)),
-            'e' => Some((0x12, false)),
-            'f' => Some((0x21, false)),
-            'g' => Some((0x22, false)),
-            'h' => Some((0x23, false)),
-            'i' => Some((0x17, false)),
-            'j' => Some((0x24, false)),
-            'k' => Some((0x25, false)),
-            'l' => Some((0x26, false)),
-            'm' => Some((0x32, false)),
-            'n' => Some((0x31, false)),
-            'o' => Some((0x18, false)),
-            'p' => Some((0x19, false)),
-            'q' => Some((0x10, false)),
-            'r' => Some((0x13, false)),
-            's' => Some((0x1F, false)),
-            't' => Some((0x14, false)),
-            'u' => Some((0x16, false)),
-            'v' => Some((0x2F, false)),
-            'w' => Some((0x11, false)),
-            'x' => Some((0x2D, false)),
-            'y' => Some((0x15, false)),
-            'z' => Some((0x2C, false)),
+        // Lowercase
+        'a'..='z' => match c {
+            'a' => Some((0x1E, false, false)),
+            'b' => Some((0x30, false, false)),
+            'c' => Some((0x2E, false, false)),
+            'd' => Some((0x20, false, false)),
+            'e' => Some((0x12, false, false)),
+            'f' => Some((0x21, false, false)),
+            'g' => Some((0x22, false, false)),
+            'h' => Some((0x23, false, false)),
+            'i' => Some((0x17, false, false)),
+            'j' => Some((0x24, false, false)),
+            'k' => Some((0x25, false, false)),
+            'l' => Some((0x26, false, false)),
+            'm' => Some((0x32, false, false)),
+            'n' => Some((0x31, false, false)),
+            'o' => Some((0x18, false, false)),
+            'p' => Some((0x19, false, false)),
+            'q' => Some((0x10, false, false)),
+            'r' => Some((0x13, false, false)),
+            's' => Some((0x1F, false, false)),
+            't' => Some((0x14, false, false)),
+            'u' => Some((0x16, false, false)),
+            'v' => Some((0x2F, false, false)),
+            'w' => Some((0x11, false, false)),
+            'x' => Some((0x2D, false, false)),
+            'y' => Some((0x15, false, false)),
+            'z' => Some((0x2C, false, false)),
             _ => None,
         },
-        '1' => Some((0x02, false)),
-        '2' => Some((0x03, false)),
-        '3' => Some((0x04, false)),
-        '4' => Some((0x05, false)),
-        '5' => Some((0x06, false)),
-        '6' => Some((0x07, false)),
-        '7' => Some((0x08, false)),
-        '8' => Some((0x09, false)),
-        '9' => Some((0x0A, false)),
-        '0' => Some((0x0B, false)),
-        '-' => Some((0x0C, false)),
-        '^' => Some((0x0D, false)),
-        '\\' | '¥' | '￥' => Some((0x7D, false)), // Yen
-        '@' => Some((0x1A, false)),
-        '[' => Some((0x1B, false)),
-        ';' => Some((0x27, false)),
-        ':' => Some((0x28, false)),
-        ']' => Some((0x2B, false)),
-        '_' => Some((0x73, false)), // JIS backslash/ro key
-        ',' => Some((0x33, false)),
-        '.' => Some((0x34, false)),
-        '/' => Some((0x35, false)),
-        ' ' => Some((0x39, false)),
-        '\u{0008}' => Some((0x0E, false)),  // BS
-        '\u{000D}' => Some((0x1C, false)),  // Enter
-        '\u{F702}' => Some((0x4B, true)),   // Left Arrow (Extended)
-        '\u{F703}' => Some((0x4D, true)),   // Right Arrow (Extended)
-        '－' | 'ー' => Some((0x0C, false)), // Minus / Long Vowel
+        // Uppercase
+        'A'..='Z' => match c.to_ascii_lowercase() {
+            'a' => Some((0x1E, false, true)),
+            'b' => Some((0x30, false, true)),
+            'c' => Some((0x2E, false, true)),
+            'd' => Some((0x20, false, true)),
+            'e' => Some((0x12, false, true)),
+            'f' => Some((0x21, false, true)),
+            'g' => Some((0x22, false, true)),
+            'h' => Some((0x23, false, true)),
+            'i' => Some((0x17, false, true)),
+            'j' => Some((0x24, false, true)),
+            'k' => Some((0x25, false, true)),
+            'l' => Some((0x26, false, true)),
+            'm' => Some((0x32, false, true)),
+            'n' => Some((0x31, false, true)),
+            'o' => Some((0x18, false, true)),
+            'p' => Some((0x19, false, true)),
+            'q' => Some((0x10, false, true)),
+            'r' => Some((0x13, false, true)),
+            's' => Some((0x1F, false, true)),
+            't' => Some((0x14, false, true)),
+            'u' => Some((0x16, false, true)),
+            'v' => Some((0x2F, false, true)),
+            'w' => Some((0x11, false, true)),
+            'x' => Some((0x2D, false, true)),
+            'y' => Some((0x15, false, true)),
+            'z' => Some((0x2C, false, true)),
+            _ => None,
+        },
+        // Numbers
+        '1' => Some((0x02, false, false)),
+        '2' => Some((0x03, false, false)),
+        '3' => Some((0x04, false, false)),
+        '4' => Some((0x05, false, false)),
+        '5' => Some((0x06, false, false)),
+        '6' => Some((0x07, false, false)),
+        '7' => Some((0x08, false, false)),
+        '8' => Some((0x09, false, false)),
+        '9' => Some((0x0A, false, false)),
+        '0' => Some((0x0B, false, false)),
+
+        // Symbols (JIS Standard)
+        '-' => Some((0x0C, false, false)),
+        '^' => Some((0x0D, false, false)),
+        '\\' | '¥' | '￥' => Some((0x7D, false, false)), // Yen (0x7D)
+        '@' => Some((0x1A, false, false)),
+        '[' => Some((0x1B, false, false)),
+        ';' => Some((0x27, false, false)),
+        ':' => Some((0x28, false, false)),
+        ']' => Some((0x2B, false, false)),
+        ',' => Some((0x33, false, false)),
+        '.' => Some((0x34, false, false)),
+        '/' => Some((0x35, false, false)),
+        '_' => Some((0x73, false, true)), // JIS Backslash/Ro (0x73) Shifted
+
+        // Shifted Symbols
+        '!' => Some((0x02, false, true)),  // 1
+        '"' => Some((0x03, false, true)),  // 2
+        '#' => Some((0x04, false, true)),  // 3
+        '$' => Some((0x05, false, true)),  // 4
+        '%' => Some((0x06, false, true)),  // 5
+        '&' => Some((0x07, false, true)),  // 6
+        '\'' => Some((0x08, false, true)), // 7
+        '(' => Some((0x09, false, true)),  // 8
+        ')' => Some((0x0A, false, true)),  // 9
+        // 0 -> nothing
+        '=' => Some((0x0C, false, true)), // -
+        '~' => Some((0x0D, false, true)), // ^
+        '|' => Some((0x7D, false, true)), // Yen
+        '`' => Some((0x1A, false, true)), // @
+        '{' => Some((0x1B, false, true)), // [
+        '+' => Some((0x27, false, true)), // ;
+        '*' => Some((0x28, false, true)), // :
+        '}' => Some((0x2B, false, true)), // ]
+        '<' => Some((0x33, false, true)), // ,
+        '>' => Some((0x34, false, true)), // .
+        '?' => Some((0x35, false, true)), // /
+
+        // Other
+        ' ' => Some((0x39, false, false)),
+        '\u{0008}' => Some((0x0E, false, false)),  // BS
+        '\u{000D}' => Some((0x1C, false, false)),  // Enter
+        '\u{F702}' => Some((0x4B, true, false)),   // Left Arrow (Extended)
+        '\u{F703}' => Some((0x4D, true, false)),   // Right Arrow (Extended)
+        '－' | 'ー' => Some((0x0C, false, false)), // Minus / Long Vowel (Standard Hyphen)
+
         _ => None,
     }
 }
@@ -1133,10 +1229,16 @@ mod tests {
 
     #[test]
     fn test_char_to_scancode() {
-        assert_eq!(char_to_scancode('－'), Some((0x0C, false)));
-        assert_eq!(char_to_scancode('ー'), Some((0x0C, false)));
-        assert_eq!(char_to_scancode('1'), Some((0x02, false)));
-        assert_eq!(char_to_scancode('a'), Some((0x1E, false)));
+        // Updated to use 2 args (is_japanese=false) and return 3-tuple (sc, ext, shift)
+        assert_eq!(char_to_scancode('－', false), Some((0x0C, false, false)));
+        assert_eq!(char_to_scancode('ー', false), Some((0x0C, false, false)));
+        assert_eq!(char_to_scancode('1', false), Some((0x02, false, false)));
+        assert_eq!(char_to_scancode('a', false), Some((0x1E, false, false)));
+        // Shifted char
+        assert_eq!(char_to_scancode('!', false), Some((0x02, false, true)));
+        // Japanese punctuation
+        assert_eq!(char_to_scancode('。', true), Some((0x34, false, false)));
+        assert_eq!(char_to_scancode('。', false), None); // Should fallback to unicode if not JP mode scancode mapping
     }
 
     use crate::parser::parse_yab_content;

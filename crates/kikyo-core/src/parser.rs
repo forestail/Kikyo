@@ -154,25 +154,132 @@ fn parse_token(raw: &str) -> Token {
         return Token::None;
     }
 
-    if let Some((quote, inner)) = strip_quotes(raw) {
-        let parsed = parse_quoted(inner, quote);
-        return if quote == '\'' {
-            Token::ImeChar(parsed)
-        } else {
-            Token::DirectChar(parsed)
-        };
-    }
-
     if let Some(token) = parse_modded_single_token(raw) {
         return token;
     }
 
-    let seq = parse_key_sequence(raw);
+    // New Logic: parse as key sequence with romaji expansion
+    // If double-quoted, it was returned as DirectChar above.
+    // If single-quoted, it was returned as ImeChar above.
+    // Wait, the plan says:
+    // "Double quotes" -> DirectChar (Unicode)
+    // "Single quotes / Bare" -> KeySequence (Expanded)
+
+    // So we need to modify the strip_quotes block.
+    if let Some((quote, inner)) = strip_quotes(raw) {
+        if quote == '"' {
+            return Token::DirectChar(parse_quoted(inner, quote));
+        }
+        // Single quotes fall through to expansion logic
+        // But we first need to unescape/parse quoted content
+        let unquoted = parse_quoted(inner, quote);
+        let seq = parse_key_sequence_expanded(&unquoted);
+        if seq.is_empty() {
+            return Token::None;
+        }
+        return Token::KeySequence(seq);
+    }
+
+    // Bare token -> Expansion logic
+    // Special check for existing logic (function keys starting with '機', etc.)
+    // parse_key_spec handles single char special keys etc.
+    // But parse_key_sequence handles multiple chars.
+
+    let seq = parse_key_sequence_expanded(raw);
     if seq.is_empty() {
         Token::None
     } else {
         Token::KeySequence(seq)
     }
+}
+
+pub fn parse_key_sequence_expanded(raw: &str) -> Vec<KeyStroke> {
+    let mut seq = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+
+        // 1. Try Kana -> Romaji
+        if let Some(romaji) = crate::romaji_map::kana_to_romaji(c) {
+            for r in romaji.chars() {
+                seq.push(KeyStroke {
+                    key: KeySpec::Char(r),
+                    mods: Modifiers::none(),
+                });
+            }
+            i += 1;
+            continue;
+        }
+
+        // 2. Try normalized symbol
+        if let Some(norm) = crate::romaji_map::normalize_symbol(c) {
+            // Special case: `!` might need shift.
+            // But parser returns KeySpec::Char('!').
+            // engine.rs will convert '!' to Shift+1 scancode if needed.
+            // So we just push Char here.
+            seq.push(KeyStroke {
+                key: KeySpec::Char(norm),
+                mods: Modifiers::none(),
+            });
+            i += 1;
+            continue;
+        }
+
+        // 3. Fallback to existing logic (Machine keys, V-keys, etc.)
+        // Copying existing logic from parse_key_sequence but applied to `c`
+
+        if let Some(stroke) = fullwidth_shifted_keystroke(c) {
+            seq.push(stroke);
+            i += 1;
+            continue;
+        }
+        if c == '機' {
+            let mut j = i + 1;
+            let mut digits = String::new();
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                digits.push(chars[j]);
+                j += 1;
+            }
+            if let Ok(num) = digits.parse::<u8>() {
+                if let Some(sc) = function_key_scancode(num) {
+                    seq.push(KeyStroke {
+                        key: KeySpec::Scancode(sc, false),
+                        mods: Modifiers::none(),
+                    });
+                    i = j;
+                    continue;
+                }
+            }
+        } else if c == 'V' {
+            let mut j = i + 1;
+            let mut digits = String::new();
+            while j < chars.len() && chars[j].is_ascii_hexdigit() {
+                digits.push(chars[j]);
+                j += 1;
+            }
+            if !digits.is_empty() {
+                if let Ok(value) = u32::from_str_radix(&digits, 16) {
+                    if value <= 0xFF {
+                        seq.push(KeyStroke {
+                            key: KeySpec::VirtualKey(value as u16),
+                            mods: Modifiers::none(),
+                        });
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Default single char
+        seq.push(KeyStroke {
+            key: parse_single_key_char(c),
+            mods: Modifiers::none(),
+        });
+        i += 1;
+    }
+    seq
 }
 
 fn strip_quotes(raw: &str) -> Option<(char, &str)> {
@@ -294,64 +401,6 @@ fn parse_key_spec(raw: &str) -> Option<KeySpec> {
     Some(parse_single_key_char(c))
 }
 
-fn parse_key_sequence(raw: &str) -> Vec<KeyStroke> {
-    let mut seq = Vec::new();
-    let chars: Vec<char> = raw.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if let Some(stroke) = fullwidth_shifted_keystroke(c) {
-            seq.push(stroke);
-            i += 1;
-            continue;
-        }
-        if c == '機' {
-            let mut j = i + 1;
-            let mut digits = String::new();
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                digits.push(chars[j]);
-                j += 1;
-            }
-            if let Ok(num) = digits.parse::<u8>() {
-                if let Some(sc) = function_key_scancode(num) {
-                    seq.push(KeyStroke {
-                        key: KeySpec::Scancode(sc, false),
-                        mods: Modifiers::none(),
-                    });
-                    i = j;
-                    continue;
-                }
-            }
-        } else if c == 'V' {
-            let mut j = i + 1;
-            let mut digits = String::new();
-            while j < chars.len() && chars[j].is_ascii_hexdigit() {
-                digits.push(chars[j]);
-                j += 1;
-            }
-            if !digits.is_empty() {
-                if let Ok(value) = u32::from_str_radix(&digits, 16) {
-                    if value <= 0xFF {
-                        seq.push(KeyStroke {
-                            key: KeySpec::VirtualKey(value as u16),
-                            mods: Modifiers::none(),
-                        });
-                        i = j;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        seq.push(KeyStroke {
-            key: parse_single_key_char(c),
-            mods: Modifiers::none(),
-        });
-        i += 1;
-    }
-    seq
-}
-
 fn parse_single_key_char(c: char) -> KeySpec {
     if let Some((sc, ext)) = special_key_scancode(c) {
         return KeySpec::Scancode(sc, ext);
@@ -404,20 +453,21 @@ fn normalize_key_char(c: char) -> char {
 
 fn special_key_scancode(c: char) -> Option<(u16, bool)> {
     match c {
-        '逃' => Some((0x01, false)), // Esc
-        '入' => Some((0x1C, false)), // Enter
-        '空' => Some((0x39, false)), // Space
-        '後' => Some((0x0E, false)), // Backspace
-        '消' => Some((0x53, true)),  // Delete
-        '挿' => Some((0x52, true)),  // Insert
-        '上' => Some((0x48, true)),  // Up
-        '左' => Some((0x4B, true)),  // Left
-        '右' => Some((0x4D, true)),  // Right
-        '下' => Some((0x50, true)),  // Down
-        '家' => Some((0x47, true)),  // Home
-        '終' => Some((0x4F, true)),  // End
-        '前' => Some((0x49, true)),  // Page Up
-        '次' => Some((0x51, true)),  // Page Down
+        '\n' | '\r' => Some((0x1C, false)), // Enter
+        '逃' => Some((0x01, false)),        // Esc
+        '入' => Some((0x1C, false)),        // Enter
+        '空' => Some((0x39, false)),        // Space
+        '後' => Some((0x0E, false)),        // Backspace
+        '消' => Some((0x53, true)),         // Delete
+        '挿' => Some((0x52, true)),         // Insert
+        '上' => Some((0x48, true)),         // Up
+        '左' => Some((0x4B, true)),         // Left
+        '右' => Some((0x4D, true)),         // Right
+        '下' => Some((0x50, true)),         // Down
+        '家' => Some((0x47, true)),         // Home
+        '終' => Some((0x4F, true)),         // End
+        '前' => Some((0x49, true)),         // Page Up
+        '次' => Some((0x51, true)),         // Page Down
         _ => None,
     }
 }
@@ -465,26 +515,49 @@ mod tests {
         }
     }
 
-    fn stroke_shift_char(c: char) -> KeyStroke {
-        let mut mods = Modifiers::none();
-        mods.shift = true;
-        KeyStroke {
-            key: KeySpec::Char(c),
-            mods,
-        }
-    }
-
     #[test]
     fn test_parse_token() {
         assert_eq!(
             parse_token("ni"),
             Token::KeySequence(vec![stroke_char('n'), stroke_char('i')])
         );
-        assert_eq!(parse_token("'あ'"), Token::ImeChar("あ".into()));
-        assert_eq!(parse_token("\"A\""), Token::DirectChar("A".into()));
+        assert_eq!(
+            parse_token("'あ'"),
+            Token::KeySequence(vec![stroke_char('a')])
+        );
+
+        // "です" -> DirectChar (Unicode)
+        assert_eq!(parse_token("\"です\""), Token::DirectChar("です".into()));
+
+        // 'です' -> Expanded to d,e,s,u
+        assert_eq!(
+            parse_token("'です'"),
+            Token::KeySequence(vec![
+                stroke_char('d'),
+                stroke_char('e'),
+                stroke_char('s'),
+                stroke_char('u')
+            ])
+        );
+
         assert_eq!(parse_token("無"), Token::None);
         assert_eq!(parse_token(""), Token::None);
-        assert_eq!(parse_token("'a\\n'"), Token::ImeChar("a\n".into()));
+
+        // 'a\n' -> a, Enter (0x1C) because \n is likely normalized?
+        // Wait, parse_quoted handles escapes. 'a\n' -> string "a\n".
+        // Then expanded. 'a' -> 'a'. '\n' -> ...?
+        // normalize_key_char handles '\u{000D}' -> Enter(0x1C).
+        // Let's verify expansion logic for '\n'.
+        // parse_key_sequence_expanded iterates chars.
+        // '\n' is not in romaji map, not in normalize_symbol.
+        // falls to fullwidth_shifted -> no.
+        // falls to default single char -> parse_single_key_char('\n').
+        // char_to_scancode('\n' aka CR 0x0D) -> 0x1C.
+        // So it becomes Scancode(0x1C).
+        assert_eq!(
+            parse_token("'a\\n'"),
+            Token::KeySequence(vec![stroke_char('a'), stroke_scancode(0x1C, false)])
+        );
         assert_eq!(parse_token("\"\\u0041\""), Token::DirectChar("A".into()));
 
         // Full-width conversion
@@ -532,11 +605,11 @@ mod tests {
         );
         assert_eq!(
             parse_token("（）"),
-            Token::KeySequence(vec![stroke_shift_char('8'), stroke_shift_char('9')])
+            Token::KeySequence(vec![stroke_char('('), stroke_char(')')])
         );
         assert_eq!(
             parse_token("＋＊"),
-            Token::KeySequence(vec![stroke_shift_char(';'), stroke_shift_char(':'),])
+            Token::KeySequence(vec![stroke_char('+'), stroke_char('*')])
         );
 
         // Function key / VK

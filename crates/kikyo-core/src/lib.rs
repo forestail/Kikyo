@@ -4,6 +4,7 @@ pub mod ime;
 pub mod jis_map;
 pub mod keyboard_hook;
 pub mod parser;
+pub mod romaji_map;
 pub mod types;
 
 pub use jis_map::JIS_SC_TO_RC;
