@@ -6,15 +6,37 @@ use tracing::{debug, warn};
 
 pub fn load_yab<P: AsRef<Path>>(path: P) -> Result<Layout> {
     let raw = std::fs::read(path)?;
-    // Detect encoding. Simple check for BOM.
-    let (cow, encoding_used, had_errors) = encoding_rs::UTF_16LE.decode(&raw);
-    if had_errors {
-        warn!("UTF-16 decode had errors (replacement characters used)");
-    }
-    debug!("Decoded using: {}", encoding_used.name());
+    let text = decode_yab_bytes(&raw);
+    parse_yab_content(text.as_ref())
+}
 
-    let text = cow.as_ref();
-    parse_yab_content(text)
+fn decode_yab_bytes<'a>(raw: &'a [u8]) -> std::borrow::Cow<'a, str> {
+    // 1. Check BOM
+    if let Some((enc, bom_len)) = encoding_rs::Encoding::for_bom(raw) {
+        debug!("Decoded using BOM: {}", enc.name());
+        let (cow, _, had_errors) = enc.decode(&raw[bom_len..]);
+        if had_errors {
+            warn!("Decode had errors (replacement characters used)");
+        }
+        return cow;
+    }
+
+    // 2. Try UTF-8
+    match std::str::from_utf8(raw) {
+        Ok(s) => {
+            debug!("Decoded as UTF-8");
+            std::borrow::Cow::Borrowed(s)
+        }
+        Err(_) => {
+            // 3. Fallback to Shift_JIS
+            debug!("UTF-8 decode failed, falling back to Shift_JIS");
+            let (cow, _, had_errors) = encoding_rs::SHIFT_JIS.decode(raw);
+            if had_errors {
+                warn!("Shift_JIS decode had errors");
+            }
+            cow
+        }
+    }
 }
 
 pub fn parse_yab_content(content: &str) -> Result<Layout> {
@@ -58,7 +80,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
         }
     };
 
-    for (i, line) in content.lines().enumerate() {
+    for line in content.lines() {
         let line = line.trim();
         if layout.name.is_none() && line.starts_with(';') {
             let name = line.trim_start_matches(';').trim().to_string();
@@ -577,5 +599,19 @@ a,b
         let content_name_variation = ";My Layout  ";
         let layout_var = parse_yab_content(content_name_variation).expect("Failed");
         assert_eq!(layout_var.name, Some("My Layout".to_string()));
+    }
+    #[test]
+    fn test_decode_sjis() {
+        // "テスト" in Shift_JIS
+        let sjis_bytes = vec![0x83, 0x65, 0x83, 0x58, 0x83, 0x67];
+        let decoded = decode_yab_bytes(&sjis_bytes);
+        assert_eq!(decoded, "テスト");
+    }
+
+    #[test]
+    fn test_decode_utf8() {
+        let utf8_bytes = "テスト".as_bytes();
+        let decoded = decode_yab_bytes(utf8_bytes);
+        assert_eq!(decoded, "テスト");
     }
 }
