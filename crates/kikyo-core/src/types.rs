@@ -128,4 +128,5 @@ pub struct Section {
 pub struct Layout {
     pub name: Option<String>,
     pub sections: std::collections::HashMap<String, Section>,
+    pub function_key_swaps: Vec<(String, String)>,
 }

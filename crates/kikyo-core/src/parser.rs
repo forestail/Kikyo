@@ -135,6 +135,16 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
             continue;
         }
 
+        if current_section_name
+            .as_deref()
+            .is_some_and(is_function_key_section_name)
+        {
+            if let Some((left, right)) = parse_function_key_swap_line(line) {
+                layout.function_key_swaps.push((left, right));
+            }
+            continue;
+        }
+
         let tokens: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
         current_rows.push(tokens);
     }
@@ -331,6 +341,26 @@ fn parse_quoted(raw: &str, quote: char) -> String {
         }
     }
     out
+}
+
+fn is_function_key_section_name(name: &str) -> bool {
+    compact_function_key_name(name) == "機能キー"
+}
+
+fn compact_function_key_name(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{3000}')
+        .collect()
+}
+
+fn parse_function_key_swap_line(line: &str) -> Option<(String, String)> {
+    let mut parts = line.split(',');
+    let left = compact_function_key_name(parts.next()?);
+    let right = compact_function_key_name(parts.next()?);
+    if parts.next().is_some() || left.is_empty() || right.is_empty() {
+        return None;
+    }
+    Some((left, right))
 }
 
 fn parse_modded_single_token(raw: &str) -> Option<Token> {
@@ -673,6 +703,30 @@ a,b
         let layout_var = parse_yab_content(content_name_variation).expect("Failed");
         assert_eq!(layout_var.name, Some("My Layout".to_string()));
     }
+
+    #[test]
+    fn test_parse_function_key_section() {
+        let content = "
+[機能キー]
+ 左Alt ,　拡張1
+\tF13,\t 右Ctrl
+Capsロック, 拡張2
+左Ctrl, 右Ctrl, 余分
+
+[Main]
+a,b
+";
+        let layout = parse_yab_content(content).expect("Failed");
+        assert_eq!(
+            layout.function_key_swaps,
+            vec![
+                ("左Alt".to_string(), "拡張1".to_string()),
+                ("F13".to_string(), "右Ctrl".to_string()),
+                ("Capsロック".to_string(), "拡張2".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn test_decode_sjis() {
         // "テスト" in Shift_JIS

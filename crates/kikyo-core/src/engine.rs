@@ -1,4 +1,7 @@
-use crate::chord_engine::{ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile};
+use crate::chord_engine::{
+    ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile, EXTENDED_KEY_1_SC,
+    EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
+};
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
@@ -11,6 +14,26 @@ lazy_static::lazy_static! {
     pub static ref ENGINE: Mutex<Engine> = Mutex::new(Engine::default());
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FunctionKeySwapTarget {
+    Key(ScKey),
+    CapsLock,
+    KanaLock,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FunctionPseudoKey {
+    CapsLock,
+    KanaLock,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PassThroughCurrent {
+    Original,
+    Inject(ScKey),
+    Block,
+}
+
 pub struct Engine {
     chord_engine: ChordEngine,
     enabled: bool,
@@ -18,6 +41,7 @@ pub struct Engine {
     on_enabled_change: Option<Box<dyn Fn(bool) + Send + Sync>>,
     repeat_plans: HashMap<ScKey, Vec<ScKey>>,
     pending_nonshift_for_shift: HashSet<ScKey>,
+    function_key_swaps: HashMap<ScKey, FunctionKeySwapTarget>,
 }
 
 impl Default for Engine {
@@ -31,6 +55,7 @@ impl Default for Engine {
             on_enabled_change: None,
             repeat_plans: HashMap::new(),
             pending_nonshift_for_shift: HashSet::new(),
+            function_key_swaps: HashMap::new(),
         }
     }
 }
@@ -140,6 +165,7 @@ impl Engine {
             "Engine: Layout loaded with {} sections.",
             layout.sections.len()
         );
+        self.function_key_swaps = build_function_key_swap_map(&layout.function_key_swaps);
 
         let mut profile = self.chord_engine.profile.clone();
 
@@ -238,7 +264,11 @@ impl Engine {
             return KeyAction::Pass;
         }
 
-        let key = ScKey::new(sc, ext);
+        let source_key = ScKey::new(sc, ext);
+        let (key, pass_through_current, pseudo_key) = self.remap_input_key(source_key);
+        if let Some(pseudo) = pseudo_key {
+            return emit_pseudo_function_key(pseudo, up);
+        }
 
         if !up && self.is_repeat_event(key) {
             return self.handle_repeat_event(key, shift, is_japanese);
@@ -326,7 +356,7 @@ impl Engine {
 
                     // Check Trigger Keys (Sub Planes)
                     if !is_defined {
-                        if let Some(name) = crate::jis_map::sc_to_key_name(sc) {
+                        if let Some(name) = crate::jis_map::sc_to_key_name(key.sc) {
                             let tag = format!("<{}>", name);
                             if section.sub_planes.contains_key(&tag) {
                                 is_defined = true;
@@ -336,13 +366,13 @@ impl Engine {
 
                     if !is_defined && !is_thumb && !is_space {
                         // Defined section, but key is not in it -> Pass
-                        return KeyAction::Pass;
+                        return passthrough_action(pass_through_current, source_key, up);
                     }
                 } else {
                     // Section does NOT exist -> Pass
                     // UNLESS it is a Thumb Key
                     if !is_thumb && !is_space {
-                        return KeyAction::Pass;
+                        return passthrough_action(pass_through_current, source_key, up);
                     }
                 }
             }
@@ -481,16 +511,61 @@ impl Engine {
             if pass_current {
                 // If we also need to pass the current key, append it to the injection sequence.
                 // This ensures "Flushed Keys" -> "Current Key" order.
-                inject_ops.push(InputEvent::Scancode(sc, ext, up));
+                if let Some(ev) = passthrough_event(pass_through_current, source_key, up) {
+                    inject_ops.push(ev);
+                }
             }
             return KeyAction::Inject(inject_ops);
         }
 
         if pass_current {
-            return KeyAction::Pass;
+            return passthrough_action(pass_through_current, source_key, up);
         }
 
         KeyAction::Block
+    }
+
+    fn remap_input_key(
+        &self,
+        source_key: ScKey,
+    ) -> (ScKey, PassThroughCurrent, Option<FunctionPseudoKey>) {
+        let mut current = source_key;
+        let mut changed = false;
+        let mut visited = HashSet::new();
+
+        while let Some(target) = self.function_key_swaps.get(&current).copied() {
+            if !visited.insert(current) {
+                break;
+            }
+            changed = true;
+            match target {
+                FunctionKeySwapTarget::Key(next) => current = next,
+                FunctionKeySwapTarget::CapsLock => {
+                    return (
+                        current,
+                        PassThroughCurrent::Block,
+                        Some(FunctionPseudoKey::CapsLock),
+                    );
+                }
+                FunctionKeySwapTarget::KanaLock => {
+                    return (
+                        current,
+                        PassThroughCurrent::Block,
+                        Some(FunctionPseudoKey::KanaLock),
+                    );
+                }
+            }
+        }
+
+        let pass = if !changed {
+            PassThroughCurrent::Original
+        } else if is_virtual_extended_key(current) {
+            PassThroughCurrent::Block
+        } else {
+            PassThroughCurrent::Inject(current)
+        };
+
+        (current, pass, None)
     }
 
     fn resolve(&self, keys: &[ScKey], shift: bool, is_japanese: bool) -> Option<Token> {
@@ -1016,6 +1091,168 @@ impl Engine {
             }
             Token::None => false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FunctionKeySpec {
+    Key(ScKey),
+    CapsLock,
+    KanaLock,
+}
+
+fn passthrough_event(
+    mode: PassThroughCurrent,
+    source_key: ScKey,
+    up: bool,
+) -> Option<InputEvent> {
+    match mode {
+        PassThroughCurrent::Original => Some(InputEvent::Scancode(source_key.sc, source_key.ext, up)),
+        PassThroughCurrent::Inject(key) => Some(InputEvent::Scancode(key.sc, key.ext, up)),
+        PassThroughCurrent::Block => None,
+    }
+}
+
+fn passthrough_action(mode: PassThroughCurrent, _source_key: ScKey, up: bool) -> KeyAction {
+    match mode {
+        PassThroughCurrent::Original => KeyAction::Pass,
+        PassThroughCurrent::Inject(key) => {
+            KeyAction::Inject(vec![InputEvent::Scancode(key.sc, key.ext, up)])
+        }
+        PassThroughCurrent::Block => KeyAction::Block,
+    }
+}
+
+fn emit_pseudo_function_key(pseudo: FunctionPseudoKey, up: bool) -> KeyAction {
+    if up {
+        return KeyAction::Block;
+    }
+
+    let events = match pseudo {
+        FunctionPseudoKey::CapsLock => vec![
+            InputEvent::Scancode(0x2A, false, false),
+            InputEvent::Scancode(0x3A, false, false),
+            InputEvent::Scancode(0x3A, false, true),
+            InputEvent::Scancode(0x2A, false, true),
+        ],
+        FunctionPseudoKey::KanaLock => vec![
+            InputEvent::Scancode(0x1D, false, false),
+            InputEvent::Scancode(0x2A, false, false),
+            InputEvent::Scancode(0x70, false, false),
+            InputEvent::Scancode(0x70, false, true),
+            InputEvent::Scancode(0x2A, false, true),
+            InputEvent::Scancode(0x1D, false, true),
+        ],
+    };
+    KeyAction::Inject(events)
+}
+
+fn is_virtual_extended_key(key: ScKey) -> bool {
+    !key.ext
+        && matches!(
+            key.sc,
+            EXTENDED_KEY_1_SC | EXTENDED_KEY_2_SC | EXTENDED_KEY_3_SC | EXTENDED_KEY_4_SC
+        )
+}
+
+fn build_function_key_swap_map(swaps: &[(String, String)]) -> HashMap<ScKey, FunctionKeySwapTarget> {
+    let mut map = HashMap::new();
+    for (source_name, target_name) in swaps {
+        let source_spec = match parse_function_key_spec(source_name) {
+            Some(spec) => spec,
+            None => continue,
+        };
+        let target_spec = match parse_function_key_spec(target_name) {
+            Some(spec) => spec,
+            None => continue,
+        };
+
+        let source_key = match source_spec {
+            FunctionKeySpec::Key(key) => key,
+            FunctionKeySpec::CapsLock | FunctionKeySpec::KanaLock => continue,
+        };
+
+        let target = match target_spec {
+            FunctionKeySpec::Key(key) => FunctionKeySwapTarget::Key(key),
+            FunctionKeySpec::CapsLock => FunctionKeySwapTarget::CapsLock,
+            FunctionKeySpec::KanaLock => FunctionKeySwapTarget::KanaLock,
+        };
+        map.insert(source_key, target);
+    }
+    map
+}
+
+fn parse_function_key_spec(name: &str) -> Option<FunctionKeySpec> {
+    let key = match name {
+        "Esc" => Some(ScKey::new(0x01, false)),
+        "Tab" => Some(ScKey::new(0x0F, false)),
+        "無変換" => Some(ScKey::new(0x7B, false)),
+        "Space" => Some(ScKey::new(0x39, false)),
+        "変換" => Some(ScKey::new(0x79, false)),
+        "Enter" => Some(ScKey::new(0x1C, false)),
+        "BackSpace" => Some(ScKey::new(0x0E, false)),
+        "Delete" => Some(ScKey::new(0x53, true)),
+        "Insert" => Some(ScKey::new(0x52, true)),
+        "左Shift" => Some(ScKey::new(0x2A, false)),
+        "右Shift" => Some(ScKey::new(0x36, false)),
+        "左Ctrl" => Some(ScKey::new(0x1D, false)),
+        "右Ctrl" => Some(ScKey::new(0x1D, true)),
+        "左Alt" => Some(ScKey::new(0x38, false)),
+        "右Alt" => Some(ScKey::new(0x38, true)),
+        "CapsLock/英数" | "CapsLock" => Some(ScKey::new(0x3A, false)),
+        "半角/全角" => Some(ScKey::new(0x29, false)),
+        "カタカナ/ひらがな" => Some(ScKey::new(0x70, false)),
+        "左Win" => Some(ScKey::new(0x5B, true)),
+        "右Win" => Some(ScKey::new(0x5C, true)),
+        "Applications" => Some(ScKey::new(0x5D, true)),
+        "上" => Some(ScKey::new(0x48, true)),
+        "左" => Some(ScKey::new(0x4B, true)),
+        "右" => Some(ScKey::new(0x4D, true)),
+        "下" => Some(ScKey::new(0x50, true)),
+        "Home" => Some(ScKey::new(0x47, true)),
+        "End" => Some(ScKey::new(0x4F, true)),
+        "PageUp" => Some(ScKey::new(0x49, true)),
+        "PageDown" => Some(ScKey::new(0x51, true)),
+        "拡張1" => Some(ScKey::new(EXTENDED_KEY_1_SC, false)),
+        "拡張2" => Some(ScKey::new(EXTENDED_KEY_2_SC, false)),
+        "拡張3" => Some(ScKey::new(EXTENDED_KEY_3_SC, false)),
+        "拡張4" => Some(ScKey::new(EXTENDED_KEY_4_SC, false)),
+        "Capsロック" => return Some(FunctionKeySpec::CapsLock),
+        "かなロック" => return Some(FunctionKeySpec::KanaLock),
+        _ => function_key_scancode_from_name(name).map(|sc| ScKey::new(sc, false)),
+    }?;
+
+    Some(FunctionKeySpec::Key(key))
+}
+
+fn function_key_scancode_from_name(name: &str) -> Option<u16> {
+    let number = name.strip_prefix('F')?.parse::<u8>().ok()?;
+    match number {
+        1 => Some(0x3B),
+        2 => Some(0x3C),
+        3 => Some(0x3D),
+        4 => Some(0x3E),
+        5 => Some(0x3F),
+        6 => Some(0x40),
+        7 => Some(0x41),
+        8 => Some(0x42),
+        9 => Some(0x43),
+        10 => Some(0x44),
+        11 => Some(0x57),
+        12 => Some(0x58),
+        13 => Some(0x64),
+        14 => Some(0x65),
+        15 => Some(0x66),
+        16 => Some(0x67),
+        17 => Some(0x68),
+        18 => Some(0x69),
+        19 => Some(0x6A),
+        20 => Some(0x6B),
+        21 => Some(0x6C),
+        22 => Some(0x6D),
+        23 => Some(0x6E),
+        24 => Some(0x76),
+        _ => None,
     }
 }
 
@@ -1646,11 +1883,7 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
     #[test]
     fn test_unicode_fallback() {
         let engine = Engine::default();
-        let token = Token::KeySequence(vec![KeyStroke {
-            key: KeySpec::Char('あ'),
-            mods: Modifiers::none(),
-        }]);
-        // We can access private methods in tests module of the same file
+        let token = Token::DirectChar("漢".to_string());
         let events = engine
             .token_to_events(&token, false)
             .expect("Should return events");
@@ -1658,14 +1891,14 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
         assert_eq!(events.len(), 2);
         match events[0] {
             InputEvent::Unicode(c, up) => {
-                assert_eq!(c, 'あ');
+                assert_eq!(c, '漢');
                 assert_eq!(up, false);
             }
             _ => panic!("Expected Unicode down"),
         }
         match events[1] {
             InputEvent::Unicode(c, up) => {
-                assert_eq!(c, 'あ');
+                assert_eq!(c, '漢');
                 assert_eq!(up, true);
             }
             _ => panic!("Expected Unicode up"),
@@ -3001,6 +3234,110 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             _ => panic!("Expected Inject for H tap, got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_function_key_swap_remaps_passthrough_key() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[機能キー]
+左Ctrl, 右Ctrl
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        match engine.process_key(0x1D, false, false, false) {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs, vec![InputEvent::Scancode(0x1D, true, false)]);
+            }
+            other => panic!("Expected Inject for remapped LeftCtrl down, got {:?}", other),
+        }
+        match engine.process_key(0x1D, false, true, false) {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs, vec![InputEvent::Scancode(0x1D, true, true)]);
+            }
+            other => panic!("Expected Inject for remapped LeftCtrl up, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_function_key_swap_virtual_extension_without_binding_is_blocked() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[機能キー]
+左Alt, 拡張1
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_function_key_swap_virtual_extension_can_drive_thumb_shift() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+x,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+z,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[機能キー]
+左Alt, 拡張1
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::Extended1;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        let result = engine.process_key(0x1E, false, true, false);
+        match result {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2C, _, _))),
+                    "Expected 'z' output from left thumb section"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2D, _, _))),
+                    "Base 'x' output should not be emitted"
+                );
+            }
+            other => panic!("Expected Inject for mapped thumb chord, got {:?}", other),
+        }
+        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
     }
 
     #[test]

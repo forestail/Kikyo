@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+pub const EXTENDED_KEY_1_SC: u16 = 0x0201;
+pub const EXTENDED_KEY_2_SC: u16 = 0x0202;
+pub const EXTENDED_KEY_3_SC: u16 = 0x0203;
+pub const EXTENDED_KEY_4_SC: u16 = 0x0204;
+
 /// Internal event type for the engine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyEdge {
@@ -147,6 +152,10 @@ pub enum ThumbKeySelect {
     RightShift,
     LeftCtrl,
     RightCtrl,
+    Extended1,
+    Extended2,
+    Extended3,
+    Extended4,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +305,10 @@ impl ThumbKeySelect {
             ThumbKeySelect::RightShift => Some(ScKey::new(0x36, false)),
             ThumbKeySelect::LeftCtrl => Some(ScKey::new(0x1D, false)),
             ThumbKeySelect::RightCtrl => Some(ScKey::new(0x1D, true)),
+            ThumbKeySelect::Extended1 => Some(ScKey::new(EXTENDED_KEY_1_SC, false)),
+            ThumbKeySelect::Extended2 => Some(ScKey::new(EXTENDED_KEY_2_SC, false)),
+            ThumbKeySelect::Extended3 => Some(ScKey::new(EXTENDED_KEY_3_SC, false)),
+            ThumbKeySelect::Extended4 => Some(ScKey::new(EXTENDED_KEY_4_SC, false)),
         }
     }
 }
