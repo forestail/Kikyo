@@ -25,3 +25,7 @@ build/
 # Tauri
 crates/kikyo-ui-tauri/src-tauri/target/
 crates/kikyo-ui-tauri/src-tauri/gen/
+
+# 配列定義ファイル
+*.yab
+*.bnz
