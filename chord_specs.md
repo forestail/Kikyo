@@ -1,4 +1,4 @@
-# 現状の同時打鍵（Chord）仕様まとめ
+# 現状の同時打鍵仕様まとめ
 
 現在のコード実装（`chord_engine.rs`）に基づく同時打鍵および親指シフトの判定仕様は以下の通りです。
 
@@ -23,7 +23,7 @@
    - ペア判定を実行（Check Chords）。
    - 単独で残ったキー（Lonely Tap）のフラッシュ処理。
 
-### 同時打鍵（Chord）成立条件
+### 同時打鍵成立条件
 
 2つのキー（Key A, Key B）が以下の条件を満たす場合、同時打鍵として認定されます。
 
@@ -38,7 +38,7 @@ Ratio = (Overlap Duration) / (Key B Duration)
 - **Key B Duration**: Key B が押されてから離されるまでの期間（離されていない場合は「現在時刻 - Key B Down」）。
 
 **判定**:
-`Ratio >= Threshold (設定値)` ならば **同時打鍵 (Chord)**。
+`Ratio >= Threshold (設定値)` ならば **同時打鍵**。
 
 #### B. 特例ロジック
 
