@@ -113,6 +113,39 @@ impl Engine {
         self.chord_engine.profile.suspend_key
     }
 
+    pub fn needs_alt_handling(&self) -> bool {
+        let left_alt = ScKey::new(0x38, false);
+        let right_alt = ScKey::new(0x38, true);
+
+        if self.function_key_swaps.contains_key(&left_alt)
+            || self.function_key_swaps.contains_key(&right_alt)
+        {
+            return true;
+        }
+
+        if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+            if tk.left.contains(&left_alt)
+                || tk.left.contains(&right_alt)
+                || tk.right.contains(&left_alt)
+                || tk.right.contains(&right_alt)
+                || tk.ext1.contains(&left_alt)
+                || tk.ext1.contains(&right_alt)
+                || tk.ext2.contains(&left_alt)
+                || tk.ext2.contains(&right_alt)
+            {
+                return true;
+            }
+        }
+
+        if let Some(ref targets) = self.chord_engine.profile.target_keys {
+            if targets.contains(&left_alt) || targets.contains(&right_alt) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn has_thumb_shift_sections_in_layout(&self) -> bool {
         if let Some(ref layout) = self.layout {
             let targets = [
@@ -125,6 +158,15 @@ impl Engine {
                 if layout.sections.keys().any(|k| k.starts_with(t)) {
                     return true;
                 }
+            }
+            if layout
+                .sections
+                .contains_key("\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1")
+                || layout
+                    .sections
+                    .contains_key("\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2")
+            {
+                return true;
             }
         }
         false
@@ -154,6 +196,8 @@ impl Engine {
             if let Some(ref tk) = profile.thumb_keys {
                 targets.extend(tk.left.iter());
                 targets.extend(tk.right.iter());
+                targets.extend(tk.ext1.iter());
+                targets.extend(tk.ext2.iter());
             }
         }
 
@@ -233,6 +277,8 @@ impl Engine {
         if let Some(ref tk) = profile.thumb_keys {
             target_keys.extend(tk.left.iter());
             target_keys.extend(tk.right.iter());
+            target_keys.extend(tk.ext1.iter());
+            target_keys.extend(tk.ext2.iter());
         }
 
         profile.target_keys = Some(target_keys);
@@ -282,6 +328,8 @@ impl Engine {
             // 1. Determine local "Thumb Shift" status from ChordEngine state
             let mut has_left_thumb = false;
             let mut has_right_thumb = false;
+            let mut has_ext1_thumb = false;
+            let mut has_ext2_thumb = false;
             if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
                 for k in &self.chord_engine.state.pressed {
                     if tk.left.contains(k) {
@@ -289,6 +337,12 @@ impl Engine {
                     }
                     if tk.right.contains(k) {
                         has_right_thumb = true;
+                    }
+                    if tk.ext1.contains(k) {
+                        has_ext1_thumb = true;
+                    }
+                    if tk.ext2.contains(k) {
+                        has_ext2_thumb = true;
                     }
                 }
             }
@@ -318,6 +372,13 @@ impl Engine {
             };
 
             let section_name = format!("{}{}", prefix, suffix);
+            let section_name = if !has_left_thumb && !has_right_thumb && has_ext1_thumb {
+                "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
+            } else if !has_left_thumb && !has_right_thumb && has_ext2_thumb {
+                "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
+            } else {
+                section_name
+            };
 
             // Debug logging (temporary) - output only if not blocked to avoid spam?
             // Better to output for specific keys or always for debugging.
@@ -336,7 +397,11 @@ impl Engine {
                 let is_space = key.sc == 0x39;
                 let mut is_thumb = false;
                 if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-                    if tk.left.contains(&key) || tk.right.contains(&key) {
+                    if tk.left.contains(&key)
+                        || tk.right.contains(&key)
+                        || tk.ext1.contains(&key)
+                        || tk.ext2.contains(&key)
+                    {
                         is_thumb = true;
                     }
                 }
@@ -586,6 +651,8 @@ impl Engine {
         // 1. Determine "Thumb Shift" status
         let mut has_left_thumb = false;
         let mut has_right_thumb = false;
+        let mut has_ext1_thumb = false;
+        let mut has_ext2_thumb = false;
 
         if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
             for k in keys {
@@ -594,6 +661,12 @@ impl Engine {
                 }
                 if tk.right.contains(k) {
                     has_right_thumb = true;
+                }
+                if tk.ext1.contains(k) {
+                    has_ext1_thumb = true;
+                }
+                if tk.ext2.contains(k) {
+                    has_ext2_thumb = true;
                 }
             }
         }
@@ -625,6 +698,13 @@ impl Engine {
         };
 
         let section_name = format!("{}{}", prefix, suffix);
+        let section_name = if !has_left_thumb && !has_right_thumb && has_ext1_thumb {
+            "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
+        } else if !has_left_thumb && !has_right_thumb && has_ext2_thumb {
+            "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
+        } else {
+            section_name
+        };
         // tracing::info!("Resolve: section={} keys={:?}", section_name, keys);
 
         let section = match layout.sections.get(&section_name) {
@@ -633,16 +713,25 @@ impl Engine {
         };
 
         // 4. Update keys for lookup (Remove Thumb Modifiers)
-        let lookup_keys: Vec<ScKey> = if has_left_thumb || has_right_thumb {
+        let lookup_keys: Vec<ScKey> =
+            if has_left_thumb || has_right_thumb || has_ext1_thumb || has_ext2_thumb {
             if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
                 keys.iter()
                     .filter(|&&k| {
                         let is_left = tk.left.contains(&k);
                         let is_right = tk.right.contains(&k);
+                        let is_ext1 = tk.ext1.contains(&k);
+                        let is_ext2 = tk.ext2.contains(&k);
                         if has_left_thumb && is_left {
                             return false;
                         }
                         if has_right_thumb && is_right {
+                            return false;
+                        }
+                        if has_ext1_thumb && is_ext1 {
+                            return false;
+                        }
+                        if has_ext2_thumb && is_ext2 {
                             return false;
                         }
                         true
@@ -967,8 +1056,10 @@ impl Engine {
         if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
             let left = tk.left.iter().find(|k| self.is_active_thumb_key(**k));
             let right = tk.right.iter().find(|k| self.is_active_thumb_key(**k));
+            let ext1 = tk.ext1.iter().find(|k| self.is_active_thumb_key(**k));
+            let ext2 = tk.ext2.iter().find(|k| self.is_active_thumb_key(**k));
 
-            if let Some(k) = left.or(right) {
+            if let Some(k) = left.or(right).or(ext1).or(ext2) {
                 keys.push(*k);
             }
         }
@@ -1059,7 +1150,10 @@ impl Engine {
 
     fn is_thumb_key(&self, key: ScKey) -> bool {
         if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-            return tk.left.contains(&key) || tk.right.contains(&key);
+            return tk.left.contains(&key)
+                || tk.right.contains(&key)
+                || tk.ext1.contains(&key)
+                || tk.ext2.contains(&key);
         }
         false
     }
@@ -2423,6 +2517,8 @@ thumb_a
         profile.thumb_keys = Some(crate::chord_engine::ThumbKeys {
             left: left_thumbs,
             right: HashSet::new(),
+            ext1: HashSet::new(),
+            ext2: HashSet::new(),
         });
 
         // Set profile BEFORE loading layout (although load_layout merges triggers, thumb keys are separate)
@@ -3269,6 +3365,24 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
     }
 
     #[test]
+    fn test_needs_alt_handling_for_function_key_swap_source() {
+        let config = "
+[機能キー]
+左Alt, 拡張1
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert!(
+            engine.needs_alt_handling(),
+            "Alt should be handled when it is used as [機能キー] swap source"
+        );
+    }
+
+    #[test]
     fn test_function_key_swap_virtual_extension_without_binding_is_blocked() {
         let config = "
 [ローマ字シフト無し]
@@ -3338,6 +3452,133 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             other => panic!("Expected Inject for mapped thumb chord, got {:?}", other),
         }
         assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_function_key_swap_virtual_extension_can_drive_extended_thumb_shift_1() {
+        let config = "
+[拡張親指シフト1]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+z,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[機能キー]
+左Alt, 拡張1
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::Extended1;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        let result = engine.process_key(0x1E, false, true, false);
+        match result {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2C, _, _))),
+                    "Expected 'z' output from [拡張親指シフト1]"
+                );
+            }
+            other => panic!(
+                "Expected Inject for mapped extended-thumb chord via function swap, got {:?}",
+                other
+            ),
+        }
+        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_extended_thumb_shift_section_1() {
+        let config = "
+[拡張親指シフト1]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+z,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::Muhenkan;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+        engine.load_layout(layout);
+
+        let profile = engine.get_profile();
+        let thumbs = profile.thumb_keys.as_ref().expect("thumb keys missing");
+        assert!(
+            thumbs.ext1.contains(&ScKey::new(0x7B, false)),
+            "Muhenkan should be registered as ext thumb 1"
+        );
+
+        assert_eq!(engine.process_key(0x7B, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        let result = engine.process_key(0x1E, false, true, false);
+        match result {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2C, _, _))),
+                    "Expected 'z' output from [拡張親指シフト1]"
+                );
+            }
+            other => panic!("Expected Inject for extended thumb 1, got {:?}", other),
+        }
+        assert_eq!(engine.process_key(0x7B, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_extended_thumb_shift_section_2() {
+        let config = "
+[拡張親指シフト2]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+y,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::Muhenkan;
+        engine.set_profile(profile);
+        engine.load_layout(layout);
+
+        assert_eq!(engine.process_key(0x7B, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        let result = engine.process_key(0x1E, false, true, false);
+        match result {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x15, _, _))),
+                    "Expected 'y' output from [拡張親指シフト2]"
+                );
+            }
+            other => panic!("Expected Inject for extended thumb 2, got {:?}", other),
+        }
+        assert_eq!(engine.process_key(0x7B, false, true, false), KeyAction::Block);
     }
 
     #[test]

@@ -188,23 +188,32 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let lwin_pressed = GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000 != 0;
         let rwin_pressed = GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000 != 0;
 
-        // Pass through Modifier key events themselves to ensure OS state is updated
-        if kbd.vkCode == VK_SHIFT.0 as u32
+        let is_shift_vk = kbd.vkCode == VK_SHIFT.0 as u32
             || kbd.vkCode == VK_LSHIFT.0 as u32
-            || kbd.vkCode == VK_RSHIFT.0 as u32
-            || kbd.vkCode == VK_CONTROL.0 as u32
+            || kbd.vkCode == VK_RSHIFT.0 as u32;
+        let is_ctrl_vk = kbd.vkCode == VK_CONTROL.0 as u32
             || kbd.vkCode == VK_LCONTROL.0 as u32
-            || kbd.vkCode == VK_RCONTROL.0 as u32
-            || kbd.vkCode == VK_MENU.0 as u32
+            || kbd.vkCode == VK_RCONTROL.0 as u32;
+        let is_alt_vk = kbd.vkCode == VK_MENU.0 as u32
             || kbd.vkCode == VK_LMENU.0 as u32
-            || kbd.vkCode == VK_RMENU.0 as u32
-            || kbd.vkCode == VK_LWIN.0 as u32
-            || kbd.vkCode == VK_RWIN.0 as u32
-        {
+            || kbd.vkCode == VK_RMENU.0 as u32;
+        let is_win_vk = kbd.vkCode == VK_LWIN.0 as u32 || kbd.vkCode == VK_RWIN.0 as u32;
+
+        // Alt may be used as a logical key source via [機能キー] swap.
+        // In that case we must feed Alt events into the engine.
+        let alt_needs_handling = if is_alt_vk || alt_pressed {
+            let engine = ENGINE.lock();
+            engine.needs_alt_handling()
+        } else {
+            false
+        };
+
+        // Pass through Modifier key events themselves to ensure OS state is updated
+        if is_shift_vk || is_ctrl_vk || is_win_vk || (is_alt_vk && !alt_needs_handling) {
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
-        if ctrl_pressed || alt_pressed || lwin_pressed || rwin_pressed {
+        if ctrl_pressed || lwin_pressed || rwin_pressed || (alt_pressed && !alt_needs_handling) {
             return CallNextHookEx(None, code, wparam, lparam);
         }
 

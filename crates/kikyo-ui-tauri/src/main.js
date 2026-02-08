@@ -15,12 +15,20 @@ let charRepeatAssignedCb, charRepeatUnassignedCb;
 let currentProfile = null;
 let thumbLeftRepeatSetting = null;
 let thumbRightRepeatSetting = null;
+let extThumb1RepeatSetting = null;
+let extThumb2RepeatSetting = null;
 
 // Thumb Left
 let thumbLeftKeySel, thumbLeftContinuousCb, thumbLeftSinglePressSel, thumbLeftRepeatCb;
 // Thumb Right
 let thumbRightKeySel, thumbRightContinuousCb, thumbRightSinglePressSel, thumbRightRepeatCb;
 let thumbLeftRepeatLabel, thumbRightRepeatLabel;
+// Extended Thumb 1
+let extThumb1KeySel, extThumb1ContinuousCb, extThumb1SinglePressSel, extThumb1RepeatCb;
+let extThumb1RepeatLabel;
+// Extended Thumb 2
+let extThumb2KeySel, extThumb2ContinuousCb, extThumb2SinglePressSel, extThumb2RepeatCb;
+let extThumb2RepeatLabel;
 
 // Thumb Common
 let thumbOverlapRatioInput, thumbOverlapVal;
@@ -88,21 +96,43 @@ function singlePressAllowsRepeat(value) {
 }
 
 function getThumbRepeatSetting(side) {
-  return side === "left" ? thumbLeftRepeatSetting : thumbRightRepeatSetting;
+  if (side === "left") return thumbLeftRepeatSetting;
+  if (side === "right") return thumbRightRepeatSetting;
+  if (side === "ext1") return extThumb1RepeatSetting;
+  return extThumb2RepeatSetting;
 }
 
 function setThumbRepeatSetting(side, value) {
   if (side === "left") {
     thumbLeftRepeatSetting = value;
-  } else {
+  } else if (side === "right") {
     thumbRightRepeatSetting = value;
+  } else if (side === "ext1") {
+    extThumb1RepeatSetting = value;
+  } else {
+    extThumb2RepeatSetting = value;
   }
 }
 
 function syncThumbRepeatUI(side) {
-  const singlePressSel = side === "left" ? thumbLeftSinglePressSel : thumbRightSinglePressSel;
-  const repeatCb = side === "left" ? thumbLeftRepeatCb : thumbRightRepeatCb;
-  const repeatLabel = side === "left" ? thumbLeftRepeatLabel : thumbRightRepeatLabel;
+  let singlePressSel, repeatCb, repeatLabel;
+  if (side === "left") {
+    singlePressSel = thumbLeftSinglePressSel;
+    repeatCb = thumbLeftRepeatCb;
+    repeatLabel = thumbLeftRepeatLabel;
+  } else if (side === "right") {
+    singlePressSel = thumbRightSinglePressSel;
+    repeatCb = thumbRightRepeatCb;
+    repeatLabel = thumbRightRepeatLabel;
+  } else if (side === "ext1") {
+    singlePressSel = extThumb1SinglePressSel;
+    repeatCb = extThumb1RepeatCb;
+    repeatLabel = extThumb1RepeatLabel;
+  } else {
+    singlePressSel = extThumb2SinglePressSel;
+    repeatCb = extThumb2RepeatCb;
+    repeatLabel = extThumb2RepeatLabel;
+  }
   if (!singlePressSel || !repeatCb) return;
 
   const allowRepeat = singlePressAllowsRepeat(singlePressSel.value);
@@ -143,6 +173,22 @@ function updateUI(profile) {
     if (thumbRightRepeatCb) thumbRightRepeatCb.checked = profile.thumb_right.repeat;
     setThumbRepeatSetting("right", profile.thumb_right.repeat);
   }
+  // Extended Thumb 1
+  if (profile.extended_thumb1) {
+    if (extThumb1KeySel) extThumb1KeySel.value = profile.extended_thumb1.key;
+    if (extThumb1ContinuousCb) extThumb1ContinuousCb.checked = profile.extended_thumb1.continuous;
+    if (extThumb1SinglePressSel) extThumb1SinglePressSel.value = profile.extended_thumb1.single_press;
+    if (extThumb1RepeatCb) extThumb1RepeatCb.checked = profile.extended_thumb1.repeat;
+    setThumbRepeatSetting("ext1", profile.extended_thumb1.repeat);
+  }
+  // Extended Thumb 2
+  if (profile.extended_thumb2) {
+    if (extThumb2KeySel) extThumb2KeySel.value = profile.extended_thumb2.key;
+    if (extThumb2ContinuousCb) extThumb2ContinuousCb.checked = profile.extended_thumb2.continuous;
+    if (extThumb2SinglePressSel) extThumb2SinglePressSel.value = profile.extended_thumb2.single_press;
+    if (extThumb2RepeatCb) extThumb2RepeatCb.checked = profile.extended_thumb2.repeat;
+    setThumbRepeatSetting("ext2", profile.extended_thumb2.repeat);
+  }
 
   // Common
   if (imeModeSel) imeModeSel.value = profile.ime_mode || "Auto";
@@ -162,6 +208,8 @@ function updateUI(profile) {
 
   syncThumbRepeatUI("left");
   syncThumbRepeatUI("right");
+  syncThumbRepeatUI("ext1");
+  syncThumbRepeatUI("ext2");
 }
 
 async function saveProfile() {
@@ -202,6 +250,32 @@ async function saveProfile() {
   const rightStoredRepeat = getThumbRepeatSetting("right");
   currentProfile.thumb_right.repeat = typeof rightStoredRepeat === "boolean" ? rightStoredRepeat : false;
 
+  // Extended Thumb 1
+  if (!currentProfile.extended_thumb1) currentProfile.extended_thumb1 = {};
+  currentProfile.extended_thumb1.key = extThumb1KeySel.value;
+  currentProfile.extended_thumb1.continuous = extThumb1ContinuousCb.checked;
+  currentProfile.extended_thumb1.single_press = extThumb1SinglePressSel.value;
+  const ext1AllowsRepeat = singlePressAllowsRepeat(extThumb1SinglePressSel.value);
+  if (ext1AllowsRepeat) {
+    setThumbRepeatSetting("ext1", extThumb1RepeatCb.checked);
+  }
+  const ext1StoredRepeat = getThumbRepeatSetting("ext1");
+  currentProfile.extended_thumb1.repeat =
+    typeof ext1StoredRepeat === "boolean" ? ext1StoredRepeat : false;
+
+  // Extended Thumb 2
+  if (!currentProfile.extended_thumb2) currentProfile.extended_thumb2 = {};
+  currentProfile.extended_thumb2.key = extThumb2KeySel.value;
+  currentProfile.extended_thumb2.continuous = extThumb2ContinuousCb.checked;
+  currentProfile.extended_thumb2.single_press = extThumb2SinglePressSel.value;
+  const ext2AllowsRepeat = singlePressAllowsRepeat(extThumb2SinglePressSel.value);
+  if (ext2AllowsRepeat) {
+    setThumbRepeatSetting("ext2", extThumb2RepeatCb.checked);
+  }
+  const ext2StoredRepeat = getThumbRepeatSetting("ext2");
+  currentProfile.extended_thumb2.repeat =
+    typeof ext2StoredRepeat === "boolean" ? ext2StoredRepeat : false;
+
   // Common
   if (thumbOverlapRatioInput) {
     currentProfile.thumb_shift_overlap_ratio =
@@ -231,6 +305,8 @@ function setupAutoSave() {
     charRepeatUnassignedCb,
     thumbLeftContinuousCb, thumbLeftRepeatCb,
     thumbRightContinuousCb, thumbRightRepeatCb,
+    extThumb1ContinuousCb, extThumb1RepeatCb,
+    extThumb2ContinuousCb, extThumb2RepeatCb,
     charContinuousCb,
   ];
   changeTargets.forEach((el) => {
@@ -241,6 +317,8 @@ function setupAutoSave() {
   const selectTargets = [
     thumbLeftKeySel,
     thumbRightKeySel,
+    extThumb1KeySel,
+    extThumb2KeySel,
     imeModeSel, suspendKeySel
   ];
   selectTargets.forEach((el) => {
@@ -259,11 +337,124 @@ function setupAutoSave() {
       saveProfile();
     });
   }
+  if (extThumb1SinglePressSel) {
+    extThumb1SinglePressSel.addEventListener("change", () => {
+      syncThumbRepeatUI("ext1");
+      saveProfile();
+    });
+  }
+  if (extThumb2SinglePressSel) {
+    extThumb2SinglePressSel.addEventListener("change", () => {
+      syncThumbRepeatUI("ext2");
+      saveProfile();
+    });
+  }
 
   const rangeTargets = [thumbOverlapRatioInput, charOverlapRatioInput];
   rangeTargets.forEach((el) => {
     if (el) el.addEventListener("input", saveProfile);
   });
+}
+
+function keyOptionsWithoutNone(selectEl) {
+  if (!selectEl) return "";
+  const clone = selectEl.cloneNode(true);
+  clone.querySelectorAll('option[value="None"]').forEach((el) => el.remove());
+  return clone.innerHTML;
+}
+
+function ensureExtendedThumbSection() {
+  const thumbSection = document.querySelector("#section-thumb");
+  const chordSection = document.querySelector("#section-chord");
+  if (!thumbSection || !chordSection) return;
+
+  const navRoot = document.querySelector(".sidebar-nav");
+  const chordNav = navRoot?.querySelector('[data-target="section-chord"]');
+  if (navRoot && chordNav && !navRoot.querySelector('[data-target="section-extended-thumb"]')) {
+    const navItem = document.createElement("li");
+    navItem.className = "nav-item";
+    navItem.dataset.target = "section-extended-thumb";
+    navItem.innerText = "拡張親指シフト";
+    navRoot.insertBefore(navItem, chordNav);
+  }
+
+  if (document.querySelector("#section-extended-thumb")) return;
+
+  const keyOptions = keyOptionsWithoutNone(document.querySelector("#thumb-left-key"));
+  const singlePressOptions = document.querySelector("#thumb-left-single-press")?.innerHTML || "";
+
+  const section = document.createElement("div");
+  section.id = "section-extended-thumb";
+  section.className = "settings-section";
+  section.innerHTML = `
+      <h2>拡張親指シフト</h2>
+      <div class="thumb-columns" style="display: flex; gap: 20px;">
+        <div class="thumb-col" style="flex: 1;">
+          <div class="setting-item">
+            <div class="setting-label">拡張親指シフト1</div>
+            <div class="setting-control">
+              <select id="ext-thumb-1-key">${keyOptions}</select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label">連続シフト</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="ext-thumb-1-continuous">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label">単打鍵</div>
+            <div class="setting-control">
+              <select id="ext-thumb-1-single-press">${singlePressOptions}</select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label" id="ext-thumb-1-repeat-label">キーリピート</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="ext-thumb-1-repeat">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="thumb-col" style="flex: 1;">
+          <div class="setting-item">
+            <div class="setting-label">拡張親指シフト2</div>
+            <div class="setting-control">
+              <select id="ext-thumb-2-key">${keyOptions}</select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label">連続シフト</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="ext-thumb-2-continuous">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label">単打鍵</div>
+            <div class="setting-control">
+              <select id="ext-thumb-2-single-press">${singlePressOptions}</select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label" id="ext-thumb-2-repeat-label">キーリピート</div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="ext-thumb-2-repeat">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  chordSection.parentNode.insertBefore(section, chordSection);
 }
 
 // Sidebar logic
@@ -308,6 +499,22 @@ window.addEventListener("DOMContentLoaded", () => {
   thumbRightSinglePressSel = document.querySelector("#thumb-right-single-press");
   thumbRightRepeatCb = document.querySelector("#thumb-right-repeat");
   thumbRightRepeatLabel = document.querySelector("#thumb-right-repeat-label");
+
+  ensureExtendedThumbSection();
+
+  // Extended Thumb 1
+  extThumb1KeySel = document.querySelector("#ext-thumb-1-key");
+  extThumb1ContinuousCb = document.querySelector("#ext-thumb-1-continuous");
+  extThumb1SinglePressSel = document.querySelector("#ext-thumb-1-single-press");
+  extThumb1RepeatCb = document.querySelector("#ext-thumb-1-repeat");
+  extThumb1RepeatLabel = document.querySelector("#ext-thumb-1-repeat-label");
+
+  // Extended Thumb 2
+  extThumb2KeySel = document.querySelector("#ext-thumb-2-key");
+  extThumb2ContinuousCb = document.querySelector("#ext-thumb-2-continuous");
+  extThumb2SinglePressSel = document.querySelector("#ext-thumb-2-single-press");
+  extThumb2RepeatCb = document.querySelector("#ext-thumb-2-repeat");
+  extThumb2RepeatLabel = document.querySelector("#ext-thumb-2-repeat-label");
 
   // Reset old binding if any
   thumbOverlapRatioInput = document.querySelector("#thumb-overlap-ratio");

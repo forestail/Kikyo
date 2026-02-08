@@ -65,6 +65,8 @@ impl Default for ChordStyle {
 pub struct ThumbKeys {
     pub left: HashSet<ScKey>,
     pub right: HashSet<ScKey>,
+    pub ext1: HashSet<ScKey>,
+    pub ext2: HashSet<ScKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -213,6 +215,10 @@ pub struct Profile {
     pub thumb_left: ThumbSideConfig,
     #[serde(default)]
     pub thumb_right: ThumbSideConfig,
+    #[serde(default)]
+    pub extended_thumb1: ThumbSideConfig,
+    #[serde(default)]
+    pub extended_thumb2: ThumbSideConfig,
     #[serde(default = "default_thumb_shift_overlap_ratio")]
     pub thumb_shift_overlap_ratio: f64, // Kept global as per implementation plan but not strictly required to be split by user yet
 
@@ -272,6 +278,18 @@ impl Default for Profile {
                 single_press: ThumbShiftSinglePress::None,
                 repeat: false,
             },
+            extended_thumb1: ThumbSideConfig {
+                key: ThumbKeySelect::Extended1,
+                continuous: false,
+                single_press: ThumbShiftSinglePress::None,
+                repeat: false,
+            },
+            extended_thumb2: ThumbSideConfig {
+                key: ThumbKeySelect::Extended2,
+                continuous: false,
+                single_press: ThumbShiftSinglePress::None,
+                repeat: false,
+            },
             thumb_shift_overlap_ratio: 0.35,
 
             char_key_continuous: false,
@@ -317,6 +335,8 @@ impl Profile {
     pub fn update_thumb_keys(&mut self) {
         let mut left = HashSet::new();
         let mut right = HashSet::new();
+        let mut ext1 = HashSet::new();
+        let mut ext2 = HashSet::new();
 
         if let Some(sck) = self.thumb_left.key.to_sckey() {
             left.insert(sck);
@@ -324,8 +344,19 @@ impl Profile {
         if let Some(sck) = self.thumb_right.key.to_sckey() {
             right.insert(sck);
         }
+        if let Some(sck) = self.extended_thumb1.key.to_sckey() {
+            ext1.insert(sck);
+        }
+        if let Some(sck) = self.extended_thumb2.key.to_sckey() {
+            ext2.insert(sck);
+        }
 
-        self.thumb_keys = Some(ThumbKeys { left, right });
+        self.thumb_keys = Some(ThumbKeys {
+            left,
+            right,
+            ext1,
+            ext2,
+        });
     }
 }
 
@@ -362,6 +393,8 @@ enum ModifierKind {
     None,
     ThumbLeft,
     ThumbRight,
+    ThumbExt1,
+    ThumbExt2,
     CharShift,
 }
 
@@ -512,7 +545,10 @@ impl ChordEngine {
                         self.state.down_ts.remove(&key);
 
                         match mod_kind {
-                            ModifierKind::ThumbLeft | ModifierKind::ThumbRight => {
+                            ModifierKind::ThumbLeft
+                            | ModifierKind::ThumbRight
+                            | ModifierKind::ThumbExt1
+                            | ModifierKind::ThumbExt2 => {
                                 if self.state.used_modifiers.contains(&key) {
                                     // Was used, so ignore single press
                                     self.state.used_modifiers.remove(&key);
@@ -523,6 +559,12 @@ impl ChordEngine {
                                         }
                                         ModifierKind::ThumbRight => {
                                             self.profile.thumb_right.single_press
+                                        }
+                                        ModifierKind::ThumbExt1 => {
+                                            self.profile.extended_thumb1.single_press
+                                        }
+                                        ModifierKind::ThumbExt2 => {
+                                            self.profile.extended_thumb2.single_press
                                         }
                                         _ => ThumbShiftSinglePress::None,
                                     };
@@ -792,9 +834,19 @@ impl ChordEngine {
                     (p1_end, 0.0)
                 }
             } else {
-                let is_char_pair =
-                    !matches!(kind1, ModifierKind::ThumbLeft | ModifierKind::ThumbRight)
-                        && !matches!(kind2, ModifierKind::ThumbLeft | ModifierKind::ThumbRight);
+                let is_char_pair = !matches!(
+                    kind1,
+                    ModifierKind::ThumbLeft
+                        | ModifierKind::ThumbRight
+                        | ModifierKind::ThumbExt1
+                        | ModifierKind::ThumbExt2
+                ) && !matches!(
+                    kind2,
+                    ModifierKind::ThumbLeft
+                        | ModifierKind::ThumbRight
+                        | ModifierKind::ThumbExt1
+                        | ModifierKind::ThumbExt2
+                );
                 let third_key_down = matches!(
                     trigger,
                     Some((k, KeyEdge::Down)) if k != p1.key && k != p2.key
@@ -835,6 +887,12 @@ impl ChordEngine {
             if tk.right.contains(&key) {
                 return ModifierKind::ThumbRight;
             }
+            if tk.ext1.contains(&key) {
+                return ModifierKind::ThumbExt1;
+            }
+            if tk.ext2.contains(&key) {
+                return ModifierKind::ThumbExt2;
+            }
         }
 
         if self.profile.trigger_keys.contains_key(&key) {
@@ -848,6 +906,8 @@ impl ChordEngine {
         match kind {
             ModifierKind::ThumbLeft => self.profile.thumb_left.continuous,
             ModifierKind::ThumbRight => self.profile.thumb_right.continuous,
+            ModifierKind::ThumbExt1 => self.profile.extended_thumb1.continuous,
+            ModifierKind::ThumbExt2 => self.profile.extended_thumb2.continuous,
             ModifierKind::CharShift => self.profile.char_key_continuous,
             ModifierKind::None => false,
         }
