@@ -38,12 +38,9 @@
 
       <div class="setting-item">
         <div class="setting-label">配列定義ファイル</div>
-        <div class="setting-control row">
-          <input type="text" id="layout-path" placeholder="C:\path\to\layout.yab" />
-          <button id="browse-layout-btn" style="margin-left: 5px;">参照...</button>
-          <button id="load-layout-btn">読み込み</button>
-        </div>
-        <div class="setting-desc">使用する配列定義ファイル（.yab / .bnz）のパスを指定します。</div>
+        <div id="layout-entry-list" class="layout-entry-list"></div>
+        <button id="add-layout-entry-btn" class="layout-entry-add-btn">+ 新規追加</button>
+        <div class="setting-desc">使用する配列定義ファイル（.yab / .bnz）を登録し、ラジオ選択で即時切り替えます。</div>
       </div>
 
 

@@ -4,7 +4,10 @@ let globalEnabledCb;
 let statusMsg;
 
 // Elements
-let layoutPathInput, loadLayoutBtn, browseLayoutBtn;
+let layoutEntryListEl, addLayoutEntryBtn;
+let layoutEntries = [];
+let activeLayoutEntryId = null;
+let layoutPointerDragState = null;
 
 // Sidebar
 let navItems, sections;
@@ -39,37 +42,324 @@ let charContinuousCb, charOverlapRatioInput, charOverlapVal;
 // Operation
 let imeModeSel, suspendKeySel;
 
-async function loadLayout() {
-  if (!layoutPathInput) return;
-  const path = layoutPathInput.value;
+async function openLayoutFileDialog(defaultPath = null) {
+  const { open } = window.__TAURI_PLUGIN_DIALOG__;
+  const selected = await open({
+    multiple: false,
+    defaultPath: defaultPath || undefined,
+    filters: [{
+      name: "Yab Layout",
+      extensions: ["yab", "bnz"],
+    }]
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+function normalizeLayoutEntry(entry) {
+  return {
+    id: entry?.id ?? "",
+    alias: entry?.alias ?? "",
+    path: entry?.path ?? "",
+  };
+}
+
+function moveLayoutEntryInMemory(draggedId, targetId) {
+  const fromIndex = layoutEntries.findIndex((entry) => entry.id === draggedId);
+  const toIndex = layoutEntries.findIndex((entry) => entry.id === targetId);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+  const [moved] = layoutEntries.splice(fromIndex, 1);
+  layoutEntries.splice(toIndex, 0, moved);
+}
+
+function clearLayoutEntryDragOverState() {
+  document.querySelectorAll(".layout-entry-row.is-drag-over")
+    .forEach((el) => el.classList.remove("is-drag-over"));
+}
+
+function cleanupLayoutPointerDrag() {
+  if (!layoutPointerDragState) return;
+  const {
+    sourceRow,
+    sourceHandle,
+    pointerId,
+    onPointerMove,
+    onPointerUp,
+  } = layoutPointerDragState;
+  if (sourceRow) {
+    sourceRow.classList.remove("is-dragging");
+    sourceRow.style.removeProperty("transform");
+    sourceRow.style.removeProperty("will-change");
+  }
+  if (
+    sourceHandle
+    && pointerId !== undefined
+    && sourceHandle.hasPointerCapture
+    && sourceHandle.hasPointerCapture(pointerId)
+  ) {
+    sourceHandle.releasePointerCapture(pointerId);
+  }
+  clearLayoutEntryDragOverState();
+  document.body.classList.remove("layout-entry-dragging");
+  if (onPointerMove) {
+    window.removeEventListener("pointermove", onPointerMove);
+  }
+  if (onPointerUp) {
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
+  }
+  layoutPointerDragState = null;
+}
+
+function findLayoutEntryRowAtPoint(clientX, clientY) {
+  const target = document.elementFromPoint(clientX, clientY);
+  return target ? target.closest(".layout-entry-row") : null;
+}
+
+async function persistLayoutEntryOrder() {
   try {
-    statusMsg.innerText = "Loading...";
-    const res = await invoke("load_yab", { path });
-    statusMsg.innerText = "成功: " + res;
-    localStorage.setItem("kikyo_path", path);
+    const orderedIds = layoutEntries.map((entry) => entry.id);
+    await invoke("reorder_layout_entries", {
+      orderedIds,
+      ordered_ids: orderedIds,
+    });
   } catch (e) {
-    statusMsg.innerText = "エラー: " + e;
+    statusMsg.innerText = "鬯ｮ・｣陋ｹ繝ｻ・ｽ・ｽ繝ｻ・ｳ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｦ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｳ鬯ｮ・ｫ繝ｻ・ｴ髯ｷ・ｴ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｿ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ鬮ｯ蜈ｷ・ｽ・ｹ郢晢ｽｻ繝ｻ・ｻ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    await refreshLayoutEntries();
   }
 }
 
-async function browseLayout() {
+async function activateLayoutEntry(entryId) {
+  if (!entryId) return;
   try {
-    // Use the global Tauri dialog API
-    const { open } = window.__TAURI_PLUGIN_DIALOG__;
-    const selected = await open({
-      multiple: false,
-      filters: [{
-        name: 'Yab Layout',
-        extensions: ['yab', 'bnz']
-      }]
-    });
+    statusMsg.innerText = "Loading...";
+    const res = await invoke("activate_layout_entry", { id: entryId });
+    activeLayoutEntryId = entryId;
+    statusMsg.innerText = "鬯ｯ・ｮ繝ｻ・ｫ郢晢ｽｻ繝ｻ・ｱ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・ｴ鬮ｮ諛ｶ・ｽ・｣郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ: " + res;
+    renderLayoutEntryList();
+  } catch (e) {
+    statusMsg.innerText = "鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    renderLayoutEntryList();
+  }
+}
 
-    if (selected) {
-      layoutPathInput.value = selected;
+async function updateLayoutEntryState(entryId, alias, path) {
+  try {
+    await invoke("update_layout_entry", { id: entryId, alias, path });
+    const entry = layoutEntries.find((item) => item.id === entryId);
+    if (entry) {
+      entry.alias = alias;
+      entry.path = path;
     }
   } catch (e) {
-    console.error("File dialog error:", e);
-    statusMsg.innerText = "ファイル選択エラー: " + e;
+    statusMsg.innerText = "鬯ｮ・ｫ繝ｻ・ｴ髯ｷ・ｴ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｴ鬯ｮ・ｫ繝ｻ・ｴ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｰ鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    await refreshLayoutEntries();
+  }
+}
+
+async function deleteLayoutEntry(entryId) {
+  const deletingActive = entryId === activeLayoutEntryId;
+  try {
+    await invoke("delete_layout_entry", { id: entryId });
+    await refreshLayoutEntries();
+    if (deletingActive && activeLayoutEntryId) {
+      await activateLayoutEntry(activeLayoutEntryId);
+    }
+  } catch (e) {
+    statusMsg.innerText = "鬯ｮ・ｯ繝ｻ・ｷ髯ｷ・ｿ繝ｻ・ｰ郢晢ｽｻ繝ｻ・ｼ驕ｶ荵怜・繝ｻ・ｱ郢ｧ蜍､譁舌・繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+  }
+}
+
+function buildLayoutEntryRow(entry) {
+  const row = document.createElement("div");
+  row.className = "layout-entry-row";
+  row.dataset.entryId = entry.id;
+
+  const handle = document.createElement("div");
+  handle.className = "layout-entry-handle";
+  handle.textContent = "\u22EE\u22EE";
+  handle.title = "Drag to reorder";
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    cleanupLayoutPointerDrag();
+    const pointerId = event.pointerId;
+    if (handle.setPointerCapture) {
+      handle.setPointerCapture(pointerId);
+    }
+
+    const onPointerMove = (moveEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      if (!layoutPointerDragState || layoutPointerDragState.draggedId !== entry.id) return;
+      const offsetY = moveEvent.clientY - layoutPointerDragState.startClientY;
+      if (layoutPointerDragState.sourceRow) {
+        layoutPointerDragState.sourceRow.style.transform = `translateY(${offsetY}px)`;
+      }
+      const targetRow = findLayoutEntryRowAtPoint(moveEvent.clientX, moveEvent.clientY);
+      const targetId = targetRow ? targetRow.dataset.entryId : null;
+      clearLayoutEntryDragOverState();
+      if (!targetId || targetId === entry.id) {
+        layoutPointerDragState.targetId = null;
+        return;
+      }
+      targetRow.classList.add("is-drag-over");
+      layoutPointerDragState.targetId = targetId;
+    };
+
+    const onPointerUp = async (upEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      if (!layoutPointerDragState || layoutPointerDragState.draggedId !== entry.id) return;
+      const draggedId = layoutPointerDragState.draggedId;
+      const currentTargetId = layoutPointerDragState.targetId;
+      const fallbackTargetRow = findLayoutEntryRowAtPoint(upEvent.clientX, upEvent.clientY);
+      const fallbackTargetId = fallbackTargetRow ? fallbackTargetRow.dataset.entryId : null;
+      const targetId = currentTargetId || fallbackTargetId;
+      cleanupLayoutPointerDrag();
+      if (!targetId || draggedId === targetId) return;
+      moveLayoutEntryInMemory(draggedId, targetId);
+      renderLayoutEntryList();
+      await persistLayoutEntryOrder();
+    };
+
+    layoutPointerDragState = {
+      draggedId: entry.id,
+      targetId: null,
+      sourceRow: row,
+      sourceHandle: handle,
+      pointerId,
+      startClientY: event.clientY,
+      onPointerMove,
+      onPointerUp,
+    };
+    row.classList.add("is-dragging");
+    row.style.willChange = "transform";
+    document.body.classList.add("layout-entry-dragging");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+  });
+
+  const main = document.createElement("div");
+  main.className = "layout-entry-main";
+
+  const top = document.createElement("div");
+  top.className = "layout-entry-top";
+
+  const radio = document.createElement("input");
+  radio.type = "radio";
+  radio.className = "layout-entry-radio";
+  radio.name = "active-layout-entry";
+  radio.checked = entry.id === activeLayoutEntryId;
+  radio.addEventListener("change", async () => {
+    if (radio.checked) {
+      await activateLayoutEntry(entry.id);
+    }
+  });
+
+  const aliasInput = document.createElement("input");
+  aliasInput.type = "text";
+  aliasInput.className = "layout-entry-alias";
+  aliasInput.placeholder = "Alias";
+  aliasInput.value = entry.alias || "";
+
+  const pathRow = document.createElement("div");
+  pathRow.className = "layout-entry-path-row";
+
+  const pathInput = document.createElement("input");
+  pathInput.type = "text";
+  pathInput.className = "layout-entry-path";
+  pathInput.placeholder = "C:\\path\\to\\layout.yab";
+  pathInput.value = entry.path || "";
+
+  aliasInput.addEventListener("change", async () => {
+    await updateLayoutEntryState(entry.id, aliasInput.value, pathInput.value);
+  });
+
+  pathInput.addEventListener("change", async () => {
+    await updateLayoutEntryState(entry.id, aliasInput.value, pathInput.value);
+  });
+
+  const browseBtn = document.createElement("button");
+  browseBtn.type = "button";
+  browseBtn.className = "layout-entry-browse-btn";
+  browseBtn.textContent = "\u53C2\u7167";
+  browseBtn.addEventListener("click", async () => {
+    try {
+      const selected = await openLayoutFileDialog(pathInput.value);
+      if (!selected) return;
+      pathInput.value = selected;
+      await updateLayoutEntryState(entry.id, aliasInput.value, pathInput.value);
+    } catch (e) {
+      statusMsg.innerText = "鬩幢ｽ｢隴弱・・ｽ・ｼ隴∵腸・ｼ諞ｺﾎ斐・・ｧ郢晢ｽｻ繝ｻ・､鬩幢ｽ｢隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｫ鬯ｯ・ｩ陋ｹ繝ｻ・ｽ・ｽ繝ｻ・ｸ鬮ｫ・ｰ陞｢・ｽ繝ｻ・ｧ繝ｻ・ｭ驍ｵ・ｺ鬯倩ｲｻ・ｽ・ｹ隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｩ鬩幢ｽ｢隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｼ: " + e;
+    }
+  });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "layout-entry-delete-btn";
+  deleteBtn.title = "Delete";
+  deleteBtn.setAttribute("aria-label", "Delete");
+  deleteBtn.innerHTML = `
+    <svg class="layout-entry-delete-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h2v9H7V9Zm4 0h2v9h-2V9Zm4 0h2v9h-2V9ZM6 21h12a2 2 0 0 0 2-2V8H4v11a2 2 0 0 0 2 2Z"/>
+    </svg>
+  `;
+  deleteBtn.addEventListener("click", async () => {
+    await deleteLayoutEntry(entry.id);
+  });
+
+  top.appendChild(radio);
+  top.appendChild(aliasInput);
+  pathRow.appendChild(pathInput);
+  pathRow.appendChild(browseBtn);
+  main.appendChild(top);
+  main.appendChild(pathRow);
+  row.appendChild(handle);
+  row.appendChild(main);
+  row.appendChild(deleteBtn);
+  return row;
+}
+
+function renderLayoutEntryList() {
+  if (!layoutEntryListEl) return;
+  cleanupLayoutPointerDrag();
+  layoutEntryListEl.innerHTML = "";
+
+  if (!layoutEntries.length) {
+    const empty = document.createElement("div");
+    empty.className = "layout-entry-empty";
+    empty.innerText = "No layout entries";
+    layoutEntryListEl.appendChild(empty);
+    return;
+  }
+
+  layoutEntries.forEach((entry) => {
+    layoutEntryListEl.appendChild(buildLayoutEntryRow(entry));
+  });
+}
+
+async function refreshLayoutEntries() {
+  try {
+    const res = await invoke("get_layout_entries");
+    layoutEntries = (res?.entries || []).map(normalizeLayoutEntry);
+    activeLayoutEntryId = res?.active_layout_id || null;
+    renderLayoutEntryList();
+  } catch (e) {
+    statusMsg.innerText = "鬯ｯ・ｯ繝ｻ・ｩ髮倶ｼ∝ｱｮ繝ｻ・ｽ繝ｻ・ｦ鬩怜遜・ｽ・ｫ驛｢譎｢・ｽ・ｻ鬯ｮ・｣陋ｹ繝ｻ・ｽ・ｽ繝ｻ・ｳ郢晢ｽｻ邵ｺ・､・つ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｧ鬯ｮ・ｯ繝ｻ・ｷ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・｢繝ｻ縺､ﾂ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｾ鬮ｯ・ｷ闔ｨ螟ｲ・ｽ・ｽ繝ｻ・ｱ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+  }
+}
+
+async function addLayoutEntry() {
+  try {
+    const selected = await openLayoutFileDialog();
+    if (!selected) return;
+    const wasEmpty = layoutEntries.length === 0;
+    const created = await invoke("create_layout_entry_from_path", { path: selected });
+    await refreshLayoutEntries();
+    if (wasEmpty && created?.id) {
+      await activateLayoutEntry(created.id);
+    }
+  } catch (e) {
+    statusMsg.innerText = "鬯ｯ・ｮ繝ｻ・ｴ髫ｰ繝ｻ竏槭・・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｽ鬯ｮ・ｯ繝ｻ・ｷ髣費ｽｨ陞滂ｽｲ繝ｻ・ｽ繝ｻ・｣郢晢ｽｻ繝ｻ・ｰ鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
   }
 }
 
@@ -77,7 +367,7 @@ async function toggleEnabled() {
   if (!globalEnabledCb) return;
   const val = globalEnabledCb.checked;
   await invoke("set_enabled", { enabled: val });
-  statusMsg.innerText = val ? "有効" : "無効";
+  statusMsg.innerText = val ? "Enabled" : "Disabled";
 }
 
 async function loadProfile() {
@@ -87,7 +377,7 @@ async function loadProfile() {
     currentProfile = profile;
     updateUI(profile);
   } catch (e) {
-    statusMsg.innerText = "プロファイル読み込みエラー: " + e;
+    statusMsg.innerText = "鬯ｩ蟷｢・ｽ・｢髫ｴ諠ｹ・ｸ讖ｸ・ｽ・ｹ繝ｻ・ｲ郢晢ｽｻ陷ｿ蜴・ｽｽ・ｺ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｵ閻ｸ繝ｻ・ｼ隲橸ｽｺ・取鱒繝ｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・､鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｫ鬯ｯ・ｮ繝ｻ・ｫ郢晢ｽｻ繝ｻ・ｱ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・ｴ鬮ｮ諛ｶ・ｽ・｣郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
   }
 }
 
@@ -217,7 +507,7 @@ async function saveProfile() {
     try {
       currentProfile = await invoke("get_profile");
     } catch (e) {
-      if (statusMsg) statusMsg.innerText = "プロファイル取得エラー: " + e;
+      if (statusMsg) statusMsg.innerText = "鬯ｩ蟷｢・ｽ・｢髫ｴ諠ｹ・ｸ讖ｸ・ｽ・ｹ繝ｻ・ｲ郢晢ｽｻ陷ｿ蜴・ｽｽ・ｺ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｵ閻ｸ繝ｻ・ｼ隲橸ｽｺ・取鱒繝ｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・､鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｫ鬯ｮ・ｯ繝ｻ・ｷ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・｢繝ｻ縺､ﾂ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｾ鬮ｯ・ｷ闔ｨ螟ｲ・ｽ・ｽ繝ｻ・ｱ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
       return;
     }
   }
@@ -293,9 +583,9 @@ async function saveProfile() {
   try {
     console.log("Saving profile:", currentProfile);
     await invoke("set_profile", { profile: currentProfile });
-    statusMsg.innerText = "設定を保存しました";
+    statusMsg.innerText = "Profile saved";
   } catch (e) {
-    statusMsg.innerText = "保存エラー: " + e;
+    statusMsg.innerText = "鬯ｮ・｣陷ｴ繝ｻ・ｽ・ｽ繝ｻ・ｫ鬮ｫ・ｴ陷ｿ髢・ｾ蜉ｱ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｭ鬮ｯ蛹ｺ・ｻ繧托ｽｽ・ｽ繝ｻ・･鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
   }
 }
 
@@ -374,7 +664,7 @@ function ensureExtendedThumbSection() {
     const navItem = document.createElement("li");
     navItem.className = "nav-item";
     navItem.dataset.target = "section-extended-thumb";
-    navItem.innerText = "拡張親指シフト";
+    navItem.innerText = "Extended Thumb";
     navRoot.insertBefore(navItem, chordNav);
   }
 
@@ -387,17 +677,17 @@ function ensureExtendedThumbSection() {
   section.id = "section-extended-thumb";
   section.className = "settings-section";
   section.innerHTML = `
-      <h2>拡張親指シフト</h2>
+      <h2>鬯ｮ・ｫ繝ｻ・ｲ郢晢ｽｻ繝ｻ・｡驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｡鬯ｮ・ｯ雋頑瑳・ｱ螢ｹ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｵ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｫ繝ｻ・ｰ髫ｰ雋ｻ・ｽ・ｶ驛｢譎｢・ｽ・ｻ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ/h2>
       <div class="thumb-columns" style="display: flex; gap: 20px;">
         <div class="thumb-col" style="flex: 1;">
           <div class="setting-item">
-            <div class="setting-label">拡張親指シフト1</div>
+            <div class="setting-label">鬯ｮ・ｫ繝ｻ・ｲ郢晢ｽｻ繝ｻ・｡驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｡鬯ｮ・ｯ雋頑瑳・ｱ螢ｹ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｵ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｫ繝ｻ・ｰ髫ｰ雋ｻ・ｽ・ｶ驛｢譎｢・ｽ・ｻ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ</div>
             <div class="setting-control">
               <select id="ext-thumb-1-key">${keyOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">連続シフト</div>
+            <div class="setting-label">鬯ｯ・ｯ繝ｻ・ｨ郢晢ｽｻ繝ｻ・ｾ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｣鬯ｯ・ｩ隰ｳ・ｾ繝ｻ・ｽ繝ｻ・ｯ鬮ｯ讖ｸ・ｽ・｢郢晢ｽｻ繝ｻ・ｹ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ/div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-1-continuous">
@@ -406,13 +696,13 @@ function ensureExtendedThumbSection() {
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">単打鍵</div>
+            <div class="setting-label">鬯ｮ・ｯ繝ｻ・ｷ鬮ｮ讎翫・繝ｻ・ｽ繝ｻ・ｿ郢晢ｽｻ繝ｻ・ｶ鬯ｯ・ｩ陋ｹ繝ｻ・ｽ・｣繝ｻ・ｰ鬯ｯ・ｯ繝ｻ・ｪ郢晢ｽｻ繝ｻ・ｰ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｵ</div>
             <div class="setting-control">
               <select id="ext-thumb-1-single-press">${singlePressOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label" id="ext-thumb-1-repeat-label">キーリピート</div>
+            <div class="setting-label" id="ext-thumb-1-repeat-label">鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｩ蟷｢・ｽ・｢髫ｴ蠑ｱ繝ｻ繝ｻ・ｱ陜｣・､繝ｻ・ｹ隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｻ鬯ｩ蟷｢・ｽ・｢髫ｴ謫ｾ・ｽ・ｴ驛｢譎｢・ｽ・ｻ/div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-1-repeat">
@@ -423,13 +713,13 @@ function ensureExtendedThumbSection() {
         </div>
         <div class="thumb-col" style="flex: 1;">
           <div class="setting-item">
-            <div class="setting-label">拡張親指シフト2</div>
+            <div class="setting-label">鬯ｮ・ｫ繝ｻ・ｲ郢晢ｽｻ繝ｻ・｡驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｡鬯ｮ・ｯ雋頑瑳・ｱ螢ｹ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｵ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｫ繝ｻ・ｰ髫ｰ雋ｻ・ｽ・ｶ驛｢譎｢・ｽ・ｻ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ</div>
             <div class="setting-control">
               <select id="ext-thumb-2-key">${keyOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">連続シフト</div>
+            <div class="setting-label">鬯ｯ・ｯ繝ｻ・ｨ郢晢ｽｻ繝ｻ・ｾ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｣鬯ｯ・ｩ隰ｳ・ｾ繝ｻ・ｽ繝ｻ・ｯ鬮ｯ讖ｸ・ｽ・｢郢晢ｽｻ繝ｻ・ｹ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ/div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-2-continuous">
@@ -438,13 +728,13 @@ function ensureExtendedThumbSection() {
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">単打鍵</div>
+            <div class="setting-label">鬯ｮ・ｯ繝ｻ・ｷ鬮ｮ讎翫・繝ｻ・ｽ繝ｻ・ｿ郢晢ｽｻ繝ｻ・ｶ鬯ｯ・ｩ陋ｹ繝ｻ・ｽ・｣繝ｻ・ｰ鬯ｯ・ｯ繝ｻ・ｪ郢晢ｽｻ繝ｻ・ｰ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｵ</div>
             <div class="setting-control">
               <select id="ext-thumb-2-single-press">${singlePressOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label" id="ext-thumb-2-repeat-label">キーリピート</div>
+            <div class="setting-label" id="ext-thumb-2-repeat-label">鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｩ蟷｢・ｽ・｢髫ｴ蠑ｱ繝ｻ繝ｻ・ｱ陜｣・､繝ｻ・ｹ隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｻ鬯ｩ蟷｢・ｽ・｢髫ｴ謫ｾ・ｽ・ｴ驛｢譎｢・ｽ・ｻ/div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-2-repeat">
@@ -477,9 +767,8 @@ window.addEventListener("DOMContentLoaded", () => {
   // Elements binding
   statusMsg = document.querySelector("#status-msg");
 
-  layoutPathInput = document.querySelector("#layout-path");
-  loadLayoutBtn = document.querySelector("#load-layout-btn");
-  browseLayoutBtn = document.querySelector("#browse-layout-btn");
+  layoutEntryListEl = document.querySelector("#layout-entry-list");
+  addLayoutEntryBtn = document.querySelector("#add-layout-entry-btn");
   globalEnabledCb = document.querySelector("#global-enabled");
 
   // Arr
@@ -535,9 +824,8 @@ window.addEventListener("DOMContentLoaded", () => {
   setupSidebar();
 
   // Listeners
-  loadLayoutBtn.addEventListener("click", loadLayout);
-  if (browseLayoutBtn) {
-    browseLayoutBtn.addEventListener("click", browseLayout);
+  if (addLayoutEntryBtn) {
+    addLayoutEntryBtn.addEventListener("click", addLayoutEntry);
   }
   globalEnabledCb.addEventListener("change", toggleEnabled);
   // Range Listeners for value update
@@ -548,14 +836,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (charOverlapVal) charOverlapVal.innerText = e.target.value + "%";
   });
   setupAutoSave();
-  // Init
-  const savedPath = localStorage.getItem("kikyo_path");
-  if (savedPath) layoutPathInput.value = savedPath;
-
+  refreshLayoutEntries();
   loadProfile();
   refreshEnabledState();
 
   window.addEventListener("focus", () => {
+    refreshLayoutEntries();
     refreshEnabledState();
     loadProfile();
   });
@@ -563,7 +849,7 @@ window.addEventListener("DOMContentLoaded", () => {
   window.__TAURI__.event.listen("enabled-state-changed", (event) => {
     const enabled = event.payload;
     if (globalEnabledCb) globalEnabledCb.checked = enabled;
-    statusMsg.innerText = enabled ? "有効" : "無効";
+    statusMsg.innerText = enabled ? "Enabled" : "Disabled";
   });
 
   // Autostart init
@@ -576,7 +862,7 @@ async function refreshEnabledState() {
   try {
     const enabled = await invoke("get_enabled");
     globalEnabledCb.checked = enabled;
-    statusMsg.innerText = enabled ? "有効" : "無効";
+    statusMsg.innerText = enabled ? "Enabled" : "Disabled";
   } catch (e) {
     console.error(e);
   }
@@ -613,7 +899,7 @@ async function initAutoLaunch() {
       }
     } catch (e) {
       console.error("Autostart toggle failed:", e);
-      statusMsg.innerText = "自動起動設定エラー: " + e;
+      statusMsg.innerText = "鬯ｯ・ｮ繝ｻ・｢郢晢ｽｻ繝ｻ・ｾ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｯ繝ｻ・ｷ鬮｢・ｧ繝ｻ・ｴ驛｢譎｢・ｽ・ｻ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｵ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｷ鬯ｮ・ｯ繝ｻ・ｷ鬮｢・ｧ繝ｻ・ｴ驛｢譎｢・ｽ・ｻ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｮ・ｯ隶厄ｽｸ繝ｻ・ｽ繝ｻ・ｳ鬮ｯ讖ｸ・ｽ・｢郢晢ｽｻ繝ｻ・ｹ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
       // Revert
       autoLaunchCb.checked = !autoLaunchCb.checked;
     }

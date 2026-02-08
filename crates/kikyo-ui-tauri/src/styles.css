@@ -153,6 +153,153 @@ h3 {
   gap: 10px;
 }
 
+.layout-entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.layout-entry-empty {
+  color: #888;
+  font-size: 12px;
+  border: 1px dashed #555;
+  border-radius: 4px;
+  padding: 10px;
+}
+
+.layout-entry-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  background-color: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 8px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.layout-entry-row.is-drag-over {
+  border-color: var(--input-focus-border);
+  background-color: #1f2f3f;
+}
+
+.layout-entry-row.is-dragging {
+  opacity: 0.95;
+  position: relative;
+  z-index: 3;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.layout-entry-handle {
+  flex: 0 0 22px;
+  align-self: stretch;
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 16px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.layout-entry-handle:active {
+  cursor: grabbing;
+}
+
+.layout-entry-main {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-width: 1px;
+  overflow: hidden;
+}
+
+.layout-entry-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.layout-entry-radio {
+  margin: 0;
+}
+
+.layout-entry-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.layout-entry-alias,
+.layout-entry-path {
+  min-width: 0;
+  max-width: none;
+}
+
+.layout-entry-alias {
+  width: 96px;
+  flex: 0 1 96px;
+  min-width: 72px;
+}
+
+.layout-entry-path {
+  width: 180px;
+  flex: 1 1 180px;
+  min-width: 90px;
+}
+
+.layout-entry-browse-btn {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.layout-entry-delete-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  border: 1px solid #555;
+  background-color: transparent;
+  color: #cccccc;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.layout-entry-delete-btn:hover {
+  background-color: #5b2727;
+  border-color: #8a3b3b;
+}
+
+.layout-entry-delete-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.layout-entry-add-btn {
+  margin-top: 4px;
+}
+
 input[type="text"],
 select {
   background-color: var(--input-bg);
@@ -164,6 +311,25 @@ select {
   flex: 1;
   max-width: 400px;
   outline: none;
+}
+
+.layout-entry-row input.layout-entry-alias[type="text"] {
+  width: 96px;
+  min-width: 72px;
+  max-width: 120px;
+  flex: 0 1 96px;
+}
+
+.layout-entry-row input.layout-entry-path[type="text"] {
+  width: 180px;
+  min-width: 90px;
+  max-width: 220px;
+  flex: 1 1 180px;
+}
+
+body.layout-entry-dragging {
+  user-select: none;
+  cursor: grabbing;
 }
 
 input[type="text"]:focus,
@@ -277,4 +443,10 @@ input[type=range]:focus::-webkit-slider-runnable-track {
 .range-val {
   margin-left: 10px;
   min-width: 30px;
+}
+
+@media (max-width: 900px) {
+  .main-content {
+    padding: 16px;
+  }
 }

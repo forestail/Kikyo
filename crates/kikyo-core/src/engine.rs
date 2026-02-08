@@ -728,35 +728,35 @@ impl Engine {
         // 4. Update keys for lookup (Remove Thumb Modifiers)
         let lookup_keys: Vec<ScKey> =
             if has_left_thumb || has_right_thumb || has_ext1_thumb || has_ext2_thumb {
-            if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-                keys.iter()
-                    .filter(|&&k| {
-                        let is_left = tk.left.contains(&k);
-                        let is_right = tk.right.contains(&k);
-                        let is_ext1 = tk.ext1.contains(&k);
-                        let is_ext2 = tk.ext2.contains(&k);
-                        if has_left_thumb && is_left {
-                            return false;
-                        }
-                        if has_right_thumb && is_right {
-                            return false;
-                        }
-                        if has_ext1_thumb && is_ext1 {
-                            return false;
-                        }
-                        if has_ext2_thumb && is_ext2 {
-                            return false;
-                        }
-                        true
-                    })
-                    .cloned()
-                    .collect()
+                if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                    keys.iter()
+                        .filter(|&&k| {
+                            let is_left = tk.left.contains(&k);
+                            let is_right = tk.right.contains(&k);
+                            let is_ext1 = tk.ext1.contains(&k);
+                            let is_ext2 = tk.ext2.contains(&k);
+                            if has_left_thumb && is_left {
+                                return false;
+                            }
+                            if has_right_thumb && is_right {
+                                return false;
+                            }
+                            if has_ext1_thumb && is_ext1 {
+                                return false;
+                            }
+                            if has_ext2_thumb && is_ext2 {
+                                return false;
+                            }
+                            true
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    keys.to_vec()
+                }
             } else {
                 keys.to_vec()
-            }
-        } else {
-            keys.to_vec()
-        };
+            };
 
         if lookup_keys.is_empty() {
             return (None, None);
@@ -1208,13 +1208,11 @@ enum FunctionKeySpec {
     KanaLock,
 }
 
-fn passthrough_event(
-    mode: PassThroughCurrent,
-    source_key: ScKey,
-    up: bool,
-) -> Option<InputEvent> {
+fn passthrough_event(mode: PassThroughCurrent, source_key: ScKey, up: bool) -> Option<InputEvent> {
     match mode {
-        PassThroughCurrent::Original => Some(InputEvent::Scancode(source_key.sc, source_key.ext, up)),
+        PassThroughCurrent::Original => {
+            Some(InputEvent::Scancode(source_key.sc, source_key.ext, up))
+        }
         PassThroughCurrent::Inject(key) => Some(InputEvent::Scancode(key.sc, key.ext, up)),
         PassThroughCurrent::Block => None,
     }
@@ -1262,7 +1260,9 @@ fn is_virtual_extended_key(key: ScKey) -> bool {
         )
 }
 
-fn build_function_key_swap_map(swaps: &[(String, String)]) -> HashMap<ScKey, FunctionKeySwapTarget> {
+fn build_function_key_swap_map(
+    swaps: &[(String, String)],
+) -> HashMap<ScKey, FunctionKeySwapTarget> {
     let mut map = HashMap::new();
     for (source_name, target_name) in swaps {
         let source_spec = match parse_function_key_spec(source_name) {
@@ -3367,7 +3367,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             KeyAction::Inject(evs) => {
                 assert_eq!(evs, vec![InputEvent::Scancode(0x1D, true, false)]);
             }
-            other => panic!("Expected Inject for remapped LeftCtrl down, got {:?}", other),
+            other => panic!(
+                "Expected Inject for remapped LeftCtrl down, got {:?}",
+                other
+            ),
         }
         match engine.process_key(0x1D, false, true, false) {
             KeyAction::Inject(evs) => {
@@ -3413,8 +3416,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
 
-        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x38, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x38, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -3446,8 +3455,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
         engine.set_profile(profile);
 
-        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x38, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
         let result = engine.process_key(0x1E, false, true, false);
         match result {
             KeyAction::Inject(evs) => {
@@ -3464,7 +3479,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             other => panic!("Expected Inject for mapped thumb chord, got {:?}", other),
         }
-        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x38, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -3492,8 +3510,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
         engine.set_profile(profile);
 
-        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x38, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
         let result = engine.process_key(0x1E, false, true, false);
         match result {
             KeyAction::Inject(evs) => {
@@ -3508,12 +3532,15 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                 other
             ),
         }
-        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x38, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
-    fn test_extended_thumb_prefix_shift_via_function_swap_uses_extended_section_without_base_section()
-    {
+    fn test_extended_thumb_prefix_shift_via_function_swap_uses_extended_section_without_base_section(
+    ) {
         let extended_thumb_section = "\u{62E1}\u{5F35}\u{89AA}\u{6307}\u{30B7}\u{30D5}\u{30C8}1"; // 拡張親指シフト1
         let function_key_section = "\u{6A5F}\u{80FD}\u{30AD}\u{30FC}"; // 機能キー
         let left_alt = "\u{5DE6}Alt"; // 左Alt
@@ -3546,8 +3573,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
 
         // Tap LeftAlt (mapped to virtual Extended1) to arm PrefixShift.
-        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x38, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x38, false, true, false),
+            KeyAction::Block
+        );
 
         // Next key should resolve through the extended section even without a base section.
         let result = engine.process_key(0x1E, false, false, false);
@@ -3564,7 +3597,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                 other
             ),
         }
-        assert_eq!(engine.process_key(0x1E, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x1E, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -3596,8 +3632,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             "Muhenkan should be registered as ext thumb 1"
         );
 
-        assert_eq!(engine.process_key(0x7B, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x7B, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
         let result = engine.process_key(0x1E, false, true, false);
         match result {
             KeyAction::Inject(evs) => {
@@ -3609,7 +3651,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             other => panic!("Expected Inject for extended thumb 1, got {:?}", other),
         }
-        assert_eq!(engine.process_key(0x7B, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x7B, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]
@@ -3634,8 +3679,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_profile(profile);
         engine.load_layout(layout);
 
-        assert_eq!(engine.process_key(0x7B, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x1E, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x7B, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
         let result = engine.process_key(0x1E, false, true, false);
         match result {
             KeyAction::Inject(evs) => {
@@ -3647,7 +3698,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             other => panic!("Expected Inject for extended thumb 2, got {:?}", other),
         }
-        assert_eq!(engine.process_key(0x7B, false, true, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x7B, false, true, false),
+            KeyAction::Block
+        );
     }
 
     #[test]

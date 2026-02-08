@@ -1408,11 +1408,19 @@ mod tests {
             .on_event(make_event(thumb, KeyEdge::Down, t0))
             .is_empty());
         assert!(engine
-            .on_event(make_event(thumb, KeyEdge::Up, t0 + Duration::from_millis(10)))
+            .on_event(make_event(
+                thumb,
+                KeyEdge::Up,
+                t0 + Duration::from_millis(10)
+            ))
             .is_empty());
         assert_eq!(engine.state.prefix_pending, Some(thumb));
 
-        let res = engine.on_event(make_event(k_a, KeyEdge::Down, t0 + Duration::from_millis(20)));
+        let res = engine.on_event(make_event(
+            k_a,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(20),
+        ));
         assert_eq!(res, vec![Decision::Chord(vec![thumb, k_a])]);
         assert!(!engine.state.used_modifiers.contains(&thumb));
         assert!(engine
@@ -1420,14 +1428,26 @@ mod tests {
             .is_empty());
 
         assert!(engine
-            .on_event(make_event(thumb, KeyEdge::Down, t0 + Duration::from_millis(40)))
+            .on_event(make_event(
+                thumb,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(40)
+            ))
             .is_empty());
         assert!(engine
-            .on_event(make_event(thumb, KeyEdge::Up, t0 + Duration::from_millis(50)))
+            .on_event(make_event(
+                thumb,
+                KeyEdge::Up,
+                t0 + Duration::from_millis(50)
+            ))
             .is_empty());
         assert_eq!(engine.state.prefix_pending, Some(thumb));
 
-        let res = engine.on_event(make_event(k_b, KeyEdge::Down, t0 + Duration::from_millis(60)));
+        let res = engine.on_event(make_event(
+            k_b,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(60),
+        ));
         assert_eq!(res, vec![Decision::Chord(vec![thumb, k_b])]);
     }
 }

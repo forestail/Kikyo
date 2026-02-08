@@ -2,9 +2,12 @@ use image::GenericImageView;
 use kikyo_core::chord_engine::Profile;
 use kikyo_core::engine::ENGINE;
 use kikyo_core::{keyboard_hook, parser};
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
@@ -12,15 +15,240 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::WindowEvent;
 
+static ENTRY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 struct AppState {
     current_yab_path: Mutex<Option<String>>,
     layout_name: Mutex<Option<String>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+struct LayoutEntry {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    alias: String,
+    #[serde(default)]
+    layout_name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    order: usize,
+}
+
+#[derive(serde::Serialize)]
+struct LayoutEntriesResponse {
+    entries: Vec<LayoutEntry>,
+    active_layout_id: Option<String>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Settings {
+    #[serde(default)]
     last_yab_path: Option<String>,
+    #[serde(default)]
+    layout_entries: Vec<LayoutEntry>,
+    #[serde(default)]
+    active_layout_id: Option<String>,
+    #[serde(default)]
     profile: Option<Profile>,
+}
+
+fn generate_layout_entry_id() -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let seq = ENTRY_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("layout-{}-{}", now_ms, seq)
+}
+
+fn fallback_alias_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.trim().to_string())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "layout".to_string())
+}
+
+fn detect_layout_name_from_file(path: &str) -> Result<String, String> {
+    let layout = parser::load_yab(path).map_err(|e| e.to_string())?;
+    let name = layout
+        .name
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fallback_alias_from_path(path));
+    Ok(name)
+}
+
+fn preferred_entry_display_name(entry: &LayoutEntry) -> String {
+    let alias = entry.alias.trim();
+    if !alias.is_empty() {
+        return alias.to_string();
+    }
+
+    let layout_name = entry.layout_name.trim();
+    if !layout_name.is_empty() {
+        return layout_name.to_string();
+    }
+
+    fallback_alias_from_path(&entry.path)
+}
+
+fn preferred_display_name_for_path(settings: &Settings, path: &str) -> Option<String> {
+    if let Some(active_id) = settings.active_layout_id.as_ref() {
+        if let Some(active_entry) = settings
+            .layout_entries
+            .iter()
+            .find(|entry| &entry.id == active_id && entry.path == path)
+        {
+            return Some(preferred_entry_display_name(active_entry));
+        }
+    }
+
+    settings
+        .layout_entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .map(preferred_entry_display_name)
+}
+
+fn normalize_layout_entry(entry: &mut LayoutEntry) -> bool {
+    let mut changed = false;
+
+    let path = entry.path.trim().to_string();
+    if path != entry.path {
+        entry.path = path;
+        changed = true;
+    }
+
+    let alias = entry.alias.trim().to_string();
+    if alias != entry.alias {
+        entry.alias = alias;
+        changed = true;
+    }
+
+    let layout_name = entry.layout_name.trim().to_string();
+    if layout_name != entry.layout_name {
+        entry.layout_name = layout_name;
+        changed = true;
+    }
+
+    if entry.id.trim().is_empty() {
+        entry.id = generate_layout_entry_id();
+        changed = true;
+    }
+
+    if entry.layout_name.trim().is_empty() {
+        entry.layout_name = if !entry.alias.trim().is_empty() {
+            entry.alias.clone()
+        } else {
+            fallback_alias_from_path(&entry.path)
+        };
+        changed = true;
+    }
+
+    if entry.alias.trim().is_empty() {
+        entry.alias = entry.layout_name.clone();
+        changed = true;
+    }
+
+    changed
+}
+
+fn refresh_layout_entry_order(settings: &mut Settings) -> bool {
+    let mut changed = false;
+    for (idx, entry) in settings.layout_entries.iter_mut().enumerate() {
+        if entry.order != idx {
+            entry.order = idx;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn sync_last_path_with_active(settings: &mut Settings) -> bool {
+    if let Some(active_id) = settings.active_layout_id.as_ref() {
+        if let Some(active_entry) = settings
+            .layout_entries
+            .iter()
+            .find(|entry| &entry.id == active_id)
+        {
+            if settings.last_yab_path.as_deref() != Some(active_entry.path.as_str()) {
+                settings.last_yab_path = Some(active_entry.path.clone());
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn migrate_settings(settings: &mut Settings) -> bool {
+    let mut changed = false;
+
+    for entry in &mut settings.layout_entries {
+        if normalize_layout_entry(entry) {
+            changed = true;
+        }
+    }
+
+    let old_len = settings.layout_entries.len();
+    settings
+        .layout_entries
+        .retain(|entry| !entry.path.trim().is_empty());
+    if settings.layout_entries.len() != old_len {
+        changed = true;
+    }
+
+    if settings.layout_entries.is_empty() {
+        if let Some(path) = settings
+            .last_yab_path
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            let layout_name = detect_layout_name_from_file(&path)
+                .unwrap_or_else(|_| fallback_alias_from_path(&path));
+            settings.layout_entries.push(LayoutEntry {
+                id: generate_layout_entry_id(),
+                alias: layout_name.clone(),
+                layout_name,
+                path,
+                order: 0,
+            });
+            changed = true;
+        }
+    }
+
+    if settings.active_layout_id.is_none() && !settings.layout_entries.is_empty() {
+        settings.active_layout_id = Some(settings.layout_entries[0].id.clone());
+        changed = true;
+    }
+
+    if let Some(active_id) = settings.active_layout_id.as_ref() {
+        if !settings
+            .layout_entries
+            .iter()
+            .any(|entry| &entry.id == active_id)
+        {
+            settings.active_layout_id = settings
+                .layout_entries
+                .first()
+                .map(|entry| entry.id.clone());
+            changed = true;
+        }
+    }
+
+    if sync_last_path_with_active(settings) {
+        changed = true;
+    }
+
+    if refresh_layout_entry_order(settings) {
+        changed = true;
+    }
+
+    changed
 }
 
 fn get_settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -43,6 +271,14 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
     Settings::default()
 }
 
+fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
+    let mut settings = load_settings(app);
+    if migrate_settings(&mut settings) {
+        save_settings(app, &settings);
+    }
+    settings
+}
+
 fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
     if let Some(path) = get_settings_path(app) {
         if let Some(parent) = path.parent() {
@@ -63,10 +299,8 @@ fn sanitize_profile_for_save(mut profile: Profile) -> Profile {
 }
 
 fn update_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let (layout_name, enabled) = {
-        let engine = ENGINE.lock();
-        (engine.get_layout_name(), engine.is_enabled())
-    };
+    let layout_name = app.state::<AppState>().layout_name.lock().unwrap().clone();
+    let enabled = ENGINE.lock().is_enabled();
     update_tray_menu_with_state(app, layout_name, enabled)
 }
 
@@ -169,29 +403,51 @@ fn update_window_title(app: &tauri::AppHandle, layout_name: Option<&str>) {
     }
 }
 
+fn apply_layout_from_path(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    path: &str,
+    display_name: Option<String>,
+) -> Result<String, String> {
+    let layout = parser::load_yab(path).map_err(|e| e.to_string())?;
+    let stats = format!("Loaded {} sections", layout.sections.len());
+    let parser_name = layout
+        .name
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fallback_alias_from_path(path));
+    ENGINE.lock().load_layout(layout);
+
+    let resolved_display_name = display_name
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or(parser_name);
+
+    *state.current_yab_path.lock().unwrap() = Some(path.to_string());
+    *state.layout_name.lock().unwrap() = Some(resolved_display_name.clone());
+    let enabled = ENGINE.lock().is_enabled();
+    let _ = update_tray_menu_with_state(app, Some(resolved_display_name.clone()), enabled);
+    update_window_title(app, Some(resolved_display_name.as_str()));
+    Ok(stats)
+}
+
 #[tauri::command]
 fn load_yab(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
     path: String,
 ) -> Result<String, String> {
-    let layout = parser::load_yab(&path).map_err(|e| e.to_string())?;
-    let stats = format!("Loaded {} sections", layout.sections.len());
-    let layout_name = layout.name.clone();
-    ENGINE.lock().load_layout(layout);
-
-    *state.current_yab_path.lock().unwrap() = Some(path.clone());
-    *state.layout_name.lock().unwrap() = layout_name.clone();
-    let _ = update_tray_menu(&app);
-
-    // Update window title
-    update_window_title(&app, layout_name.as_deref());
-
-    // Save settings (preserve existing profile if any)
-    let mut settings = load_settings(&app);
-    settings.last_yab_path = Some(path);
+    let mut settings = load_settings_with_migration(&app);
+    settings.last_yab_path = Some(path.clone());
+    settings.active_layout_id = settings
+        .layout_entries
+        .iter()
+        .find(|entry| entry.path == path.as_str())
+        .map(|entry| entry.id.clone());
+    let display_name = preferred_display_name_for_path(&settings, &path);
+    let stats = apply_layout_from_path(&app, &state, &path, display_name)?;
     save_settings(&app, &settings);
-
     Ok(stats)
 }
 
@@ -217,7 +473,7 @@ fn get_profile() -> Profile {
 #[tauri::command]
 fn set_profile(app: tauri::AppHandle, profile: Profile) {
     ENGINE.lock().set_profile(profile.clone());
-    let mut settings = load_settings(&app);
+    let mut settings = load_settings_with_migration(&app);
     settings.profile = Some(sanitize_profile_for_save(profile));
     save_settings(&app, &settings);
 }
@@ -225,6 +481,173 @@ fn set_profile(app: tauri::AppHandle, profile: Profile) {
 #[tauri::command]
 fn get_app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+#[tauri::command]
+fn get_layout_entries(app: tauri::AppHandle) -> LayoutEntriesResponse {
+    let settings = load_settings_with_migration(&app);
+    LayoutEntriesResponse {
+        entries: settings.layout_entries,
+        active_layout_id: settings.active_layout_id,
+    }
+}
+
+#[tauri::command]
+fn create_layout_entry_from_path(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<LayoutEntry, String> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err("Path is empty".to_string());
+    }
+
+    let mut settings = load_settings_with_migration(&app);
+    let layout_name = detect_layout_name_from_file(&path)?;
+    let entry = LayoutEntry {
+        id: generate_layout_entry_id(),
+        alias: layout_name.clone(),
+        layout_name,
+        path,
+        order: settings.layout_entries.len(),
+    };
+    settings.layout_entries.push(entry.clone());
+    let _ = refresh_layout_entry_order(&mut settings);
+    if settings.active_layout_id.is_none() {
+        settings.active_layout_id = Some(entry.id.clone());
+        let _ = sync_last_path_with_active(&mut settings);
+    }
+    save_settings(&app, &settings);
+    Ok(entry)
+}
+
+#[tauri::command]
+fn update_layout_entry(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    id: String,
+    alias: String,
+    path: String,
+) -> Result<(), String> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err("Path is empty".to_string());
+    }
+
+    let mut settings = load_settings_with_migration(&app);
+    let is_active = settings.active_layout_id.as_deref() == Some(id.as_str());
+    let mut active_display_name: Option<String> = None;
+    {
+        let entry = settings
+            .layout_entries
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| "Layout entry not found".to_string())?;
+
+        let path_changed = entry.path != path;
+        entry.path = path;
+        if path_changed {
+            entry.layout_name = detect_layout_name_from_file(&entry.path)
+                .unwrap_or_else(|_| fallback_alias_from_path(&entry.path));
+        }
+
+        let alias = alias.trim().to_string();
+        entry.alias = if alias.is_empty() {
+            entry.layout_name.clone()
+        } else {
+            alias
+        };
+
+        if is_active {
+            active_display_name = Some(preferred_entry_display_name(entry));
+        }
+    }
+
+    let _ = sync_last_path_with_active(&mut settings);
+    save_settings(&app, &settings);
+
+    if let Some(display_name) = active_display_name {
+        *state.layout_name.lock().unwrap() = Some(display_name.clone());
+        let enabled = ENGINE.lock().is_enabled();
+        let _ = update_tray_menu_with_state(&app, Some(display_name.clone()), enabled);
+        update_window_title(&app, Some(display_name.as_str()));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_layout_entry(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut settings = load_settings_with_migration(&app);
+    let old_len = settings.layout_entries.len();
+    settings.layout_entries.retain(|entry| entry.id != id);
+    if settings.layout_entries.len() == old_len {
+        return Err("Layout entry not found".to_string());
+    }
+
+    if settings.active_layout_id.as_deref() == Some(id.as_str()) {
+        settings.active_layout_id = settings
+            .layout_entries
+            .first()
+            .map(|entry| entry.id.clone());
+    }
+
+    let _ = refresh_layout_entry_order(&mut settings);
+    let _ = sync_last_path_with_active(&mut settings);
+    save_settings(&app, &settings);
+    Ok(())
+}
+
+#[tauri::command]
+fn reorder_layout_entries(app: tauri::AppHandle, ordered_ids: Vec<String>) -> Result<(), String> {
+    let mut settings = load_settings_with_migration(&app);
+    if ordered_ids.len() != settings.layout_entries.len() {
+        return Err("Invalid number of layout ids".to_string());
+    }
+
+    let mut by_id: HashMap<String, LayoutEntry> = HashMap::new();
+    for entry in settings.layout_entries.drain(..) {
+        by_id.insert(entry.id.clone(), entry);
+    }
+
+    let mut reordered = Vec::with_capacity(ordered_ids.len());
+    for id in ordered_ids {
+        let entry = by_id
+            .remove(&id)
+            .ok_or_else(|| "Unknown layout id".to_string())?;
+        reordered.push(entry);
+    }
+
+    if !by_id.is_empty() {
+        return Err("Some layout ids are missing in order payload".to_string());
+    }
+
+    settings.layout_entries = reordered;
+    let _ = refresh_layout_entry_order(&mut settings);
+    save_settings(&app, &settings);
+    Ok(())
+}
+
+#[tauri::command]
+fn activate_layout_entry(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    id: String,
+) -> Result<String, String> {
+    let mut settings = load_settings_with_migration(&app);
+    let entry = settings
+        .layout_entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| "Layout entry not found".to_string())?;
+
+    let display_name = preferred_entry_display_name(&entry);
+    let stats = apply_layout_from_path(&app, &state, &entry.path, Some(display_name))?;
+    settings.active_layout_id = Some(entry.id);
+    settings.last_yab_path = Some(entry.path);
+    save_settings(&app, &settings);
+    Ok(stats)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -250,6 +673,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_yab,
+            get_layout_entries,
+            create_layout_entry_from_path,
+            update_layout_entry,
+            delete_layout_entry,
+            reorder_layout_entries,
+            activate_layout_entry,
             set_enabled,
             get_enabled,
             get_profile,
@@ -277,19 +706,11 @@ pub fn run() {
                         let state = app.state::<AppState>();
                         let path_opt = state.current_yab_path.lock().unwrap().clone();
                         if let Some(path) = path_opt {
-                            match parser::load_yab(&path) {
-                                Ok(layout) => {
-                                    let layout_name = layout.name.clone();
-                                    ENGINE.lock().load_layout(layout);
-                                    *app.state::<AppState>().layout_name.lock().unwrap() =
-                                        layout_name.clone();
-                                    let _ = update_tray_menu(app);
-                                    update_window_title(app, layout_name.as_deref());
-                                    tracing::info!("Reloaded config from tray");
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to reload config: {}", e);
-                                }
+                            let settings = load_settings_with_migration(app);
+                            let display_name = preferred_display_name_for_path(&settings, &path);
+                            match apply_layout_from_path(app, &state, &path, display_name) {
+                                Ok(_) => tracing::info!("Reloaded config from tray"),
+                                Err(e) => tracing::error!("Failed to reload config: {}", e),
                             }
                         }
                     }
@@ -318,17 +739,26 @@ pub fn run() {
                 .build(app)?;
 
             // Load settings (profile first, then layout)
-            let settings = load_settings(app.handle());
-            if let Some(profile) = settings.profile {
-                ENGINE.lock().set_profile(profile);
+            let settings = load_settings_with_migration(app.handle());
+            if let Some(profile) = settings.profile.as_ref() {
+                ENGINE.lock().set_profile(profile.clone());
             }
-            if let Some(path) = settings.last_yab_path {
-                if let Ok(layout) = parser::load_yab(&path) {
-                    let layout_name = layout.name.clone();
-                    ENGINE.lock().load_layout(layout);
-                    *app.state::<AppState>().current_yab_path.lock().unwrap() = Some(path);
-                    *app.state::<AppState>().layout_name.lock().unwrap() = layout_name;
-                }
+            let startup_path = settings
+                .active_layout_id
+                .as_ref()
+                .and_then(|active_id| {
+                    settings
+                        .layout_entries
+                        .iter()
+                        .find(|entry| &entry.id == active_id)
+                        .map(|entry| entry.path.clone())
+                })
+                .or_else(|| settings.last_yab_path.clone());
+
+            if let Some(path) = startup_path {
+                let display_name = preferred_display_name_for_path(&settings, &path);
+                let app_state = app.state::<AppState>();
+                let _ = apply_layout_from_path(app.handle(), &app_state, &path, display_name);
             }
 
             // Update to correct initial state
@@ -336,8 +766,7 @@ pub fn run() {
 
             // Initial Window Title Update
             {
-                let engine = ENGINE.lock();
-                let layout_name = engine.get_layout_name();
+                let layout_name = app.state::<AppState>().layout_name.lock().unwrap().clone();
                 update_window_title(app.handle(), layout_name.as_deref());
             }
 

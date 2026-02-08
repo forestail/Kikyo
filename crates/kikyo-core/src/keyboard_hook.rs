@@ -10,14 +10,14 @@ use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetLastInputInfo, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, LASTINPUTINFO,
     VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
     VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
-use windows::Win32::System::SystemInformation::GetTickCount;
-use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
@@ -293,12 +293,12 @@ fn process_event(event: HookEvent) {
 fn suspend_key_vk(suspend_key: crate::chord_engine::SuspendKey) -> Option<u32> {
     match suspend_key {
         crate::chord_engine::SuspendKey::None => None,
-        crate::chord_engine::SuspendKey::ScrollLock => Some(0x91),    // VK_SCROLL
-        crate::chord_engine::SuspendKey::Pause => Some(0x13),         // VK_PAUSE
-        crate::chord_engine::SuspendKey::Insert => Some(0x2D),        // VK_INSERT
-        crate::chord_engine::SuspendKey::RightShift => Some(0xA1),    // VK_RSHIFT
-        crate::chord_engine::SuspendKey::RightControl => Some(0xA3),  // VK_RCONTROL
-        crate::chord_engine::SuspendKey::RightAlt => Some(0xA5),      // VK_RMENU
+        crate::chord_engine::SuspendKey::ScrollLock => Some(0x91), // VK_SCROLL
+        crate::chord_engine::SuspendKey::Pause => Some(0x13),      // VK_PAUSE
+        crate::chord_engine::SuspendKey::Insert => Some(0x2D),     // VK_INSERT
+        crate::chord_engine::SuspendKey::RightShift => Some(0xA1), // VK_RSHIFT
+        crate::chord_engine::SuspendKey::RightControl => Some(0xA3), // VK_RCONTROL
+        crate::chord_engine::SuspendKey::RightAlt => Some(0xA5),   // VK_RMENU
     }
 }
 
@@ -316,9 +316,7 @@ fn request_reinstall() -> bool {
         return false;
     }
 
-    unsafe {
-        PostThreadMessageW(thread_id, WM_HOOK_REINSTALL, WPARAM(0), LPARAM(0)).is_ok()
-    }
+    unsafe { PostThreadMessageW(thread_id, WM_HOOK_REINSTALL, WPARAM(0), LPARAM(0)).is_ok() }
 }
 
 fn last_input_age_ms() -> Option<u64> {
