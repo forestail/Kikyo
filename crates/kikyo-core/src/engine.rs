@@ -331,7 +331,7 @@ impl Engine {
             let mut has_ext1_thumb = false;
             let mut has_ext2_thumb = false;
             if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-                for k in &self.chord_engine.state.pressed {
+                let mut mark_thumb_state = |k: &ScKey| {
                     if tk.left.contains(k) {
                         has_left_thumb = true;
                     }
@@ -344,6 +344,16 @@ impl Engine {
                     if tk.ext2.contains(k) {
                         has_ext2_thumb = true;
                     }
+                };
+
+                for k in &self.chord_engine.state.pressed {
+                    mark_thumb_state(k);
+                }
+
+                // PrefixShift uses a released thumb as the next one-shot modifier.
+                // Include it in section pre-check so the next key isn't passed through early.
+                if let Some(prefix_thumb) = self.chord_engine.state.prefix_pending {
+                    mark_thumb_state(&prefix_thumb);
                 }
             }
 
@@ -395,6 +405,9 @@ impl Engine {
             // 3. Check Section Existence
             if let Some(layout) = &self.layout {
                 let is_space = key.sc == 0x39;
+                let key_is_managed = self.chord_engine.state.pressed.contains(&key)
+                    || self.chord_engine.state.down_ts.contains_key(&key)
+                    || self.chord_engine.state.pending.iter().any(|p| p.key == key);
                 let mut is_thumb = false;
                 if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
                     if tk.left.contains(&key)
@@ -429,14 +442,14 @@ impl Engine {
                         }
                     }
 
-                    if !is_defined && !is_thumb && !is_space {
+                    if !is_defined && !is_thumb && !is_space && !(up && key_is_managed) {
                         // Defined section, but key is not in it -> Pass
                         return passthrough_action(pass_through_current, source_key, up);
                     }
                 } else {
                     // Section does NOT exist -> Pass
                     // UNLESS it is a Thumb Key
-                    if !is_thumb && !is_space {
+                    if !is_thumb && !is_space && !(up && key_is_managed) {
                         return passthrough_action(pass_through_current, source_key, up);
                     }
                 }
@@ -3496,6 +3509,62 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             ),
         }
         assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_extended_thumb_prefix_shift_via_function_swap_uses_extended_section_without_base_section()
+    {
+        let extended_thumb_section = "\u{62E1}\u{5F35}\u{89AA}\u{6307}\u{30B7}\u{30D5}\u{30C8}1"; // 拡張親指シフト1
+        let function_key_section = "\u{6A5F}\u{80FD}\u{30AD}\u{30FC}"; // 機能キー
+        let left_alt = "\u{5DE6}Alt"; // 左Alt
+        let ext1 = "\u{62E1}\u{5F35}1"; // 拡張1
+        let config = format!(
+            "
+[{extended_thumb_section}]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+z,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[{function_key_section}]
+{left_alt}, {ext1}
+"
+        );
+        let layout = parse_yab_content(&config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::Extended1;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.single_press =
+            crate::chord_engine::ThumbShiftSinglePress::PrefixShift;
+        engine.set_profile(profile);
+
+        // Tap LeftAlt (mapped to virtual Extended1) to arm PrefixShift.
+        assert_eq!(engine.process_key(0x38, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x38, false, true, false), KeyAction::Block);
+
+        // Next key should resolve through the extended section even without a base section.
+        let result = engine.process_key(0x1E, false, false, false);
+        match result {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2C, _, _))),
+                    "Expected prefixed output from extended thumb section"
+                );
+            }
+            other => panic!(
+                "Expected Inject for prefixed extended-thumb mapping, got {:?}",
+                other
+            ),
+        }
+        assert_eq!(engine.process_key(0x1E, false, true, false), KeyAction::Block);
     }
 
     #[test]
