@@ -496,8 +496,7 @@ impl ChordEngine {
                     // Note: If the new key is also a modifier, we might chain?
                     // For now, assume applying to any new key.
                     self.state.prefix_pending = None;
-                    self.state.used_modifiers.insert(prefix_thumb); // Mark as used
-                                                                    // Return Chord immediately
+                    // Return Chord immediately
                     output.push(Decision::Chord(vec![prefix_thumb, event.key]));
 
                     // We consume this key event immediately.
@@ -1389,5 +1388,46 @@ mod tests {
             t0 + Duration::from_millis(130),
         ));
         assert_eq!(res, vec![Decision::KeyTap(k_c)]);
+    }
+
+    #[test]
+    fn test_thumb_prefix_shift_single_press_applies_every_time() {
+        let t0 = Instant::now();
+        let thumb = make_key(0x7B);
+        let k_a = make_key(0x1E);
+        let k_b = make_key(0x30);
+
+        let mut profile = Profile::default();
+        profile.thumb_left.key = ThumbKeySelect::Muhenkan;
+        profile.thumb_left.single_press = ThumbShiftSinglePress::PrefixShift;
+        profile.update_thumb_keys();
+
+        let mut engine = ChordEngine::new(profile);
+
+        assert!(engine
+            .on_event(make_event(thumb, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(thumb, KeyEdge::Up, t0 + Duration::from_millis(10)))
+            .is_empty());
+        assert_eq!(engine.state.prefix_pending, Some(thumb));
+
+        let res = engine.on_event(make_event(k_a, KeyEdge::Down, t0 + Duration::from_millis(20)));
+        assert_eq!(res, vec![Decision::Chord(vec![thumb, k_a])]);
+        assert!(!engine.state.used_modifiers.contains(&thumb));
+        assert!(engine
+            .on_event(make_event(k_a, KeyEdge::Up, t0 + Duration::from_millis(30)))
+            .is_empty());
+
+        assert!(engine
+            .on_event(make_event(thumb, KeyEdge::Down, t0 + Duration::from_millis(40)))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(thumb, KeyEdge::Up, t0 + Duration::from_millis(50)))
+            .is_empty());
+        assert_eq!(engine.state.prefix_pending, Some(thumb));
+
+        let res = engine.on_event(make_event(k_b, KeyEdge::Down, t0 + Duration::from_millis(60)));
+        assert_eq!(res, vec![Decision::Chord(vec![thumb, k_b])]);
     }
 }
