@@ -9,13 +9,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::WindowEvent;
 
 static ENTRY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+const TRAY_LAYOUT_ITEM_ID_PREFIX: &str = "layout_entry::";
+
+fn tray_layout_item_menu_id(entry_id: &str) -> String {
+    format!("{TRAY_LAYOUT_ITEM_ID_PREFIX}{entry_id}")
+}
+
+fn tray_layout_id_from_menu_id(menu_id: &str) -> Option<&str> {
+    menu_id.strip_prefix(TRAY_LAYOUT_ITEM_ID_PREFIX)
+}
 
 struct AppState {
     current_yab_path: Mutex<Option<String>>,
@@ -309,43 +318,71 @@ fn update_tray_menu_with_state(
     layout_name: Option<String>,
     enabled: bool,
 ) -> tauri::Result<()> {
-    let name_text = layout_name.unwrap_or_else(|| "配列定義なし".to_string());
-    // {LayoutName} (Disabled/Label)
-    let item_name = MenuItem::with_id(app, "layout_name", &name_text, false, None::<&str>)?;
+    let settings = load_settings_with_migration(app);
+    let active_layout_id = settings.active_layout_id.clone();
+    let active_name = active_layout_id
+        .as_ref()
+        .and_then(|active_id| {
+            settings
+                .layout_entries
+                .iter()
+                .find(|entry| &entry.id == active_id)
+        })
+        .map(preferred_entry_display_name);
+    let name_text = layout_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or(active_name)
+        .unwrap_or_else(|| "配列定義なし".to_string());
+
+    let menu = Menu::new(app)?;
+    if settings.layout_entries.is_empty() {
+        let item_empty =
+            MenuItem::with_id(app, "layout_name", "配列定義なし", false, None::<&str>)?;
+        menu.append(&item_empty)?;
+    } else {
+        for entry in &settings.layout_entries {
+            let display_name = preferred_entry_display_name(entry);
+            let item = CheckMenuItem::with_id(
+                app,
+                tray_layout_item_menu_id(&entry.id),
+                display_name,
+                true,
+                active_layout_id.as_deref() == Some(entry.id.as_str()),
+                None::<&str>,
+            )?;
+            menu.append(&item)?;
+        }
+    }
 
     // Separator
     let sep1 = PredefinedMenuItem::separator(app)?;
+    menu.append(&sep1)?;
 
     // Reload & Settings
     let item_reload = MenuItem::with_id(app, "reload", "設定再読み込み", true, None::<&str>)?;
     let item_settings = MenuItem::with_id(app, "show", "設定", true, None::<&str>)?;
+    menu.append(&item_reload)?;
+    menu.append(&item_settings)?;
 
     // Separator
     let sep2 = PredefinedMenuItem::separator(app)?;
+    menu.append(&sep2)?;
 
     // Toggle
     let toggle_text = if enabled { "一時停止" } else { "再開" };
     let item_toggle = MenuItem::with_id(app, "toggle", toggle_text, true, None::<&str>)?;
+    menu.append(&item_toggle)?;
 
     // Separator
     let sep3 = PredefinedMenuItem::separator(app)?;
+    menu.append(&sep3)?;
 
     // Quit
     let item_quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-
-    let menu = Menu::with_items(
-        app,
-        &[
-            &item_name,
-            &sep1,
-            &item_reload,
-            &item_settings,
-            &sep2,
-            &item_toggle,
-            &sep3,
-            &item_quit,
-        ],
-    )?;
+    menu.append(&item_quit)?;
 
     if let Some(tray) = app.tray_by_id("kikyo-tray") {
         tray.set_menu(Some(menu))?;
@@ -432,6 +469,28 @@ fn apply_layout_from_path(
     Ok(stats)
 }
 
+fn activate_layout_entry_by_id(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+) -> Result<String, String> {
+    let mut settings = load_settings_with_migration(app);
+    let entry = settings
+        .layout_entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| "Layout entry not found".to_string())?;
+
+    let display_name = preferred_entry_display_name(&entry);
+    let stats = apply_layout_from_path(app, state, &entry.path, Some(display_name))?;
+    settings.active_layout_id = Some(entry.id);
+    settings.last_yab_path = Some(entry.path);
+    save_settings(app, &settings);
+    let _ = update_tray_menu(app);
+    Ok(stats)
+}
+
 #[tauri::command]
 fn load_yab(
     app: tauri::AppHandle,
@@ -448,6 +507,7 @@ fn load_yab(
     let display_name = preferred_display_name_for_path(&settings, &path);
     let stats = apply_layout_from_path(&app, &state, &path, display_name)?;
     save_settings(&app, &settings);
+    let _ = update_tray_menu(&app);
     Ok(stats)
 }
 
@@ -518,6 +578,7 @@ fn create_layout_entry_from_path(
         let _ = sync_last_path_with_active(&mut settings);
     }
     save_settings(&app, &settings);
+    let _ = update_tray_menu(&app);
     Ok(entry)
 }
 
@@ -568,10 +629,9 @@ fn update_layout_entry(
 
     if let Some(display_name) = active_display_name {
         *state.layout_name.lock().unwrap() = Some(display_name.clone());
-        let enabled = ENGINE.lock().is_enabled();
-        let _ = update_tray_menu_with_state(&app, Some(display_name.clone()), enabled);
         update_window_title(&app, Some(display_name.as_str()));
     }
+    let _ = update_tray_menu(&app);
 
     Ok(())
 }
@@ -595,6 +655,7 @@ fn delete_layout_entry(app: tauri::AppHandle, id: String) -> Result<(), String> 
     let _ = refresh_layout_entry_order(&mut settings);
     let _ = sync_last_path_with_active(&mut settings);
     save_settings(&app, &settings);
+    let _ = update_tray_menu(&app);
     Ok(())
 }
 
@@ -625,6 +686,7 @@ fn reorder_layout_entries(app: tauri::AppHandle, ordered_ids: Vec<String>) -> Re
     settings.layout_entries = reordered;
     let _ = refresh_layout_entry_order(&mut settings);
     save_settings(&app, &settings);
+    let _ = update_tray_menu(&app);
     Ok(())
 }
 
@@ -634,20 +696,7 @@ fn activate_layout_entry(
     state: tauri::State<AppState>,
     id: String,
 ) -> Result<String, String> {
-    let mut settings = load_settings_with_migration(&app);
-    let entry = settings
-        .layout_entries
-        .iter()
-        .find(|entry| entry.id == id)
-        .cloned()
-        .ok_or_else(|| "Layout entry not found".to_string())?;
-
-    let display_name = preferred_entry_display_name(&entry);
-    let stats = apply_layout_from_path(&app, &state, &entry.path, Some(display_name))?;
-    settings.active_layout_id = Some(entry.id);
-    settings.last_yab_path = Some(entry.path);
-    save_settings(&app, &settings);
-    Ok(stats)
+    activate_layout_entry_by_id(&app, &state, id.as_str())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -692,35 +741,56 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::with_id("kikyo-tray")
                 .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => {
-                        std::process::exit(0);
-                    }
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                .on_menu_event(|app, event| {
+                    let event_id = event.id.as_ref();
+                    match event_id {
+                        "quit" => {
+                            std::process::exit(0);
                         }
-                    }
-                    "reload" => {
-                        let state = app.state::<AppState>();
-                        let path_opt = state.current_yab_path.lock().unwrap().clone();
-                        if let Some(path) = path_opt {
-                            let settings = load_settings_with_migration(app);
-                            let display_name = preferred_display_name_for_path(&settings, &path);
-                            match apply_layout_from_path(app, &state, &path, display_name) {
-                                Ok(_) => tracing::info!("Reloaded config from tray"),
-                                Err(e) => tracing::error!("Failed to reload config: {}", e),
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "reload" => {
+                            let state = app.state::<AppState>();
+                            let path_opt = state.current_yab_path.lock().unwrap().clone();
+                            if let Some(path) = path_opt {
+                                let settings = load_settings_with_migration(app);
+                                let display_name =
+                                    preferred_display_name_for_path(&settings, &path);
+                                match apply_layout_from_path(app, &state, &path, display_name) {
+                                    Ok(_) => tracing::info!("Reloaded config from tray"),
+                                    Err(e) => tracing::error!("Failed to reload config: {}", e),
+                                }
+                            }
+                        }
+                        "toggle" => {
+                            let current = ENGINE.lock().is_enabled();
+                            ENGINE.lock().set_enabled(!current);
+                            let _ = update_tray_menu(app);
+                            let _ = app.emit("enabled-state-changed", !current);
+                        }
+                        _ => {
+                            if let Some(layout_id) = tray_layout_id_from_menu_id(event_id) {
+                                let state = app.state::<AppState>();
+                                match activate_layout_entry_by_id(app, &state, layout_id) {
+                                    Ok(_) => {
+                                        tracing::info!("Activated layout from tray: {}", layout_id)
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to activate layout from tray ({}): {}",
+                                            layout_id,
+                                            e
+                                        );
+                                        let _ = update_tray_menu(app);
+                                    }
+                                }
                             }
                         }
                     }
-                    "toggle" => {
-                        let current = ENGINE.lock().is_enabled();
-                        ENGINE.lock().set_enabled(!current);
-                        let _ = update_tray_menu(app);
-                        let _ = app.emit("enabled-state-changed", !current);
-                    }
-                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| match event {
                     TrayIconEvent::DoubleClick {
