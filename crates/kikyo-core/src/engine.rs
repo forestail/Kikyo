@@ -34,6 +34,15 @@ enum PassThroughCurrent {
     Block,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DeferredEnterRollover {
+    source_key: ScKey,
+    pass_through: PassThroughCurrent,
+    wait_for: ScKey,
+    down_emitted: bool,
+    up_seen_while_waiting: bool,
+}
+
 pub struct Engine {
     chord_engine: ChordEngine,
     enabled: bool,
@@ -42,6 +51,7 @@ pub struct Engine {
     repeat_plans: HashMap<ScKey, Vec<ScKey>>,
     pending_nonshift_for_shift: HashSet<ScKey>,
     function_key_swaps: HashMap<ScKey, FunctionKeySwapTarget>,
+    deferred_enter_rollover: Option<DeferredEnterRollover>,
 }
 
 impl Default for Engine {
@@ -56,6 +66,7 @@ impl Default for Engine {
             repeat_plans: HashMap::new(),
             pending_nonshift_for_shift: HashSet::new(),
             function_key_swaps: HashMap::new(),
+            deferred_enter_rollover: None,
         }
     }
 }
@@ -70,6 +81,7 @@ impl Engine {
                 self.chord_engine = ChordEngine::new(profile);
                 self.repeat_plans.clear();
                 self.pending_nonshift_for_shift.clear();
+                self.deferred_enter_rollover = None;
             }
             if let Some(ref cb) = self.on_enabled_change {
                 cb(enabled);
@@ -316,6 +328,12 @@ impl Engine {
             return emit_pseudo_function_key(pseudo, up);
         }
 
+        if let Some(action) =
+            self.handle_deferred_enter_event(source_key, key, pass_through_current, up)
+        {
+            return action;
+        }
+
         if !up && self.is_repeat_event(key) {
             return self.handle_repeat_event(key, shift, is_japanese);
         }
@@ -443,6 +461,14 @@ impl Engine {
                     }
 
                     if !is_defined && !is_thumb && !is_space && !(up && key_is_managed) {
+                        if self.start_deferred_enter_rollover(
+                            source_key,
+                            key,
+                            pass_through_current,
+                            up,
+                        ) {
+                            return KeyAction::Block;
+                        }
                         // Defined section, but key is not in it -> Pass
                         return passthrough_action(pass_through_current, source_key, up);
                     }
@@ -450,6 +476,14 @@ impl Engine {
                     // Section does NOT exist -> Pass
                     // UNLESS it is a Thumb Key
                     if !is_thumb && !is_space && !(up && key_is_managed) {
+                        if self.start_deferred_enter_rollover(
+                            source_key,
+                            key,
+                            pass_through_current,
+                            up,
+                        ) {
+                            return KeyAction::Block;
+                        }
                         return passthrough_action(pass_through_current, source_key, up);
                     }
                 }
@@ -582,6 +616,7 @@ impl Engine {
         }
 
         if up {
+            inject_ops.extend(self.release_deferred_enter_on_wait_key_up(key));
             self.repeat_plans.remove(&key);
         }
 
@@ -601,6 +636,115 @@ impl Engine {
         }
 
         KeyAction::Block
+    }
+
+    fn is_enter_key(key: ScKey) -> bool {
+        key.sc == 0x1C
+    }
+
+    fn latest_pressed_managed_key_except(&self, excluded: ScKey) -> Option<ScKey> {
+        self.chord_engine
+            .state
+            .down_ts
+            .iter()
+            .filter_map(|(k, t)| {
+                if *k == excluded || !self.chord_engine.state.pressed.contains(k) {
+                    None
+                } else {
+                    Some((*k, *t))
+                }
+            })
+            .max_by_key(|(_, t)| *t)
+            .map(|(k, _)| k)
+    }
+
+    fn start_deferred_enter_rollover(
+        &mut self,
+        source_key: ScKey,
+        key: ScKey,
+        pass_through: PassThroughCurrent,
+        up: bool,
+    ) -> bool {
+        if up || !Self::is_enter_key(key) || self.deferred_enter_rollover.is_some() {
+            return false;
+        }
+
+        let Some(wait_for) = self.latest_pressed_managed_key_except(key) else {
+            return false;
+        };
+
+        self.deferred_enter_rollover = Some(DeferredEnterRollover {
+            source_key,
+            pass_through,
+            wait_for,
+            down_emitted: false,
+            up_seen_while_waiting: false,
+        });
+        true
+    }
+
+    fn handle_deferred_enter_event(
+        &mut self,
+        source_key: ScKey,
+        key: ScKey,
+        _pass_through: PassThroughCurrent,
+        up: bool,
+    ) -> Option<KeyAction> {
+        if !Self::is_enter_key(key) {
+            return None;
+        }
+
+        let mut deferred = self.deferred_enter_rollover?;
+        if deferred.source_key != source_key {
+            return None;
+        }
+
+        if up {
+            if deferred.down_emitted {
+                self.deferred_enter_rollover = None;
+                if let Some(event) =
+                    passthrough_event(deferred.pass_through, deferred.source_key, true)
+                {
+                    return Some(KeyAction::Inject(vec![event]));
+                }
+                return Some(KeyAction::Block);
+            }
+
+            deferred.up_seen_while_waiting = true;
+            self.deferred_enter_rollover = Some(deferred);
+            return Some(KeyAction::Block);
+        }
+
+        Some(KeyAction::Block)
+    }
+
+    fn release_deferred_enter_on_wait_key_up(&mut self, key: ScKey) -> Vec<InputEvent> {
+        let Some(mut deferred) = self.deferred_enter_rollover.take() else {
+            return Vec::new();
+        };
+
+        if deferred.down_emitted || deferred.wait_for != key {
+            self.deferred_enter_rollover = Some(deferred);
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+        if let Some(event) = passthrough_event(deferred.pass_through, deferred.source_key, false) {
+            events.push(event);
+        }
+
+        deferred.down_emitted = true;
+
+        if deferred.up_seen_while_waiting {
+            if let Some(event) = passthrough_event(deferred.pass_through, deferred.source_key, true)
+            {
+                events.push(event);
+            }
+        } else {
+            self.deferred_enter_rollover = Some(deferred);
+        }
+
+        events
     }
 
     fn remap_input_key(
