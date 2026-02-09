@@ -664,7 +664,7 @@ function ensureExtendedThumbSection() {
     const navItem = document.createElement("li");
     navItem.className = "nav-item";
     navItem.dataset.target = "section-extended-thumb";
-    navItem.innerText = "Extended Thumb";
+    navItem.innerText = "拡張親指シフト";
     navRoot.insertBefore(navItem, chordNav);
   }
 
@@ -677,17 +677,18 @@ function ensureExtendedThumbSection() {
   section.id = "section-extended-thumb";
   section.className = "settings-section";
   section.innerHTML = `
-      <h2>鬯ｮ・ｫ繝ｻ・ｲ郢晢ｽｻ繝ｻ・｡驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｡鬯ｮ・ｯ雋頑瑳・ｱ螢ｹ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｵ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｫ繝ｻ・ｰ髫ｰ雋ｻ・ｽ・ｶ驛｢譎｢・ｽ・ｻ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ/h2>
+      <h2>拡張親指シフト</h2>
       <div class="thumb-columns" style="display: flex; gap: 20px;">
         <div class="thumb-col" style="flex: 1;">
+          <h3>拡張1</h3>
           <div class="setting-item">
-            <div class="setting-label">鬯ｮ・ｫ繝ｻ・ｲ郢晢ｽｻ繝ｻ・｡驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｡鬯ｮ・ｯ雋頑瑳・ｱ螢ｹ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｵ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｫ繝ｻ・ｰ髫ｰ雋ｻ・ｽ・ｶ驛｢譎｢・ｽ・ｻ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ</div>
+            <div class="setting-label">シフトキー</div>
             <div class="setting-control">
               <select id="ext-thumb-1-key">${keyOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">鬯ｯ・ｯ繝ｻ・ｨ郢晢ｽｻ繝ｻ・ｾ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｣鬯ｯ・ｩ隰ｳ・ｾ繝ｻ・ｽ繝ｻ・ｯ鬮ｯ讖ｸ・ｽ・｢郢晢ｽｻ繝ｻ・ｹ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ/div>
+            <div class="setting-label">連続シフト</div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-1-continuous">
@@ -696,13 +697,13 @@ function ensureExtendedThumbSection() {
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">鬯ｮ・ｯ繝ｻ・ｷ鬮ｮ讎翫・繝ｻ・ｽ繝ｻ・ｿ郢晢ｽｻ繝ｻ・ｶ鬯ｯ・ｩ陋ｹ繝ｻ・ｽ・｣繝ｻ・ｰ鬯ｯ・ｯ繝ｻ・ｪ郢晢ｽｻ繝ｻ・ｰ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｵ</div>
+            <div class="setting-label">単独打鍵</div>
             <div class="setting-control">
               <select id="ext-thumb-1-single-press">${singlePressOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label" id="ext-thumb-1-repeat-label">鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｩ蟷｢・ｽ・｢髫ｴ蠑ｱ繝ｻ繝ｻ・ｱ陜｣・､繝ｻ・ｹ隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｻ鬯ｩ蟷｢・ｽ・｢髫ｴ謫ｾ・ｽ・ｴ驛｢譎｢・ｽ・ｻ/div>
+            <div class="setting-label" id="ext-thumb-1-repeat-label">親指シフトキーリピート</div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-1-repeat">
@@ -712,14 +713,15 @@ function ensureExtendedThumbSection() {
           </div>
         </div>
         <div class="thumb-col" style="flex: 1;">
+          <h3>拡張2</h3>
           <div class="setting-item">
-            <div class="setting-label">鬯ｮ・ｫ繝ｻ・ｲ郢晢ｽｻ繝ｻ・｡驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｡鬯ｮ・ｯ雋頑瑳・ｱ螢ｹ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｵ鬯ｯ・ｮ繝ｻ・ｫ髯具ｽｹ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｫ繝ｻ・ｰ髫ｰ雋ｻ・ｽ・ｶ驛｢譎｢・ｽ・ｻ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ</div>
+            <div class="setting-label">シフトキー</div>
             <div class="setting-control">
               <select id="ext-thumb-2-key">${keyOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">鬯ｯ・ｯ繝ｻ・ｨ郢晢ｽｻ繝ｻ・ｾ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・｣鬯ｯ・ｩ隰ｳ・ｾ繝ｻ・ｽ繝ｻ・ｯ鬮ｯ讖ｸ・ｽ・｢郢晢ｽｻ繝ｻ・ｹ鬩搾ｽｵ繝ｻ・ｺ髯ｷ・･隰ｫ・ｾ繝ｻ・ｽ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｫ豬ｹ郢晢ｽｻ/div>
+            <div class="setting-label">連続シフト</div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-2-continuous">
@@ -728,13 +730,13 @@ function ensureExtendedThumbSection() {
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label">鬯ｮ・ｯ繝ｻ・ｷ鬮ｮ讎翫・繝ｻ・ｽ繝ｻ・ｿ郢晢ｽｻ繝ｻ・ｶ鬯ｯ・ｩ陋ｹ繝ｻ・ｽ・｣繝ｻ・ｰ鬯ｯ・ｯ繝ｻ・ｪ郢晢ｽｻ繝ｻ・ｰ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｵ</div>
+            <div class="setting-label">単独打鍵</div>
             <div class="setting-control">
               <select id="ext-thumb-2-single-press">${singlePressOptions}</select>
             </div>
           </div>
           <div class="setting-item">
-            <div class="setting-label" id="ext-thumb-2-repeat-label">鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｪ鬯ｩ蟷｢・ｽ・｢髫ｴ蠑ｱ繝ｻ繝ｻ・ｱ陜｣・､繝ｻ・ｹ隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｻ鬯ｩ蟷｢・ｽ・｢髫ｴ謫ｾ・ｽ・ｴ驛｢譎｢・ｽ・ｻ/div>
+            <div class="setting-label" id="ext-thumb-2-repeat-label">親指シフトキーリピート</div>
             <div class="setting-control">
               <label class="toggle-switch">
                 <input type="checkbox" id="ext-thumb-2-repeat">
