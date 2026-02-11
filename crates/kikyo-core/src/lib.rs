@@ -7,5 +7,8 @@ pub mod parser;
 pub mod romaji_map;
 pub mod types;
 
+#[cfg(test)]
+mod verify_ime_quotes;
+
 pub use jis_map::JIS_SC_TO_RC;
 pub use types::{KeyAction, Rc, ScKey, Token};

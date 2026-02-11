@@ -1210,19 +1210,41 @@ impl Engine {
                     Some(events)
                 }
             }
-            Token::ImeChar(text) | Token::DirectChar(text) => {
+            Token::ImeChar(text) => {
                 let mut events = Vec::new();
                 for c in text.chars() {
-                    // DirectChar/ImeChar implies we WANT unicode fallback if scancode fails
-                    // But actually DirectChar IS unicode.
-                    // However, we reuse append for uniformity if we want to map some chars to scancodes even in quotes?
-                    // User said: "..." is Unicode (Confirmed Input).
-                    // So we should just use inject_unicode logic here.
-                    // But maybe we want '!' in "..." to be scancode?
-                    // Usually "..." means literal string. inject_unicode is best for that.
                     events.push(InputEvent::Unicode(c, false));
                     events.push(InputEvent::Unicode(c, true));
                 }
+                if events.is_empty() {
+                    None
+                } else {
+                    Some(events)
+                }
+            }
+            Token::DirectChar(text) => {
+                let mut events = Vec::new();
+                // If IME is ON (Japanese Mode), we must temporarily turn it OFF to force "confirmed" input.
+                // Otherwise, even Unicode events are intercepted by IME as "unconfirmed" text (e.g. Hiragana).
+                let mut toggled_ime = false;
+                if is_japanese {
+                    if let Ok(ime_on) = crate::ime::get_ime_open_status() {
+                        if ime_on {
+                            events.push(InputEvent::ImeControl(false));
+                            toggled_ime = true;
+                        }
+                    }
+                }
+
+                for c in text.chars() {
+                    events.push(InputEvent::Unicode(c, false));
+                    events.push(InputEvent::Unicode(c, true));
+                }
+
+                if toggled_ime {
+                    events.push(InputEvent::ImeControl(true));
+                }
+
                 if events.is_empty() {
                     None
                 } else {

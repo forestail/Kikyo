@@ -15,13 +15,24 @@ const IMC_GETCONVERSIONMODE: WPARAM = WPARAM(0x0001);
 const IMC_GETOPENSTATUS: WPARAM = WPARAM(0x0005);
 
 pub fn is_ime_on(mode: ImeMode) -> bool {
+    // ... existing ...
     match mode {
         ImeMode::Ignore => true,
         ImeMode::ForceAlpha => true,
-        ImeMode::Auto => query_tsf().or_else(query_imm).unwrap_or(false),
+        ImeMode::Auto => get_ime_open_status().unwrap_or(false),
         ImeMode::Tsf => query_tsf().unwrap_or(false),
         ImeMode::Imm => query_imm().unwrap_or(false),
     }
+}
+
+pub fn get_ime_open_status() -> anyhow::Result<bool> {
+    if let Some(open) = query_tsf() {
+        return Ok(open);
+    }
+    if let Some(open) = query_imm() {
+        return Ok(open);
+    }
+    Err(anyhow::anyhow!("Failed to query IME status"))
 }
 
 pub fn is_japanese_input_active(mode: ImeMode) -> bool {
