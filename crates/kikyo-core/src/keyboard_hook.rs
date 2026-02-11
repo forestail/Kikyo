@@ -284,6 +284,12 @@ fn process_event(event: HookEvent) {
                     InputEvent::Unicode(c, up) => {
                         let _ = inject_unicode(c, up);
                     }
+                    InputEvent::ImeControl(open) => {
+                        // IME Control is a state change, not a key press/release pair.
+                        // Ideally we should execute it only once.
+                        // Since engine emits it as a single event, we just execute it.
+                        crate::ime::set_force_ime_status(open);
+                    }
                 }
             }
         }

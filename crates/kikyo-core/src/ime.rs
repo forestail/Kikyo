@@ -4,7 +4,7 @@ use tracing;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmGetOpenStatus,
-    ImmReleaseContext, IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmReleaseContext, ImmSetOpenStatus, IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, SendMessageW, GUITHREADINFO,
@@ -186,5 +186,53 @@ fn query_conversion_mode() -> Option<IME_CONVERSION_MODE> {
             tracing::warn!("query_conversion_mode: ImmGetConversionStatus failed");
             None
         }
+    }
+}
+
+const IMC_SETOPENSTATUS: WPARAM = WPARAM(0x0006);
+
+pub fn set_force_ime_status(open: bool) {
+    // Try both ImmSetOpenStatus and TSF-like approaches if needed.
+    // For now, standard ImmSetOpenStatus on the focused window context usually works for legacy apps.
+    // For TSF apps, it might be more complex, but let's start with IMM.
+    let hwnd = match focused_window() {
+        Some(h) => h,
+        None => {
+            tracing::warn!("set_force_ime_status: No focused window found");
+            return;
+        }
+    };
+
+    unsafe {
+        let himc = ImmGetContext(hwnd);
+        if himc.0 == 0 {
+            // tracing::warn!("set_force_ime_status: ImmGetContext failed, trying fallback message...");
+            set_force_ime_status_msg(hwnd, open);
+            return;
+        }
+
+        let res = ImmSetOpenStatus(himc, open);
+        let _ = ImmReleaseContext(hwnd, himc);
+
+        if !res.as_bool() {
+            // tracing::warn!("set_force_ime_status: ImmSetOpenStatus failed, trying fallback message...");
+            set_force_ime_status_msg(hwnd, open);
+        }
+    }
+}
+
+fn set_force_ime_status_msg(hwnd: HWND, open: bool) {
+    unsafe {
+        let hwnd_ime = ImmGetDefaultIMEWnd(hwnd);
+        if hwnd_ime.0 == 0 {
+            tracing::warn!("set_force_ime_status_msg: ImmGetDefaultIMEWnd failed");
+            return;
+        }
+        let _ = SendMessageW(
+            hwnd_ime,
+            WM_IME_CONTROL,
+            IMC_SETOPENSTATUS,
+            LPARAM(if open { 1 } else { 0 }),
+        );
     }
 }

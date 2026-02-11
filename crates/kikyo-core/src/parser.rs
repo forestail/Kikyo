@@ -433,6 +433,11 @@ fn parse_single_key_char(c: char) -> KeySpec {
     if let Some((sc, ext)) = special_key_scancode(c) {
         return KeySpec::Scancode(sc, ext);
     }
+    match c {
+        '日' => return KeySpec::ImeOn,
+        '英' => return KeySpec::ImeOff,
+        _ => {}
+    }
     KeySpec::Char(normalize_key_char(c))
 }
 
@@ -671,6 +676,22 @@ mod tests {
                     alt: false,
                     win: false,
                 },
+            }])
+        );
+
+        // IME Control
+        assert_eq!(
+            parse_token("日"),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::ImeOn,
+                mods: Modifiers::none(),
+            }])
+        );
+        assert_eq!(
+            parse_token("英"),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::ImeOff,
+                mods: Modifiers::none(),
             }])
         );
     }

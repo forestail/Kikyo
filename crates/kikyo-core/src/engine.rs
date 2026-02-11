@@ -1619,6 +1619,14 @@ fn append_keystroke_events(
         KeySpec::Scancode(sc, ext) => Some((sc, ext, false)),
         KeySpec::VirtualKey(vk) => vk_to_scancode(vk).map(|(s, e)| (s, e, false)),
         KeySpec::Char(c) => char_to_scancode(c, is_japanese),
+        KeySpec::ImeOn => {
+            events.push(InputEvent::ImeControl(true));
+            return;
+        }
+        KeySpec::ImeOff => {
+            events.push(InputEvent::ImeControl(false));
+            return;
+        }
     };
 
     if let Some((sc, ext, needs_shift)) = key_events {
@@ -4150,5 +4158,53 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                 .any(|e| matches!(e, InputEvent::Scancode(0x04, _, _))),
             "Should NOT output '3'"
         );
+    }
+
+    #[test]
+    fn test_ime_control_keys() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,日,英,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // '日' is at row 1, col 1 -> 'w' position (0x11)
+        // Down (Buffered)
+        assert_eq!(
+            engine.process_key(0x11, false, false, false),
+            KeyAction::Block
+        );
+        // Up (Inject)
+        let res = engine.process_key(0x11, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 1);
+                assert!(matches!(evs[0], InputEvent::ImeControl(true)));
+            }
+            _ => panic!("Expected Inject(ImeControl(true)) on Up, got {:?}", res),
+        }
+
+        // '英' is at row 1, col 2 -> 'e' position (0x12)
+        // Down (Buffered)
+        assert_eq!(
+            engine.process_key(0x12, false, false, false),
+            KeyAction::Block
+        );
+        // Up (Inject)
+        let res = engine.process_key(0x12, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                assert_eq!(evs.len(), 1);
+                assert!(matches!(evs[0], InputEvent::ImeControl(false)));
+            }
+            _ => panic!("Expected Inject(ImeControl(false)) on Up, got {:?}", res),
+        }
     }
 }

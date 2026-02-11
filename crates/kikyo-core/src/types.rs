@@ -20,6 +20,8 @@ pub enum InputEvent {
     Scancode(u16, bool, bool),
     /// Unicode character injection (char, up).
     Unicode(char, bool),
+    /// IME Control (true=ON, false=OFF).
+    ImeControl(bool),
 }
 
 /// Action to be taken by the hook.
@@ -77,6 +79,10 @@ pub enum KeySpec {
     Scancode(u16, bool),
     /// Virtual key code (VK).
     VirtualKey(u16),
+    /// Turn IME On (Japanese Input).
+    ImeOn,
+    /// Turn IME Off (Alphanumeric Input).
+    ImeOff,
 }
 
 /// A single keystroke with optional modifiers.
