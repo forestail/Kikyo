@@ -37,7 +37,13 @@
       <h2>配列</h2>
 
       <div class="setting-item">
-        <div class="setting-label">配列定義ファイル</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <div class="setting-label" style="margin-bottom: 0;">配列定義ファイル</div>
+          <button id="reload-layout-btn" class="secondary" title="現在選択中の配列定義を再読み込み"
+            style="padding: 2px 8px; font-size: 11px;">
+            &#x21bb; 再読み込み
+          </button>
+        </div>
         <div id="layout-entry-list" class="layout-entry-list"></div>
         <button id="add-layout-entry-btn" class="layout-entry-add-btn">+ 新規追加</button>
         <div class="setting-desc">使用する配列定義ファイル（.yab / .bnz）を登録し、ラジオ選択で即時切り替えます。</div>

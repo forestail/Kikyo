@@ -770,6 +770,14 @@ window.addEventListener("DOMContentLoaded", () => {
   statusMsg = document.querySelector("#status-msg");
 
   layoutEntryListEl = document.querySelector("#layout-entry-list");
+  const reloadLayoutBtn = document.querySelector("#reload-layout-btn");
+  if (reloadLayoutBtn) {
+    reloadLayoutBtn.addEventListener("click", async () => {
+      if (activeLayoutEntryId) {
+        await activateLayoutEntry(activeLayoutEntryId);
+      }
+    });
+  }
   addLayoutEntryBtn = document.querySelector("#add-layout-entry-btn");
   globalEnabledCb = document.querySelector("#global-enabled");
 

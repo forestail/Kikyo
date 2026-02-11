@@ -362,7 +362,7 @@ fn update_tray_menu_with_state(
     menu.append(&sep1)?;
 
     // Reload & Settings
-    let item_reload = MenuItem::with_id(app, "reload", "設定再読み込み", true, None::<&str>)?;
+    let item_reload = MenuItem::with_id(app, "reload", "配列定義再読み込み", true, None::<&str>)?;
     let item_settings = MenuItem::with_id(app, "show", "設定", true, None::<&str>)?;
     menu.append(&item_reload)?;
     menu.append(&item_settings)?;
