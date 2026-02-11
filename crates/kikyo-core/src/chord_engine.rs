@@ -703,6 +703,73 @@ impl ChordEngine {
                 .cmp(&self.state.pending[*b].t_down)
         });
 
+        // 3-Key Chord Check
+        if self.state.pending.len() >= 3 {
+            eprintln!(
+                "DEBUG: Checking 3-key chords. Pending: {}",
+                self.state.pending.len()
+            );
+            for oi in 0..ordered_indices.len() {
+                let idx1 = ordered_indices[oi];
+                if consumed_indices.contains(&idx1) || flushed_indices.contains(&idx1) {
+                    continue;
+                }
+
+                for oj in (oi + 1)..ordered_indices.len() {
+                    let idx2 = ordered_indices[oj];
+                    if consumed_indices.contains(&idx2) || flushed_indices.contains(&idx2) {
+                        continue;
+                    }
+
+                    for ok in (oj + 1)..ordered_indices.len() {
+                        let idx3 = ordered_indices[ok];
+                        if consumed_indices.contains(&idx3) || flushed_indices.contains(&idx3) {
+                            continue;
+                        }
+
+                        let p1 = &self.state.pending[idx1];
+                        let p2 = &self.state.pending[idx2];
+                        let p3 = &self.state.pending[idx3];
+
+                        let r12 = self.pair_overlap_ratio(p1, p2, now, trigger);
+                        let r23 = self.pair_overlap_ratio(p2, p3, now, trigger);
+                        let r13 = self.pair_overlap_ratio(p1, p3, now, trigger);
+
+                        eprintln!(
+                            "DEBUG: 3-key Check: {:?}-{:?}-{:?} Ratios: {:?}, {:?}, {:?}",
+                            p1.key, p2.key, p3.key, r12, r23, r13
+                        );
+
+                        if r12.is_none() || r23.is_none() || r13.is_none() {
+                            // Wait for release
+                            break;
+                        }
+                        let valid = r12.unwrap() >= self.profile.char_key_overlap_ratio
+                            && r23.unwrap() >= self.profile.char_key_overlap_ratio
+                            && r13.unwrap() >= self.profile.char_key_overlap_ratio;
+
+                        if valid {
+                            eprintln!("DEBUG: 3-key Overlap VALID");
+                            output.push(Decision::Chord(vec![p1.key, p2.key, p3.key]));
+                            consumed_indices.insert(idx1);
+                            consumed_indices.insert(idx2);
+                            consumed_indices.insert(idx3);
+                            // Break out of loops to restart or continue?
+                            // With consumed_indices, we can continue but should be careful.
+                            // Break ok loop.
+                            break;
+                        }
+                    }
+                    if consumed_indices.contains(&idx1) {
+                        break;
+                    }
+                }
+                if consumed_indices.contains(&idx1) {
+                    continue;
+                }
+            }
+        }
+
         for oi in 0..ordered_indices.len() {
             let idx1 = ordered_indices[oi];
             if consumed_indices.contains(&idx1) || flushed_indices.contains(&idx1) {
@@ -721,12 +788,38 @@ impl ChordEngine {
                 let ratio = match self.pair_overlap_ratio(p1, p2, now, trigger) {
                     Some(ratio) => ratio,
                     None => {
-                        // Wait for the first unresolved newer key (time-order preserving).
-                        break;
+                        // Wait for more events
+                        return output;
                     }
                 };
 
-                if ratio >= self.profile.char_key_overlap_ratio {
+                let valid_overlap = ratio >= self.profile.char_key_overlap_ratio;
+
+                if valid_overlap {
+                    // EXTENSION CHECK:
+                    // Check if p2 overlaps with any later key p3 that is still unresolved (None).
+                    // If so, we should wait to see if it forms a 3-key chord.
+                    let mut extension_wait = false;
+                    for ok in (oj + 1)..ordered_indices.len() {
+                        let idx3 = ordered_indices[ok];
+                        if consumed_indices.contains(&idx3) || flushed_indices.contains(&idx3) {
+                            continue;
+                        }
+                        let p3 = &self.state.pending[idx3];
+                        if self.pair_overlap_ratio(p2, p3, now, trigger).is_none() {
+                            extension_wait = true;
+                            break;
+                        }
+                    }
+                    if extension_wait {
+                        // Break the inner loop (oj) to stop processing p1 with others?
+                        // Actually if we wait for p2, we can't emit (p1, p2).
+                        // And we probably shouldn't emit (p1, pX) either if p1 is committed to wait?
+                        // Current logic returns `output` immediately when `None` encountered for (p1, p2).
+                        // So checking `extension_wait` should also probably return `output` (Wait globally).
+                        return output;
+                    }
+
                     let k1 = p1.key;
                     let k2 = p2.key;
                     let kind1 = self.modifier_kind(k1);

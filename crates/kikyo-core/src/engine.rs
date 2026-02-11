@@ -257,29 +257,52 @@ impl Engine {
 
         // MVP: Detect trigger keys from "<...>" sections and sub-planes.
         for (name, section) in layout.sections.iter() {
-            tracing::info!(" - Section: {}", name);
-            if name.starts_with('<') && name.ends_with('>') {
-                let inner = &name[1..name.len() - 1];
-                if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
-                    let key = ScKey::new(sc, false);
-                    if !profile.trigger_keys.contains_key(&key) {
-                        profile.trigger_keys.insert(key, name.clone());
-                        tracing::info!("   -> Registered TriggerKey: {} (sc={:02X})", name, sc);
+            // tracing::info!(" - Section: {}", name);
+            // Parse "<A><B>" style tags
+            let mut start = 0;
+            while let Some(open) = name[start..].find('<') {
+                if let Some(close) = name[start + open..].find('>') {
+                    let inner = &name[start + open + 1..start + open + close];
+                    if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
+                        let key = ScKey::new(sc, false);
+                        if !profile.trigger_keys.contains_key(&key) {
+                            profile.trigger_keys.insert(key, name.clone());
+                            tracing::info!(
+                                "   -> Registered TriggerKey: {} (sc={:02X}) from {}",
+                                inner,
+                                sc,
+                                name
+                            );
+                        }
+                        target_keys.insert(key);
                     }
-                    target_keys.insert(key);
+                    start += open + close + 1;
+                } else {
+                    break;
                 }
             }
 
             for tag in section.sub_planes.keys() {
-                if tag.starts_with('<') && tag.ends_with('>') {
-                    let inner = &tag[1..tag.len() - 1];
-                    if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
-                        let key = ScKey::new(sc, false);
-                        if !profile.trigger_keys.contains_key(&key) {
-                            profile.trigger_keys.insert(key, tag.clone());
-                            tracing::info!("   -> Registered TriggerKey: {} (sc={:02X})", tag, sc);
+                let mut start = 0;
+                while let Some(open) = tag[start..].find('<') {
+                    if let Some(close) = tag[start + open..].find('>') {
+                        let inner = &tag[start + open + 1..start + open + close];
+                        if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
+                            let key = ScKey::new(sc, false);
+                            if !profile.trigger_keys.contains_key(&key) {
+                                profile.trigger_keys.insert(key, tag.clone());
+                                tracing::info!(
+                                    "   -> Registered TriggerKey: {} (sc={:02X}) from subplane {}",
+                                    inner,
+                                    sc,
+                                    tag
+                                );
+                            }
+                            target_keys.insert(key);
                         }
-                        target_keys.insert(key);
+                        start += open + close + 1;
+                    } else {
+                        break;
                     }
                 }
             }
@@ -400,25 +423,16 @@ impl Engine {
             };
 
             let section_name = format!("{}{}", prefix, suffix);
-            let section_name = if !has_left_thumb && !has_right_thumb && has_ext1_thumb {
-                "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
-            } else if !has_left_thumb && !has_right_thumb && has_ext2_thumb {
-                "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
-            } else {
-                section_name
-            };
 
-            // Debug logging (temporary) - output only if not blocked to avoid spam?
-            // Better to output for specific keys or always for debugging.
-            if key.sc == 0x1E { // Limit to 'A' key or similar if spamming, but for now log all resolved attempts
-                 // tracing::info!("Resolve: IME={} Section={} Key={}", is_japanese, section_name, sc);
-            }
-            // tracing::info!(
-            //     "Resolve: IME={} Section={} Key={:02X}",
-            //     is_japanese,
-            //     section_name,
-            //     sc
-            // );
+            let section_name =
+                if is_japanese && !has_left_thumb && !has_right_thumb && has_ext1_thumb {
+                    "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
+                } else if is_japanese && !has_left_thumb && !has_right_thumb && has_ext2_thumb {
+                    "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
+                } else {
+                    section_name
+                };
+            // eprintln!("DEBUG: Resolve: section={} keys={:?} japanese={}", section_name, keys, is_japanese);
 
             // 3. Check Section Existence
             if let Some(layout) = &self.layout {
@@ -457,6 +471,20 @@ impl Engine {
                             if section.sub_planes.contains_key(&tag) {
                                 is_defined = true;
                             }
+                            // Also check for 2-key prefix in subplanes?
+                            // No, current logic only checks single key triggers here?
+                            // Wait! <q><w> is a subplane key.
+                            // But checking 'q' -> tag '<q>'.
+                            // If section has '<q><w>', does it have '<q>'?
+                            // parser.rs: '<q><w>' creates a subplane keyed by "<q><w>".
+                            // It does NOT create '<q>'.
+                            // So if I press 'Q', and there is only '<q><w>', then 'Q' is NOT defined as a trigger??
+                            // THIS IS THE BUG!
+                            // For 3-key chords to work, the first key MUST be recognized as a trigger or defined key.
+                            // If 'Q' is not in base plane (it is in test).
+                            // But if 'Q' was 'xx' in base plane?
+                            // In test: `q` is in base plane.
+                            // So `is_defined` is true via base plane.
                         }
                     }
 
@@ -855,14 +883,14 @@ impl Engine {
         };
 
         let section_name = format!("{}{}", prefix, suffix);
-        let section_name = if !has_left_thumb && !has_right_thumb && has_ext1_thumb {
+        let section_name = if is_japanese && !has_left_thumb && !has_right_thumb && has_ext1_thumb {
             "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
-        } else if !has_left_thumb && !has_right_thumb && has_ext2_thumb {
+        } else if is_japanese && !has_left_thumb && !has_right_thumb && has_ext2_thumb {
             "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
         } else {
             section_name
         };
-        // tracing::info!("Resolve: section={} keys={:?}", section_name, keys);
+        // eprintln!("DEBUG: Resolve: section={} keys={:?} japanese={}", section_name, keys, is_japanese);
 
         let section = match layout.sections.get(&section_name) {
             Some(section) => section,
@@ -935,6 +963,42 @@ impl Engine {
             if let Some(token) = self.try_resolve_modifier(section, k2, k1) {
                 return (Some(token), Some(k2));
             }
+        } else if lookup_keys.len() == 3 {
+            // 3-key resolution (A, B, C)
+            // Check if any combination of 2 keys forms a modifier for the 3rd key
+            // Permutations:
+            // (A,B) -> C ?? Tag <A><B> or <B><A>
+            // (A,C) -> B
+            // (B,C) -> A
+            let k1 = lookup_keys[0];
+            let k2 = lookup_keys[1];
+            let k3 = lookup_keys[2];
+            // eprintln!("DEBUG: resolving 3 keys: {:?}, {:?}, {:?}", k1, k2, k3);
+
+            // 1. Modifiers: k1, k2. Target: k3
+            if let Some(token) = self.try_resolve_double_modifier(section, k1, k2, k3) {
+                // eprintln!("DEBUG: Resolved (k1, k2) -> k3: {:?}", token);
+                return (Some(token), Some(k1));
+            }
+            if let Some(token) = self.try_resolve_double_modifier(section, k2, k1, k3) {
+                return (Some(token), Some(k2));
+            }
+
+            // 2. Modifiers: k1, k3. Target: k2
+            if let Some(token) = self.try_resolve_double_modifier(section, k1, k3, k2) {
+                return (Some(token), Some(k1));
+            }
+            if let Some(token) = self.try_resolve_double_modifier(section, k3, k1, k2) {
+                return (Some(token), Some(k3));
+            }
+
+            // 3. Modifiers: k2, k3. Target: k1
+            if let Some(token) = self.try_resolve_double_modifier(section, k2, k3, k1) {
+                return (Some(token), Some(k2));
+            }
+            if let Some(token) = self.try_resolve_double_modifier(section, k3, k2, k1) {
+                return (Some(token), Some(k3));
+            }
         }
 
         (None, None)
@@ -957,6 +1021,43 @@ impl Engine {
                 }
             }
         }
+        None
+    }
+
+    fn try_resolve_double_modifier(
+        &self,
+        section: &crate::types::Section,
+        mod1: ScKey,
+        mod2: ScKey,
+        target: ScKey,
+    ) -> Option<Token> {
+        let name1 = crate::jis_map::sc_to_key_name(mod1.sc)?;
+        let name2 = crate::jis_map::sc_to_key_name(mod2.sc)?;
+        // Try <A><B>
+        let tag1 = format!("<{}><{}>", name1, name2);
+        // eprintln!("DEBUG: Checking tag: {}", tag1);
+        if let Some(sub) = section.sub_planes.get(&tag1) {
+            // eprintln!("DEBUG: Sub-plane found for {}", tag1);
+            if let Some(rc) = self.key_to_rc(target) {
+                // eprintln!("DEBUG: RC found for target: {:?}", rc);
+                if let Some(token) = sub.map.get(&rc) {
+                    // eprintln!("DEBUG: Token found: {:?}", token);
+                    if !matches!(token, Token::None) {
+                        return Some(token.clone());
+                    }
+                } // else {
+                  //     eprintln!("DEBUG: No token at RC {:?}", rc);
+                  // }
+            } // else {
+              //     eprintln!("DEBUG: No RC for target {:?}", target);
+              // }
+        } // else {
+          //     eprintln!(
+          //         "DEBUG: Sub-plane NOT found for {}. Available keys: {:?}",
+          //         tag1,
+          //         section.sub_planes.keys()
+          //     );
+          // }
         None
     }
 
@@ -3859,6 +3960,195 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         assert_eq!(
             engine.get_profile().suspend_key,
             crate::chord_engine::SuspendKey::Pause
+        );
+    }
+    #[test]
+    fn test_3key_chord_resolution() {
+        // Define a layout where <q><w> defines 'a' (0x1E)
+        // q=0x10, w=0x11, e=0x12 (target)
+        let config = "
+[ローマ字シフト無し]
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<q><w>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_overlap_ratio = 0.5; // Require 50% overlap
+        engine.set_profile(profile);
+
+        // Simulate Q, W, E down simultaneous-ish
+        // T=0: Q down
+        engine.process_key(0x10, false, false, false);
+        // T=10: W down
+        std::thread::sleep(Duration::from_millis(10));
+        engine.process_key(0x11, false, false, false);
+        // T=20: E down
+        std::thread::sleep(Duration::from_millis(10));
+        engine.process_key(0x12, false, false, false);
+
+        // T=100: Q Up
+        std::thread::sleep(Duration::from_millis(80));
+        let res1 = engine.process_key(0x10, false, true, false);
+
+        // T=110: W Up
+        std::thread::sleep(Duration::from_millis(10));
+        let res2 = engine.process_key(0x11, false, true, false);
+
+        // T=120: E Up
+        std::thread::sleep(Duration::from_millis(10));
+        let res3 = engine.process_key(0x12, false, true, false);
+
+        // Aggregated events from all releases
+        let mut all_events = Vec::new();
+        if let KeyAction::Inject(evs) = res1 {
+            all_events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = res2 {
+            all_events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = res3 {
+            all_events.extend(evs);
+        }
+
+        assert!(
+            all_events
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x1E, _, _))),
+            "Expected 'a' output for Q+W+E chord in aggregated events"
+        );
+        assert!(
+            !all_events
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x10, _, _))),
+            "Should not output q"
+        );
+    }
+
+    #[test]
+    fn test_mixed_2key_and_3key_definitions() {
+        // q = 0x10, w = 0x11, e = 0x12
+        // Layout:
+        // <q>
+        // xx,2,xx... (row 0, col 1 is 'w' position -> outputs '2')
+        // <q><w>
+        // xx,xx,3... (row 0, col 2 is 'e' position -> outputs '3')
+
+        let config = "
+[英数シフト無し]
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字シフト無し]
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<q>
+xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<q><w>
+xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true); // Force consistent behavior if possible, but sections cover both.
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_overlap_ratio = 0.5;
+        engine.set_profile(profile);
+
+        // Case 1: 3-key chord (q + w + e) -> '3' (0x04)
+        // q down
+        engine.process_key(0x10, false, false, false);
+        std::thread::sleep(Duration::from_millis(10));
+        // w down
+        engine.process_key(0x11, false, false, false);
+        std::thread::sleep(Duration::from_millis(10));
+        // e down
+        engine.process_key(0x12, false, false, false);
+
+        // Release
+        std::thread::sleep(Duration::from_millis(100)); // wait for overlap
+        let r1 = engine.process_key(0x10, false, true, false);
+        let r2 = engine.process_key(0x11, false, true, false);
+        let r3 = engine.process_key(0x12, false, true, false);
+
+        let mut events = Vec::new();
+        if let KeyAction::Inject(evs) = r1 {
+            events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r2 {
+            events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r3 {
+            events.extend(evs);
+        }
+
+        eprintln!("DEBUG: events: {:?}", events);
+        if !events
+            .iter()
+            .any(|e| matches!(e, InputEvent::Scancode(0x04, _, _)))
+        {
+            panic!("DEBUG: Expected '3' (0x04) but got events: {:?}", events);
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x03, _, _))),
+            "Should NOT output '2' (0x03) for q+w+e"
+        );
+
+        // Case 2: 2-key chord (q + w) -> '2' (0x03)
+        std::thread::sleep(Duration::from_millis(500));
+
+        // q down
+        engine.process_key(0x10, false, false, false);
+        std::thread::sleep(Duration::from_millis(10));
+        // w down
+        engine.process_key(0x11, false, false, false);
+
+        std::thread::sleep(Duration::from_millis(100));
+        let r1 = engine.process_key(0x10, false, true, false);
+        let r2 = engine.process_key(0x11, false, true, false);
+
+        let mut events2 = Vec::new();
+        if let KeyAction::Inject(evs) = r1 {
+            events2.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r2 {
+            events2.extend(evs);
+        }
+
+        assert!(
+            events2
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x03, _, _))),
+            "Expected '2' (0x03) for q+w"
+        );
+        assert!(
+            !events2
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x04, _, _))),
+            "Should NOT output '3'"
         );
     }
 }

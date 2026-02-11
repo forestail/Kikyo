@@ -160,15 +160,13 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
 }
 
 fn parse_token(raw: &str) -> Token {
-    if raw.is_empty() || raw == "無" {
+    if raw.is_empty() || raw == "無" || raw.eq_ignore_ascii_case("xx") {
         return Token::None;
     }
 
     if let Some(token) = parse_modded_single_token(raw) {
         return token;
     }
-
-    // New Logic: parse as key sequence with romaji expansion
     // If double-quoted, it was returned as DirectChar above.
     // If single-quoted, it was returned as ImeChar above.
     // Wait, the plan says:
@@ -456,10 +454,13 @@ fn fullwidth_shifted_keystroke(c: char) -> Option<KeyStroke> {
 
 fn normalize_key_char(c: char) -> char {
     match c {
-        '\u{FF41}'..='\u{FF5A}' | '\u{FF21}'..='\u{FF3A}' => {
-            let half = std::char::from_u32(c as u32 - 0xFEE0).unwrap_or(c);
-            half.to_ascii_lowercase()
+        '\u{FF41}'..='\u{FF5A}' => {
+            std::char::from_u32(c as u32 - 0xFEE0).unwrap_or(c) // Lowercase fullwidth -> Lowercase halfwidth
         }
+        '\u{FF21}'..='\u{FF3A}' => {
+            std::char::from_u32(c as u32 - 0xFEE0).unwrap_or(c) // Uppercase fullwidth -> Uppercase halfwidth
+        }
+        'A'..='Z' => c, // Preserver uppercase
         '\u{FF10}'..='\u{FF19}' => std::char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
         '，' => ',',
         '．' => '.',
@@ -600,6 +601,13 @@ mod tests {
             Token::KeySequence(vec![stroke_char('a'), stroke_char('b'), stroke_char('c')])
         );
 
+        // Case sensitivity check
+        assert_eq!(parse_token("A"), Token::KeySequence(vec![stroke_char('A')]));
+        assert_eq!(
+            parse_token("Ａ"), // Fullwidth A
+            Token::KeySequence(vec![stroke_char('A')])
+        );
+
         // Special tokens
         assert_eq!(
             parse_token("後"),
@@ -656,7 +664,7 @@ mod tests {
         assert_eq!(
             parse_token("CA"),
             Token::KeySequence(vec![KeyStroke {
-                key: KeySpec::Char('a'),
+                key: KeySpec::Char('A'),
                 mods: Modifiers {
                     ctrl: true,
                     shift: false,
