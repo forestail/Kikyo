@@ -51,8 +51,8 @@ async function openLayoutFileDialog(defaultPath = null) {
     multiple: false,
     defaultPath: defaultPath || undefined,
     filters: [{
-      name: "Yab Layout",
-      extensions: ["yab", "bnz"],
+      name: "配列定義ファイル",
+      extensions: ["kky", "yab", "bnz"],
     }]
   });
   return typeof selected === "string" ? selected : null;
