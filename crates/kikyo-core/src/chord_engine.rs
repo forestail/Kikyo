@@ -693,38 +693,31 @@ impl ChordEngine {
             return output;
         }
         let allow_three_key_chord = self.profile.max_chord_size >= 3;
+        let pending_len = self.state.pending.len();
 
-        let mut consumed_indices = HashSet::new();
-        let mut flushed_indices = HashSet::new();
+        let mut consumed_indices = vec![false; pending_len];
+        let mut flushed_indices = vec![false; pending_len];
 
-        let mut ordered_indices: Vec<usize> = (0..self.state.pending.len()).collect();
-        ordered_indices.sort_by(|a, b| {
-            self.state.pending[*a]
-                .t_down
-                .cmp(&self.state.pending[*b].t_down)
-        });
+        let mut ordered_indices: Vec<usize> = (0..pending_len).collect();
+        ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
 
         // 3-Key Chord Check
-        if allow_three_key_chord && self.state.pending.len() >= 3 {
-            eprintln!(
-                "DEBUG: Checking 3-key chords. Pending: {}",
-                self.state.pending.len()
-            );
+        if allow_three_key_chord && pending_len >= 3 {
             for oi in 0..ordered_indices.len() {
                 let idx1 = ordered_indices[oi];
-                if consumed_indices.contains(&idx1) || flushed_indices.contains(&idx1) {
+                if consumed_indices[idx1] || flushed_indices[idx1] {
                     continue;
                 }
 
                 for oj in (oi + 1)..ordered_indices.len() {
                     let idx2 = ordered_indices[oj];
-                    if consumed_indices.contains(&idx2) || flushed_indices.contains(&idx2) {
+                    if consumed_indices[idx2] || flushed_indices[idx2] {
                         continue;
                     }
 
                     for ok in (oj + 1)..ordered_indices.len() {
                         let idx3 = ordered_indices[ok];
-                        if consumed_indices.contains(&idx3) || flushed_indices.contains(&idx3) {
+                        if consumed_indices[idx3] || flushed_indices[idx3] {
                             continue;
                         }
 
@@ -736,11 +729,6 @@ impl ChordEngine {
                         let r23 = self.pair_overlap_ratio(p2, p3, now, trigger);
                         let r13 = self.pair_overlap_ratio(p1, p3, now, trigger);
 
-                        eprintln!(
-                            "DEBUG: 3-key Check: {:?}-{:?}-{:?} Ratios: {:?}, {:?}, {:?}",
-                            p1.key, p2.key, p3.key, r12, r23, r13
-                        );
-
                         if r12.is_none() || r23.is_none() || r13.is_none() {
                             // Wait for release
                             break;
@@ -750,22 +738,21 @@ impl ChordEngine {
                             && r13.unwrap() >= self.profile.char_key_overlap_ratio;
 
                         if valid {
-                            eprintln!("DEBUG: 3-key Overlap VALID");
                             output.push(Decision::Chord(vec![p1.key, p2.key, p3.key]));
-                            consumed_indices.insert(idx1);
-                            consumed_indices.insert(idx2);
-                            consumed_indices.insert(idx3);
+                            consumed_indices[idx1] = true;
+                            consumed_indices[idx2] = true;
+                            consumed_indices[idx3] = true;
                             // Break out of loops to restart or continue?
                             // With consumed_indices, we can continue but should be careful.
                             // Break ok loop.
                             break;
                         }
                     }
-                    if consumed_indices.contains(&idx1) {
+                    if consumed_indices[idx1] {
                         break;
                     }
                 }
-                if consumed_indices.contains(&idx1) {
+                if consumed_indices[idx1] {
                     continue;
                 }
             }
@@ -773,13 +760,13 @@ impl ChordEngine {
 
         for oi in 0..ordered_indices.len() {
             let idx1 = ordered_indices[oi];
-            if consumed_indices.contains(&idx1) || flushed_indices.contains(&idx1) {
+            if consumed_indices[idx1] || flushed_indices[idx1] {
                 continue;
             }
 
             for oj in (oi + 1)..ordered_indices.len() {
                 let idx2 = ordered_indices[oj];
-                if consumed_indices.contains(&idx2) || flushed_indices.contains(&idx2) {
+                if consumed_indices[idx2] || flushed_indices[idx2] {
                     continue;
                 }
 
@@ -808,7 +795,7 @@ impl ChordEngine {
                         let mut extension_wait = false;
                         for ok in (oj + 1)..ordered_indices.len() {
                             let idx3 = ordered_indices[ok];
-                            if consumed_indices.contains(&idx3) || flushed_indices.contains(&idx3) {
+                            if consumed_indices[idx3] || flushed_indices[idx3] {
                                 continue;
                             }
                             let p3 = &self.state.pending[idx3];
@@ -844,19 +831,19 @@ impl ChordEngine {
                         kind2.is_modifier() && continuous2 && self.state.pressed.contains(&k2);
 
                     if !keep1 {
-                        consumed_indices.insert(idx1);
+                        consumed_indices[idx1] = true;
                     }
                     if !keep2 {
-                        consumed_indices.insert(idx2);
+                        consumed_indices[idx2] = true;
                     }
 
                     output.push(Decision::Chord(vec![k1, k2]));
 
-                    if consumed_indices.contains(&idx1) {
+                    if consumed_indices[idx1] {
                         break;
                     }
                 } else {
-                    flushed_indices.insert(idx1);
+                    flushed_indices[idx1] = true;
 
                     let kind1 = self.modifier_kind(p1.key);
                     let suppress_p1_tap = kind1.is_modifier()
@@ -872,22 +859,19 @@ impl ChordEngine {
             }
         }
 
-        if !consumed_indices.is_empty() || !flushed_indices.is_empty() {
-            let mut new_pending = Vec::new();
-            for (i, p) in self.state.pending.iter().enumerate() {
-                if consumed_indices.contains(&i) {
+        let has_consumed = consumed_indices.iter().any(|v| *v);
+        let has_flushed = flushed_indices.iter().any(|v| *v);
+        if has_consumed || has_flushed {
+            let old_pending = std::mem::take(&mut self.state.pending);
+            let mut new_pending = Vec::with_capacity(old_pending.len());
+            for (i, p) in old_pending.into_iter().enumerate() {
+                if consumed_indices[i] || flushed_indices[i] {
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
                     continue;
                 }
-                if flushed_indices.contains(&i) {
-                    if !self.state.pressed.contains(&p.key) {
-                        self.state.down_ts.remove(&p.key);
-                    }
-                    continue;
-                }
-                new_pending.push(p.clone());
+                new_pending.push(p);
             }
             self.state.pending = new_pending;
         }
@@ -906,7 +890,7 @@ impl ChordEngine {
 
         let (p2_end, ratio_den) = if let Some(p2_up) = p2.t_up {
             let p2_dur = p2_up.duration_since(p2.t_down);
-            if p2_dur.as_micros() > 0 {
+            if p2_dur > Duration::ZERO {
                 (p2_up, p2_dur.as_secs_f64())
             } else {
                 (p2_up, 0.0)
@@ -923,7 +907,7 @@ impl ChordEngine {
 
             if immediate_continuous_modifier {
                 let p1_dur = p1_end.duration_since(p1.t_down);
-                if p1_dur.as_micros() > 0 {
+                if p1_dur > Duration::ZERO {
                     (p1_end, p1_dur.as_secs_f64())
                 } else {
                     (p1_end, 0.0)
@@ -952,7 +936,7 @@ impl ChordEngine {
                 }
 
                 let p2_dur = now.duration_since(p2.t_down);
-                if p2_dur.as_micros() == 0 {
+                if p2_dur == Duration::ZERO {
                     return None;
                 }
                 (now, p2_dur.as_secs_f64())

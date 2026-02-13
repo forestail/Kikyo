@@ -27,3 +27,8 @@ windows = { version = "0.52", features = [
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
+criterion = "0.5"
+
+[[bench]]
+name = "hot_paths"
+harness = false

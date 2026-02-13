@@ -1,6 +1,6 @@
 use crate::engine::Engine;
 use crate::parser::parse_yab_content;
-use crate::types::{InputEvent, KeyAction, Token};
+use crate::types::{InputEvent, KeyAction};
 
 #[test]
 fn test_ime_quote_behavior_double_quotes_confirmed() {

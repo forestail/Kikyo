@@ -3,6 +3,7 @@ use crate::chord_engine::{
     EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
 };
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
+use std::cell::RefCell;
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -41,6 +42,52 @@ struct DeferredEnterRollover {
     wait_for: ScKey,
     down_emitted: bool,
     up_seen_while_waiting: bool,
+}
+
+const EXTENDED_THUMB_SHIFT_1_SECTION: &str =
+    "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1";
+const EXTENDED_THUMB_SHIFT_2_SECTION: &str =
+    "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2";
+
+thread_local! {
+    static SECTION_NAME_SCRATCH: RefCell<String> = RefCell::new(String::with_capacity(64));
+    static TAG_NAME_SCRATCH: RefCell<String> = RefCell::new(String::with_capacity(32));
+    static DOUBLE_TAG_NAME_SCRATCH: RefCell<String> = RefCell::new(String::with_capacity(48));
+}
+
+fn with_section_name<T>(prefix: &str, suffix: &str, f: impl FnOnce(&str) -> T) -> T {
+    SECTION_NAME_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        buf.push_str(prefix);
+        buf.push_str(suffix);
+        f(buf.as_str())
+    })
+}
+
+fn with_single_tag<T>(name: &str, f: impl FnOnce(&str) -> T) -> T {
+    TAG_NAME_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        buf.push('<');
+        buf.push_str(name);
+        buf.push('>');
+        f(buf.as_str())
+    })
+}
+
+fn with_double_tag<T>(name1: &str, name2: &str, f: impl FnOnce(&str) -> T) -> T {
+    DOUBLE_TAG_NAME_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        buf.push('<');
+        buf.push_str(name1);
+        buf.push('>');
+        buf.push('<');
+        buf.push_str(name2);
+        buf.push('>');
+        f(buf.as_str())
+    })
 }
 
 pub struct Engine {
@@ -423,15 +470,13 @@ impl Engine {
                 }
             };
 
-            let section_name = format!("{}{}", prefix, suffix);
-
-            let section_name =
+            let forced_section_name =
                 if is_japanese && !has_left_thumb && !has_right_thumb && has_ext1_thumb {
-                    "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
+                    Some(EXTENDED_THUMB_SHIFT_1_SECTION)
                 } else if is_japanese && !has_left_thumb && !has_right_thumb && has_ext2_thumb {
-                    "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
+                    Some(EXTENDED_THUMB_SHIFT_2_SECTION)
                 } else {
-                    section_name
+                    None
                 };
             // eprintln!("DEBUG: Resolve: section={} keys={:?} japanese={}", section_name, keys, is_japanese);
 
@@ -452,7 +497,15 @@ impl Engine {
                     }
                 }
 
-                if let Some(section) = layout.sections.get(&section_name) {
+                let section = if let Some(section_name) = forced_section_name {
+                    layout.sections.get(section_name)
+                } else {
+                    with_section_name(prefix, suffix, |section_name| {
+                        layout.sections.get(section_name)
+                    })
+                };
+
+                if let Some(section) = section {
                     // Section exists. Check if key is defined.
                     let mut is_defined = false;
 
@@ -468,8 +521,7 @@ impl Engine {
                     // Check Trigger Keys (Sub Planes)
                     if !is_defined {
                         if let Some(name) = crate::jis_map::sc_to_key_name(key.sc) {
-                            let tag = format!("<{}>", name);
-                            if section.sub_planes.contains_key(&tag) {
+                            if with_single_tag(name, |tag| section.sub_planes.contains_key(tag)) {
                                 is_defined = true;
                             }
                             // Also check for 2-key prefix in subplanes?
@@ -543,7 +595,8 @@ impl Engine {
                         continue;
                     }
                     if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                        if let Some(ops) = self.token_to_events(&token, shift) {
+                        if let Some(ops) = self.token_to_events_with_ime(&token, shift, is_japanese)
+                        {
                             inject_ops.extend(ops);
                         }
                     } else {
@@ -556,7 +609,8 @@ impl Engine {
                 Decision::Chord(keys) => {
                     let (token, modifier) = self.resolve_with_modifier(&keys, shift, is_japanese);
                     if let Some(token) = token {
-                        if let Some(ops) = self.token_to_events(&token, shift) {
+                        if let Some(ops) = self.token_to_events_with_ime(&token, shift, is_japanese)
+                        {
                             inject_ops.extend(ops);
                         }
                         if let Some(mod_key) = modifier {
@@ -581,7 +635,9 @@ impl Engine {
                             self.chord_engine.state.used_modifiers.remove(&k);
                             let mut resolved = false;
                             if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                if let Some(ops) = self.token_to_events(&token, shift) {
+                                if let Some(ops) =
+                                    self.token_to_events_with_ime(&token, shift, is_japanese)
+                                {
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -604,7 +660,9 @@ impl Engine {
                             let k = keys[1];
                             let mut resolved = false;
                             if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                if let Some(ops) = self.token_to_events(&token, shift) {
+                                if let Some(ops) =
+                                    self.token_to_events_with_ime(&token, shift, is_japanese)
+                                {
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -619,7 +677,9 @@ impl Engine {
                                 // Try to resolve as single key (unshifted)
                                 let mut resolved = false;
                                 if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                    if let Some(ops) = self.token_to_events(&token, shift) {
+                                    if let Some(ops) =
+                                        self.token_to_events_with_ime(&token, shift, is_japanese)
+                                    {
                                         inject_ops.extend(ops);
                                         resolved = true;
                                     }
@@ -883,17 +943,23 @@ impl Engine {
             }
         };
 
-        let section_name = format!("{}{}", prefix, suffix);
-        let section_name = if is_japanese && !has_left_thumb && !has_right_thumb && has_ext1_thumb {
-            "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1".to_string()
-        } else if is_japanese && !has_left_thumb && !has_right_thumb && has_ext2_thumb {
-            "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2".to_string()
-        } else {
-            section_name
-        };
+        let forced_section_name =
+            if is_japanese && !has_left_thumb && !has_right_thumb && has_ext1_thumb {
+                Some(EXTENDED_THUMB_SHIFT_1_SECTION)
+            } else if is_japanese && !has_left_thumb && !has_right_thumb && has_ext2_thumb {
+                Some(EXTENDED_THUMB_SHIFT_2_SECTION)
+            } else {
+                None
+            };
         // eprintln!("DEBUG: Resolve: section={} keys={:?} japanese={}", section_name, keys, is_japanese);
 
-        let section = match layout.sections.get(&section_name) {
+        let section = match if let Some(section_name) = forced_section_name {
+            layout.sections.get(section_name)
+        } else {
+            with_section_name(prefix, suffix, |section_name| {
+                layout.sections.get(section_name)
+            })
+        } {
             Some(section) => section,
             None => return (None, None),
         };
@@ -1012,17 +1078,18 @@ impl Engine {
         target_key: ScKey,
     ) -> Option<Token> {
         let mod_name = crate::jis_map::sc_to_key_name(mod_key.sc)?;
-        let tag = format!("<{}>", mod_name);
-        if let Some(sub) = section.sub_planes.get(&tag) {
-            if let Some(rc) = self.key_to_rc(target_key) {
-                if let Some(token) = sub.map.get(&rc) {
-                    if !matches!(token, Token::None) {
-                        return Some(token.clone());
+        with_single_tag(mod_name, |tag| {
+            if let Some(sub) = section.sub_planes.get(tag) {
+                if let Some(rc) = self.key_to_rc(target_key) {
+                    if let Some(token) = sub.map.get(&rc) {
+                        if !matches!(token, Token::None) {
+                            return Some(token.clone());
+                        }
                     }
                 }
             }
-        }
-        None
+            None
+        })
     }
 
     fn try_resolve_double_modifier(
@@ -1034,17 +1101,17 @@ impl Engine {
     ) -> Option<Token> {
         let name1 = crate::jis_map::sc_to_key_name(mod1.sc)?;
         let name2 = crate::jis_map::sc_to_key_name(mod2.sc)?;
-        // Try <A><B>
-        let tag1 = format!("<{}><{}>", name1, name2);
-        // eprintln!("DEBUG: Checking tag: {}", tag1);
-        if let Some(sub) = section.sub_planes.get(&tag1) {
-            // eprintln!("DEBUG: Sub-plane found for {}", tag1);
-            if let Some(rc) = self.key_to_rc(target) {
-                // eprintln!("DEBUG: RC found for target: {:?}", rc);
-                if let Some(token) = sub.map.get(&rc) {
-                    // eprintln!("DEBUG: Token found: {:?}", token);
-                    if !matches!(token, Token::None) {
-                        return Some(token.clone());
+        with_double_tag(name1, name2, |tag1| {
+            // eprintln!("DEBUG: Checking tag: {}", tag1);
+            if let Some(sub) = section.sub_planes.get(tag1) {
+                // eprintln!("DEBUG: Sub-plane found for {}", tag1);
+                if let Some(rc) = self.key_to_rc(target) {
+                    // eprintln!("DEBUG: RC found for target: {:?}", rc);
+                    if let Some(token) = sub.map.get(&rc) {
+                        // eprintln!("DEBUG: Token found: {:?}", token);
+                        if !matches!(token, Token::None) {
+                            return Some(token.clone());
+                        }
                     }
                 } // else {
                   //     eprintln!("DEBUG: No token at RC {:?}", rc);
@@ -1052,14 +1119,15 @@ impl Engine {
             } // else {
               //     eprintln!("DEBUG: No RC for target {:?}", target);
               // }
-        } // else {
-          //     eprintln!(
-          //         "DEBUG: Sub-plane NOT found for {}. Available keys: {:?}",
-          //         tag1,
-          //         section.sub_planes.keys()
-          //     );
-          // }
-        None
+            // } else {
+            //     eprintln!(
+            //         "DEBUG: Sub-plane NOT found for {}. Available keys: {:?}",
+            //         tag1,
+            //         section.sub_planes.keys()
+            //     );
+            // }
+            None
+        })
     }
 
     fn is_char_shift_key(&self, key: ScKey) -> bool {
@@ -1189,14 +1257,15 @@ impl Engine {
     }
 
     fn key_to_rc(&self, key: ScKey) -> Option<crate::types::Rc> {
-        JIS_SC_TO_RC
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, rc)| *rc)
+        crate::jis_map::key_to_rc(key)
     }
 
-    fn token_to_events(&self, token: &Token, shift_held: bool) -> Option<Vec<InputEvent>> {
-        let is_japanese = crate::ime::is_japanese_input_active(self.chord_engine.profile.ime_mode);
+    fn token_to_events_with_ime(
+        &self,
+        token: &Token,
+        shift_held: bool,
+        is_japanese: bool,
+    ) -> Option<Vec<InputEvent>> {
         match token {
             Token::None => None,
             Token::KeySequence(seq) => {
@@ -1264,7 +1333,7 @@ impl Engine {
         let mut events = Vec::new();
         for k in keys {
             if let Some(token) = self.resolve(&[*k], shift, is_japanese) {
-                if let Some(ops) = self.token_to_events(&token, shift) {
+                if let Some(ops) = self.token_to_events_with_ime(&token, shift, is_japanese) {
                     events.extend(ops);
                     continue;
                 }
@@ -1296,7 +1365,7 @@ impl Engine {
         }
 
         let events = if let Some(token) = token {
-            self.token_to_events(&token, shift)
+            self.token_to_events_with_ime(&token, shift, is_japanese)
                 .unwrap_or_else(|| self.repeat_fallback_events(&keys, shift, is_japanese))
         } else {
             self.repeat_fallback_events(&keys, shift, is_japanese)
@@ -1400,7 +1469,7 @@ impl Engine {
         };
 
         let p2_dur = p2_end.duration_since(p2.t_down);
-        if p2_dur.as_micros() == 0 {
+        if p2_dur == Duration::ZERO {
             return 0.0;
         }
         overlap_dur.as_secs_f64() / p2_dur.as_secs_f64()
@@ -2268,7 +2337,7 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
         let engine = Engine::default();
         let token = Token::DirectChar("漢".to_string());
         let events = engine
-            .token_to_events(&token, false)
+            .token_to_events_with_ime(&token, false, false)
             .expect("Should return events");
 
         assert_eq!(events.len(), 2);
@@ -2423,7 +2492,7 @@ dummy
 ; R1
 dummy
 ; R2
-xx,xx,d_base,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d_base,xx,xx,xx,xx,x,xx,xx,xx,xx
 ; R3
 dummy
 
@@ -2452,8 +2521,8 @@ dummy
         // resolve() returns None.
         // Fallback logic should trigger: Inject K, then D.
         // BUT now we check if they are resolved via layout.
-        // K is at Col 7? In R2: "xx,xx,d_base,xx,xx,xx,xx,xx,..."
-        // Index 7 is "xx". "xx" parses as KeySequence("xx").
+        // K is at Col 7? In R2: "xx,xx,d_base,xx,xx,xx,xx,x,..."
+        // Index 7 is "x".
         // D is at Col 2. "d_base" parses as KeySequence("d_base").
 
         // 2. Press D (0x20) WHILE K is pressed.
@@ -2466,7 +2535,7 @@ dummy
         match res {
             KeyAction::Inject(evs) => {
                 // If fallback uses raw scancode, we get K, D.
-                // If fallback uses layout, we get "xx" for K (0x25), "d_base" for D.
+                // If fallback uses layout, we get "x" for K (0x2D), "d_base" for D.
 
                 // Let's check for "x" scancode (0x2D) to prove resolution happened for K.
                 let has_x = evs.iter().any(|e| match e {
@@ -2475,7 +2544,7 @@ dummy
                 });
                 assert!(
                     has_x,
-                    "Expected 'x' (from 'xx' definition for K) in fallback output"
+                    "Expected 'x' (from 'x' definition for K) in fallback output"
                 );
             }
             _ => panic!("Expected Inject (Fallback) on Up, got {:?}", res),
@@ -4031,14 +4100,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         // q=0x10, w=0x11, e=0x12 (target)
         let config = "
 [ローマ字シフト無し]
-q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
-xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
 <q><w>
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
-xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout = parse_yab_content(config).expect("Failed to parse config");
 
@@ -4083,7 +4152,6 @@ xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         if let KeyAction::Inject(evs) = res3 {
             all_events.extend(evs);
         }
-
         assert!(
             all_events
                 .iter()
@@ -4103,31 +4171,31 @@ xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         // q = 0x10, w = 0x11, e = 0x12
         // Layout:
         // <q>
-        // xx,2,xx... (row 0, col 1 is 'w' position -> outputs '2')
+        // xx,2,xx... (row 1, col 1 is 'w' position -> outputs '2')
         // <q><w>
-        // xx,xx,3... (row 0, col 2 is 'e' position -> outputs '3')
+        // xx,xx,3... (row 1, col 2 is 'e' position -> outputs '3')
 
         let config = "
 [英数シフト無し]
-q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
-xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
 [ローマ字シフト無し]
-q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
-xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
 <q>
-xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
-xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 
 <q><w>
-xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout = parse_yab_content(config).expect("Failed to parse config");
 
@@ -4166,7 +4234,6 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             events.extend(evs);
         }
 
-        eprintln!("DEBUG: events: {:?}", events);
         if !events
             .iter()
             .any(|e| matches!(e, InputEvent::Scancode(0x04, _, _)))

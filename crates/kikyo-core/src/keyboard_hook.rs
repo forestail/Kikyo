@@ -23,7 +23,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
-    WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
+    LLKHF_ALTDOWN, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
 };
 /// Magic number to identify our own injected events.
 const INJECTED_EXTRA_INFO: usize = 0xFFC3C3C3;
@@ -34,6 +34,7 @@ static HOOK_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static LAST_HOOK_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_REINSTALL_MS: AtomicU64 = AtomicU64::new(0);
+static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static START_INSTANT: OnceLock<std::time::Instant> = OnceLock::new();
 
 const HOOK_QUEUE_SIZE: usize = 1024;
@@ -85,11 +86,17 @@ fn ensure_watchdog_thread() {
         .expect("Failed to spawn hook watchdog thread");
 }
 
+pub fn refresh_runtime_flags_from_engine() {
+    let engine = ENGINE.lock();
+    ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
+}
+
 /// Starts the keyboard hook.
 /// This must be called from a thread that pumps messages (GetMessage/PeekMessage).
 pub fn install_hook() -> anyhow::Result<()> {
     ensure_worker_thread();
     ensure_watchdog_thread();
+    refresh_runtime_flags_from_engine();
 
     info!("Installing keyboard hook...");
 
@@ -187,12 +194,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         */
 
         // Check for modifiers to disable hook
-        let ctrl_pressed = GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0;
-        let alt_pressed = GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000 != 0;
-        let shift_pressed = GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000 != 0;
-        let lwin_pressed = GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000 != 0;
-        let rwin_pressed = GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000 != 0;
-
         let is_shift_vk = kbd.vkCode == VK_SHIFT.0 as u32
             || kbd.vkCode == VK_LSHIFT.0 as u32
             || kbd.vkCode == VK_RSHIFT.0 as u32;
@@ -206,17 +207,19 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         // Alt may be used as a logical key source via [機能キー] swap.
         // In that case we must feed Alt events into the engine.
-        let alt_needs_handling = if is_alt_vk || alt_pressed {
-            let engine = ENGINE.lock();
-            engine.needs_alt_handling()
-        } else {
-            false
-        };
+        let alt_needs_handling = ALT_NEEDS_HANDLING.load(Ordering::Relaxed);
 
         // Pass through Modifier key events themselves to ensure OS state is updated
         if is_shift_vk || is_ctrl_vk || is_win_vk || (is_alt_vk && !alt_needs_handling) {
             return CallNextHookEx(None, code, wparam, lparam);
         }
+
+        // Check modifier states only for non-modifier keys that can be handled.
+        let ctrl_pressed = GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0;
+        let shift_pressed = GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000 != 0;
+        let lwin_pressed = GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000 != 0;
+        let rwin_pressed = GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000 != 0;
+        let alt_pressed = is_alt_vk || (kbd.flags.0 & LLKHF_ALTDOWN.0) != 0;
 
         if ctrl_pressed || lwin_pressed || rwin_pressed || (alt_pressed && !alt_needs_handling) {
             return CallNextHookEx(None, code, wparam, lparam);
@@ -260,6 +263,7 @@ fn hook_worker(rx: Receiver<HookEvent>) {
 fn process_event(event: HookEvent) {
     let action = {
         let mut engine = ENGINE.lock();
+        ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
 
         if let Some(vk) = suspend_key_vk(engine.get_suspend_key()) {
             if event.vk == vk && !event.up {

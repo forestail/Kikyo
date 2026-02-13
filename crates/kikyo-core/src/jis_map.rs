@@ -61,6 +61,67 @@ pub const JIS_SC_TO_RC: &[(ScKey, Rc)] = &[
     (ScKey::new(0x73, false), Rc::new(3, 10)), // \ / _ (JIS Backslash/Ro, usually next to right shift)
 ];
 
+pub fn key_to_rc(key: ScKey) -> Option<Rc> {
+    if key.ext {
+        return None;
+    }
+
+    match key.sc {
+        0x02 => Some(Rc::new(0, 0)),
+        0x03 => Some(Rc::new(0, 1)),
+        0x04 => Some(Rc::new(0, 2)),
+        0x05 => Some(Rc::new(0, 3)),
+        0x06 => Some(Rc::new(0, 4)),
+        0x07 => Some(Rc::new(0, 5)),
+        0x08 => Some(Rc::new(0, 6)),
+        0x09 => Some(Rc::new(0, 7)),
+        0x0A => Some(Rc::new(0, 8)),
+        0x0B => Some(Rc::new(0, 9)),
+        0x0C => Some(Rc::new(0, 10)),
+        0x0D => Some(Rc::new(0, 11)),
+        0x7D => Some(Rc::new(0, 12)),
+
+        0x10 => Some(Rc::new(1, 0)),
+        0x11 => Some(Rc::new(1, 1)),
+        0x12 => Some(Rc::new(1, 2)),
+        0x13 => Some(Rc::new(1, 3)),
+        0x14 => Some(Rc::new(1, 4)),
+        0x15 => Some(Rc::new(1, 5)),
+        0x16 => Some(Rc::new(1, 6)),
+        0x17 => Some(Rc::new(1, 7)),
+        0x18 => Some(Rc::new(1, 8)),
+        0x19 => Some(Rc::new(1, 9)),
+        0x1A => Some(Rc::new(1, 10)),
+        0x1B => Some(Rc::new(1, 11)),
+
+        0x1E => Some(Rc::new(2, 0)),
+        0x1F => Some(Rc::new(2, 1)),
+        0x20 => Some(Rc::new(2, 2)),
+        0x21 => Some(Rc::new(2, 3)),
+        0x22 => Some(Rc::new(2, 4)),
+        0x23 => Some(Rc::new(2, 5)),
+        0x24 => Some(Rc::new(2, 6)),
+        0x25 => Some(Rc::new(2, 7)),
+        0x26 => Some(Rc::new(2, 8)),
+        0x27 => Some(Rc::new(2, 9)),
+        0x28 => Some(Rc::new(2, 10)),
+        0x2B => Some(Rc::new(2, 11)),
+
+        0x2C => Some(Rc::new(3, 0)),
+        0x2D => Some(Rc::new(3, 1)),
+        0x2E => Some(Rc::new(3, 2)),
+        0x2F => Some(Rc::new(3, 3)),
+        0x30 => Some(Rc::new(3, 4)),
+        0x31 => Some(Rc::new(3, 5)),
+        0x32 => Some(Rc::new(3, 6)),
+        0x33 => Some(Rc::new(3, 7)),
+        0x34 => Some(Rc::new(3, 8)),
+        0x35 => Some(Rc::new(3, 9)),
+        0x73 => Some(Rc::new(3, 10)),
+        _ => None,
+    }
+}
+
 pub fn sc_to_key_name(sc: u16) -> Option<&'static str> {
     match sc {
         0x02 => Some("1"),

@@ -485,6 +485,7 @@ fn apply_layout_from_path(
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| fallback_alias_from_path(path));
     ENGINE.lock().load_layout(layout);
+    keyboard_hook::refresh_runtime_flags_from_engine();
 
     let resolved_display_name = display_name
         .map(|v| v.trim().to_string())
@@ -561,6 +562,7 @@ fn get_profile() -> Profile {
 #[tauri::command]
 fn set_profile(app: tauri::AppHandle, profile: Profile) {
     ENGINE.lock().set_profile(profile.clone());
+    keyboard_hook::refresh_runtime_flags_from_engine();
     let mut settings = load_settings_with_migration(&app);
     settings.profile = Some(sanitize_profile_for_save(profile));
     save_settings(&app, &settings);
@@ -894,6 +896,7 @@ pub fn run() {
             ENGINE.lock().set_enabled(settings.enabled);
             if let Some(profile) = settings.profile.as_ref() {
                 ENGINE.lock().set_profile(profile.clone());
+                keyboard_hook::refresh_runtime_flags_from_engine();
             }
             let startup_path = settings
                 .active_layout_id
