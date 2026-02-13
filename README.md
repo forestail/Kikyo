@@ -22,7 +22,7 @@ Windows 向けのキーボード配列エミュレータです。
 - 動作制御
   - IMEモード切替（`Auto` / `Tsf` / `Imm` / `Ignore`）
   - Suspendキーで有効/無効トグル（`ScrollLock`, `Pause`, `Insert`, `RightShift`, `RightControl`, `RightAlt`）
-  - 緊急停止 `Ctrl + Alt + Esc`
+  <!-- - 緊急停止 `Ctrl + Alt + Esc` -->
 - デスクトップアプリ機能
   - タスクトレイ常駐（表示・再読み込み・有効切替・終了）
   - ウィンドウを閉じても終了せず、トレイへ格納
@@ -80,11 +80,13 @@ cargo test -p kikyo-core
 - `crates/kikyo-core`: 入力エンジン・フック・IME判定・レイアウトパーサ
 - `crates/kikyo-ui-tauri`: Tauri UI（フロントエンド + バックエンド）
 
+<!--
 ## 緊急停止
 
 万が一制御不能になった場合は次で即時終了できます。
 
 - `Ctrl + Alt + Esc`
+-->
 
 ## 連絡先
 

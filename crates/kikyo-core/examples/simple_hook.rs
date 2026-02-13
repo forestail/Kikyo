@@ -6,7 +6,7 @@ fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     println!("Starting Full Hook Test...");
-    println!("Press Ctrl + Alt + Esc to emergency stop.");
+    // println!("Press Ctrl + Alt + Esc to emergency stop."); // Currently disabled.
 
     // Load layout
     let path = Path::new("D:/Study/Kikyo/test_data/新下駄.yab");

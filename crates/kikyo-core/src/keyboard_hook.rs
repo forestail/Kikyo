@@ -15,7 +15,9 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetLastInputInfo, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, LASTINPUTINFO,
-    VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+    VIRTUAL_KEY, VK_CONTROL,
+    // VK_ESCAPE, // Emergency stop is currently disabled.
+    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
     VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -171,7 +173,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let msg = wparam.0 as u32;
         let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
-        // Emergency Stop Check: Ctrl + Alt + Esc
+        // Emergency stop is intentionally disabled for now.
+        // To restore Ctrl+Alt+Esc shutdown behavior, uncomment this block.
+        /*
         if kbd.vkCode == VK_ESCAPE.0 as u32 {
             let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0;
             let alt = GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000 != 0;
@@ -180,6 +184,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 std::process::exit(1);
             }
         }
+        */
 
         // Check for modifiers to disable hook
         let ctrl_pressed = GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0;
