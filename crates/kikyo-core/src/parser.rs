@@ -156,7 +156,45 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
         layout.sections.insert(name, current_section);
     }
 
+    layout.max_chord_size = detect_max_chord_size(&layout);
+
     Ok(layout)
+}
+
+fn detect_max_chord_size(layout: &Layout) -> usize {
+    for (section_name, section) in &layout.sections {
+        if count_valid_chord_keys(section_name) >= 2 {
+            return 3;
+        }
+        if section
+            .sub_planes
+            .keys()
+            .any(|tag| count_valid_chord_keys(tag) >= 2)
+        {
+            return 3;
+        }
+    }
+    2
+}
+
+fn count_valid_chord_keys(tag: &str) -> usize {
+    let mut count = 0;
+    let mut start = 0;
+    while let Some(open_rel) = tag[start..].find('<') {
+        let open = start + open_rel;
+        let Some(close_rel) = tag[open..].find('>') else {
+            break;
+        };
+        let close = open + close_rel;
+        if close > open + 1 {
+            let key_name = &tag[open + 1..close];
+            if crate::jis_map::key_name_to_sc(key_name).is_some() {
+                count += 1;
+            }
+        }
+        start = close + 1;
+    }
+    count
 }
 
 fn parse_token(raw: &str) -> Token {
@@ -754,6 +792,38 @@ a,b
                 ("Capsロック".to_string(), "拡張2".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_sets_max_chord_size_to_two_without_double_modifier_tag() {
+        let content = "
+[ローマ字シフト無し]
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<q>
+xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(content).expect("Failed");
+        assert_eq!(layout.max_chord_size, 2);
+    }
+
+    #[test]
+    fn test_parse_sets_max_chord_size_to_three_with_double_modifier_tag() {
+        let content = "
+[ローマ字シフト無し]
+q,w,e,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<q><w>
+xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(content).expect("Failed");
+        assert_eq!(layout.max_chord_size, 3);
     }
 
     #[test]

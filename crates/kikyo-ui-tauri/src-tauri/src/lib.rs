@@ -51,7 +51,7 @@ struct LayoutEntriesResponse {
     active_layout_id: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Settings {
     #[serde(default)]
     last_yab_path: Option<String>,
@@ -61,6 +61,24 @@ struct Settings {
     active_layout_id: Option<String>,
     #[serde(default)]
     profile: Option<Profile>,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            last_yab_path: None,
+            layout_entries: Vec::new(),
+            active_layout_id: None,
+            profile: None,
+            enabled: true,
+        }
+    }
 }
 
 fn generate_layout_entry_id() -> String {
@@ -512,10 +530,8 @@ fn load_yab(
 }
 
 #[tauri::command]
-fn set_enabled(app: tauri::AppHandle, enabled: bool) {
+fn set_enabled(_app: tauri::AppHandle, enabled: bool) {
     ENGINE.lock().set_enabled(enabled);
-    let _ = update_tray_menu(&app);
-    let _ = app.emit("enabled-state-changed", enabled);
 }
 
 #[tauri::command]
@@ -699,6 +715,22 @@ fn activate_layout_entry(
     activate_layout_entry_by_id(&app, &state, id.as_str())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn settings_default_enabled_is_true() {
+        assert!(Settings::default().enabled);
+    }
+
+    #[test]
+    fn settings_deserialize_without_enabled_defaults_to_true() {
+        let parsed: Settings = serde_json::from_str("{}").expect("settings json");
+        assert!(parsed.enabled);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -810,6 +842,7 @@ pub fn run() {
 
             // Load settings (profile first, then layout)
             let settings = load_settings_with_migration(app.handle());
+            ENGINE.lock().set_enabled(settings.enabled);
             if let Some(profile) = settings.profile.as_ref() {
                 ENGINE.lock().set_profile(profile.clone());
             }
@@ -868,6 +901,9 @@ pub fn run() {
             // Register callback for Engine state changes
             let handle_for_cb = app.handle().clone();
             ENGINE.lock().set_on_enabled_change(move |enabled| {
+                let mut settings = load_settings_with_migration(&handle_for_cb);
+                settings.enabled = enabled;
+                save_settings(&handle_for_cb, &settings);
                 let _ = handle_for_cb.emit("enabled-state-changed", enabled);
                 let layout_name = handle_for_cb
                     .state::<AppState>()

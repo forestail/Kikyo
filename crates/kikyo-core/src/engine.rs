@@ -224,6 +224,7 @@ impl Engine {
         self.function_key_swaps = build_function_key_swap_map(&layout.function_key_swaps);
 
         let mut profile = self.chord_engine.profile.clone();
+        profile.max_chord_size = if layout.max_chord_size >= 3 { 3 } else { 2 };
 
         // 1. Collect all definition RCs from layout
         let mut active_rcs = HashSet::new();
@@ -2675,6 +2676,38 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             KeyAction::Pass,
             "Enter should still pass after profile update"
         );
+    }
+
+    #[test]
+    fn test_load_layout_sets_max_chord_size_to_two_without_double_modifier_tag() {
+        let config = "
+[Main]
+a
+
+<q>
+xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        assert_eq!(engine.get_profile().max_chord_size, 2);
+    }
+
+    #[test]
+    fn test_load_layout_sets_max_chord_size_to_three_with_double_modifier_tag() {
+        let config = "
+[Main]
+a
+
+<q><w>
+xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        assert_eq!(engine.get_profile().max_chord_size, 3);
     }
 
     #[test]

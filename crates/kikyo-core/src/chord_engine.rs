@@ -692,6 +692,7 @@ impl ChordEngine {
         if self.state.pending.len() < 2 {
             return output;
         }
+        let allow_three_key_chord = self.profile.max_chord_size >= 3;
 
         let mut consumed_indices = HashSet::new();
         let mut flushed_indices = HashSet::new();
@@ -704,7 +705,7 @@ impl ChordEngine {
         });
 
         // 3-Key Chord Check
-        if self.state.pending.len() >= 3 {
+        if allow_three_key_chord && self.state.pending.len() >= 3 {
             eprintln!(
                 "DEBUG: Checking 3-key chords. Pending: {}",
                 self.state.pending.len()
@@ -788,36 +789,38 @@ impl ChordEngine {
                 let ratio = match self.pair_overlap_ratio(p1, p2, now, trigger) {
                     Some(ratio) => ratio,
                     None => {
-                        // Wait for more events
-                        return output;
+                        if allow_three_key_chord {
+                            // Wait for more events when 3-key chord extension is enabled.
+                            return output;
+                        }
+                        // In 2-key mode, preserve the previous behavior and continue scanning.
+                        break;
                     }
                 };
 
                 let valid_overlap = ratio >= self.profile.char_key_overlap_ratio;
 
                 if valid_overlap {
-                    // EXTENSION CHECK:
-                    // Check if p2 overlaps with any later key p3 that is still unresolved (None).
-                    // If so, we should wait to see if it forms a 3-key chord.
-                    let mut extension_wait = false;
-                    for ok in (oj + 1)..ordered_indices.len() {
-                        let idx3 = ordered_indices[ok];
-                        if consumed_indices.contains(&idx3) || flushed_indices.contains(&idx3) {
-                            continue;
+                    if allow_three_key_chord {
+                        // EXTENSION CHECK:
+                        // Check if p2 overlaps with any later key p3 that is still unresolved (None).
+                        // If so, we should wait to see if it forms a 3-key chord.
+                        let mut extension_wait = false;
+                        for ok in (oj + 1)..ordered_indices.len() {
+                            let idx3 = ordered_indices[ok];
+                            if consumed_indices.contains(&idx3) || flushed_indices.contains(&idx3) {
+                                continue;
+                            }
+                            let p3 = &self.state.pending[idx3];
+                            if self.pair_overlap_ratio(p2, p3, now, trigger).is_none() {
+                                extension_wait = true;
+                                break;
+                            }
                         }
-                        let p3 = &self.state.pending[idx3];
-                        if self.pair_overlap_ratio(p2, p3, now, trigger).is_none() {
-                            extension_wait = true;
-                            break;
+                        if extension_wait {
+                            // Wait globally for 3-key resolution.
+                            return output;
                         }
-                    }
-                    if extension_wait {
-                        // Break the inner loop (oj) to stop processing p1 with others?
-                        // Actually if we wait for p2, we can't emit (p1, p2).
-                        // And we probably shouldn't emit (p1, pX) either if p1 is committed to wait?
-                        // Current logic returns `output` immediately when `None` encountered for (p1, p2).
-                        // So checking `extension_wait` should also probably return `output` (Wait globally).
-                        return output;
                     }
 
                     let k1 = p1.key;

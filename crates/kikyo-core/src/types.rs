@@ -130,9 +130,21 @@ pub struct Section {
     pub sub_planes: std::collections::HashMap<String, Plane>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Layout {
     pub name: Option<String>,
     pub sections: std::collections::HashMap<String, Section>,
     pub function_key_swaps: Vec<(String, String)>,
+    pub max_chord_size: usize,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            name: None,
+            sections: std::collections::HashMap::new(),
+            function_key_swaps: Vec::new(),
+            max_chord_size: 2,
+        }
+    }
 }
