@@ -445,6 +445,54 @@ input[type=range]:focus::-webkit-slider-runnable-track {
   min-width: 30px;
 }
 
+.about-contributors-host {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+  text-align: center;
+}
+
+.about-contributors-host[hidden] {
+  display: none;
+}
+
+.about-contributors {
+  max-width: min(100%, 540px);
+  padding: 0 8px;
+  box-sizing: border-box;
+  color: #a8a8a8;
+}
+
+.about-contributors-heading {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #acacac;
+}
+
+.about-contributors-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #a6a6a6;
+  opacity: 0.82;
+}
+
+.about-contributors-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #a6a6a6;
+  opacity: 0.82;
+}
+
+.about-contributors-item {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 900px) {
   .main-content {
     padding: 16px;

@@ -1,3 +1,5 @@
+import { mountAboutContributors } from "./components/aboutContributors.js";
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 let globalEnabledCb;
@@ -893,8 +895,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Autostart init
   initAutoLaunch();
+  initAboutContributors();
   initVersion();
 });
+
+function initAboutContributors() {
+  const root = document.getElementById("about-contributors-root");
+  if (!root) return;
+  mountAboutContributors(root);
+}
 
 async function refreshEnabledState() {
   if (!globalEnabledCb) return;
