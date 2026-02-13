@@ -8,6 +8,7 @@ let layoutEntryListEl, addLayoutEntryBtn;
 let layoutEntries = [];
 let activeLayoutEntryId = null;
 let layoutPointerDragState = null;
+const DUPLICATE_LAYOUT_ALERT_MESSAGE = "\u3059\u3067\u306b\u767b\u9332\u3055\u308c\u3066\u3044\u308b\u5b9a\u7fa9\u30d5\u30a1\u30a4\u30eb\u3067\u3059";
 
 // Sidebar
 let navItems, sections;
@@ -61,6 +62,23 @@ function normalizeLayoutEntry(entry) {
     alias: entry?.alias ?? "",
     path: entry?.path ?? "",
   };
+}
+
+function normalizeLayoutPathForCompare(path) {
+  const trimmed = String(path ?? "").trim();
+  const slashNormalized = trimmed.replace(/\\/g, "/");
+  const isLikelyWindowsPath = /^[A-Za-z]:\//.test(slashNormalized) || slashNormalized.startsWith("//");
+  return isLikelyWindowsPath ? slashNormalized.toLowerCase() : slashNormalized;
+}
+
+function isDuplicateLayoutPath(path) {
+  const normalized = normalizeLayoutPathForCompare(path);
+  return layoutEntries.some((entry) => normalizeLayoutPathForCompare(entry.path) === normalized);
+}
+
+function isDuplicateLayoutPathError(error) {
+  const text = String(error ?? "");
+  return text.includes(DUPLICATE_LAYOUT_ALERT_MESSAGE);
 }
 
 function moveLayoutEntryInMemory(draggedId, targetId) {
@@ -352,8 +370,19 @@ async function addLayoutEntry() {
   try {
     const selected = await openLayoutFileDialog();
     if (!selected) return;
+    if (isDuplicateLayoutPath(selected)) {
+      window.alert(DUPLICATE_LAYOUT_ALERT_MESSAGE);
+      return;
+    }
     const wasEmpty = layoutEntries.length === 0;
-    const created = await invoke("create_layout_entry_from_path", { path: selected });
+    const created = await invoke("create_layout_entry_from_path", { path: selected }).catch((e) => {
+      if (isDuplicateLayoutPathError(e)) {
+        window.alert(DUPLICATE_LAYOUT_ALERT_MESSAGE);
+        return null;
+      }
+      throw e;
+    });
+    if (!created) return;
     await refreshLayoutEntries();
     if (wasEmpty && created?.id) {
       await activateLayoutEntry(created.id);

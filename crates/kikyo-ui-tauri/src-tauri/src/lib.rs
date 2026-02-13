@@ -17,6 +17,7 @@ use tauri::WindowEvent;
 
 static ENTRY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 const TRAY_LAYOUT_ITEM_ID_PREFIX: &str = "layout_entry::";
+const DUPLICATE_LAYOUT_PATH_MESSAGE: &str = "\u{3059}\u{3067}\u{306b}\u{767b}\u{9332}\u{3055}\u{308c}\u{3066}\u{3044}\u{308b}\u{5b9a}\u{7fa9}\u{30d5}\u{30a1}\u{30a4}\u{30eb}\u{3067}\u{3059}";
 
 fn tray_layout_item_menu_id(entry_id: &str) -> String {
     format!("{TRAY_LAYOUT_ITEM_ID_PREFIX}{entry_id}")
@@ -53,8 +54,8 @@ struct LayoutEntriesResponse {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Settings {
-    #[serde(default)]
-    last_yab_path: Option<String>,
+    #[serde(default, alias = "last_yab_path")]
+    last_layout_path: Option<String>,
     #[serde(default)]
     layout_entries: Vec<LayoutEntry>,
     #[serde(default)]
@@ -72,7 +73,7 @@ fn default_enabled() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            last_yab_path: None,
+            last_layout_path: None,
             layout_entries: Vec::new(),
             active_layout_id: None,
             profile: None,
@@ -97,6 +98,17 @@ fn fallback_alias_from_path(path: &str) -> String {
         .map(|stem| stem.trim().to_string())
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "layout".to_string())
+}
+
+fn normalize_layout_path_for_compare(path: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        path.trim().replace('/', "\\").to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.trim().to_string()
+    }
 }
 
 fn detect_layout_name_from_file(path: &str) -> Result<String, String> {
@@ -202,8 +214,8 @@ fn sync_last_path_with_active(settings: &mut Settings) -> bool {
             .iter()
             .find(|entry| &entry.id == active_id)
         {
-            if settings.last_yab_path.as_deref() != Some(active_entry.path.as_str()) {
-                settings.last_yab_path = Some(active_entry.path.clone());
+            if settings.last_layout_path.as_deref() != Some(active_entry.path.as_str()) {
+                settings.last_layout_path = Some(active_entry.path.clone());
                 return true;
             }
         }
@@ -230,7 +242,7 @@ fn migrate_settings(settings: &mut Settings) -> bool {
 
     if settings.layout_entries.is_empty() {
         if let Some(path) = settings
-            .last_yab_path
+            .last_layout_path
             .as_ref()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
@@ -503,7 +515,7 @@ fn activate_layout_entry_by_id(
     let display_name = preferred_entry_display_name(&entry);
     let stats = apply_layout_from_path(app, state, &entry.path, Some(display_name))?;
     settings.active_layout_id = Some(entry.id);
-    settings.last_yab_path = Some(entry.path);
+    settings.last_layout_path = Some(entry.path);
     save_settings(app, &settings);
     let _ = update_tray_menu(app);
     Ok(stats)
@@ -516,7 +528,7 @@ fn load_yab(
     path: String,
 ) -> Result<String, String> {
     let mut settings = load_settings_with_migration(&app);
-    settings.last_yab_path = Some(path.clone());
+    settings.last_layout_path = Some(path.clone());
     settings.active_layout_id = settings
         .layout_entries
         .iter()
@@ -579,6 +591,12 @@ fn create_layout_entry_from_path(
     }
 
     let mut settings = load_settings_with_migration(&app);
+    let normalized = normalize_layout_path_for_compare(&path);
+    if settings.layout_entries.iter().any(|entry| {
+        normalize_layout_path_for_compare(&entry.path) == normalized
+    }) {
+        return Err(DUPLICATE_LAYOUT_PATH_MESSAGE.to_string());
+    }
     let layout_name = detect_layout_name_from_file(&path)?;
     let entry = LayoutEntry {
         id: generate_layout_entry_id(),
@@ -717,7 +735,7 @@ fn activate_layout_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{normalize_layout_path_for_compare, Settings};
 
     #[test]
     fn settings_default_enabled_is_true() {
@@ -728,6 +746,37 @@ mod tests {
     fn settings_deserialize_without_enabled_defaults_to_true() {
         let parsed: Settings = serde_json::from_str("{}").expect("settings json");
         assert!(parsed.enabled);
+    }
+
+    #[test]
+    fn settings_deserialize_legacy_last_yab_path_into_last_layout_path() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"last_yab_path":"C:\\layouts\\legacy.yab"}"#)
+                .expect("legacy settings json");
+        assert_eq!(
+            parsed.last_layout_path.as_deref(),
+            Some(r"C:\layouts\legacy.yab")
+        );
+    }
+
+    #[test]
+    fn settings_serialize_uses_last_layout_path_key() {
+        let mut settings = Settings::default();
+        settings.last_layout_path = Some("layout.yab".to_string());
+        let value = serde_json::to_value(settings).expect("serialize settings");
+        assert_eq!(
+            value.get("last_layout_path").and_then(|v| v.as_str()),
+            Some("layout.yab")
+        );
+        assert!(value.get("last_yab_path").is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_layout_path_for_compare_is_case_and_slash_insensitive_on_windows() {
+        let a = normalize_layout_path_for_compare(r"C:/Layouts/Test.yab");
+        let b = normalize_layout_path_for_compare(r"c:\layouts\test.yab");
+        assert_eq!(a, b);
     }
 }
 
@@ -856,7 +905,7 @@ pub fn run() {
                         .find(|entry| &entry.id == active_id)
                         .map(|entry| entry.path.clone())
                 })
-                .or_else(|| settings.last_yab_path.clone());
+                .or_else(|| settings.last_layout_path.clone());
 
             if let Some(path) = startup_path {
                 let display_name = preferred_display_name_for_path(&settings, &path);
