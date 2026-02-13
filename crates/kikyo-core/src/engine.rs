@@ -1241,6 +1241,19 @@ impl Engine {
                 continue;
             }
 
+            // If the key is currently pressed with an active pending stroke, preserve it.
+            // This prevents deleting a newly re-pressed stroke when an older stroke of the
+            // same physical key has just been resolved.
+            let has_active_pending_stroke = self
+                .chord_engine
+                .state
+                .pending
+                .iter()
+                .any(|p| p.key == *k && p.t_up.is_none());
+            if self.chord_engine.state.pressed.contains(k) && has_active_pending_stroke {
+                continue;
+            }
+
             remove.insert(*k);
         }
 

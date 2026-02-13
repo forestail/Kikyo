@@ -425,6 +425,8 @@ pub struct ChordEngine {
 }
 
 impl ChordEngine {
+    const ROLLOVER_CHAIN_GUARD_OVERLAP_MS: u64 = 12;
+
     pub fn new(profile: Profile) -> Self {
         Self {
             profile,
@@ -486,6 +488,23 @@ impl ChordEngine {
                 self.state.pressed.insert(event.key);
                 self.state.down_ts.insert(event.key, now);
                 if matches!(self.modifier_kind(event.key), ModifierKind::CharShift) {
+                    self.state.used_modifiers.remove(&event.key);
+                }
+
+                // If the same physical key is pressed again while an older stroke of that key
+                // is still pending (already released but unresolved), finalize the older pending
+                // group first. This prevents old/new strokes from collapsing into one pending
+                // entry and causing cross-stroke mis-resolution.
+                let has_released_pending_same_key = self
+                    .state
+                    .pending
+                    .iter()
+                    .any(|p| p.key == event.key && p.t_up.is_some());
+                if has_released_pending_same_key {
+                    output.extend(self.flush_pending_with_cutoff(now));
+                    // flush_pending_with_cutoff may re-mark the same physical key as a used
+                    // modifier for the previous stroke. Clear it again so the new stroke is not
+                    // suppressed on KeyUp.
                     self.state.used_modifiers.remove(&event.key);
                 }
 
@@ -780,7 +799,33 @@ impl ChordEngine {
                             // Wait for more events when 3-key chord extension is enabled.
                             return output;
                         }
-                        // In 2-key mode, preserve the previous behavior and continue scanning.
+                        // In 2-key mode, keep waiting by default. However, if p1 is already
+                        // released, p2 is still held, and a later key exists, p1 may block
+                        // chronological output ordering. If p1 can no longer reach the overlap
+                        // threshold against p2, flush p1 now.
+                        let has_later_pending = ordered_indices
+                            .iter()
+                            .skip(oj + 1)
+                            .any(|idx| !consumed_indices[*idx] && !flushed_indices[*idx]);
+
+                        if has_later_pending && p1.t_up.is_some() && p2.t_up.is_none() {
+                            if let Some(max_ratio_now) =
+                                Self::max_overlap_ratio_if_second_released_now(p1, p2, now)
+                            {
+                                if max_ratio_now < self.profile.char_key_overlap_ratio {
+                                    flushed_indices[idx1] = true;
+
+                                    let kind1 = self.modifier_kind(p1.key);
+                                    let suppress_p1_tap = kind1.is_modifier()
+                                        && self.modifier_is_continuous(kind1)
+                                        && self.state.used_modifiers.contains(&p1.key);
+
+                                    if !suppress_p1_tap {
+                                        output.push(Decision::KeyTap(p1.key));
+                                    }
+                                }
+                            }
+                        }
                         break;
                     }
                 };
@@ -788,6 +833,37 @@ impl ChordEngine {
                 let valid_overlap = ratio >= self.profile.char_key_overlap_ratio;
 
                 if valid_overlap {
+                    let has_later_pending = ordered_indices
+                        .iter()
+                        .skip(oj + 1)
+                        .any(|idx| !consumed_indices[*idx] && !flushed_indices[*idx]);
+
+                    // Guard against accidental rollover chaining:
+                    // if an older completed pair is followed by a newer pending key, and the
+                    // overlap between the older pair is extremely short, prefer flushing the
+                    // older key as a tap instead of locking in a chord.
+                    if has_later_pending
+                        && p1.t_up.is_some()
+                        && p2.t_up.is_some()
+                        && Self::pair_overlap_duration(p1, p2)
+                            .is_some_and(|dur| {
+                                dur < Duration::from_millis(Self::ROLLOVER_CHAIN_GUARD_OVERLAP_MS)
+                            })
+                    {
+                        flushed_indices[idx1] = true;
+
+                        let kind1 = self.modifier_kind(p1.key);
+                        let suppress_p1_tap = kind1.is_modifier()
+                            && self.modifier_is_continuous(kind1)
+                            && self.state.used_modifiers.contains(&p1.key);
+
+                        if !suppress_p1_tap {
+                            output.push(Decision::KeyTap(p1.key));
+                        }
+
+                        break;
+                    }
+
                     if allow_three_key_chord {
                         // EXTENSION CHECK:
                         // Check if p2 overlaps with any later key p3 that is still unresolved (None).
@@ -955,6 +1031,49 @@ impl ChordEngine {
             Some(overlap_dur.as_secs_f64() / ratio_den)
         } else {
             Some(0.0)
+        }
+    }
+
+    fn max_overlap_ratio_if_second_released_now(
+        p1: &PendingKey,
+        p2: &PendingKey,
+        now: Instant,
+    ) -> Option<f64> {
+        let p1_end = p1.t_up?;
+        if p2.t_up.is_some() || now <= p2.t_down {
+            return None;
+        }
+
+        let p2_dur = now.duration_since(p2.t_down);
+        if p2_dur == Duration::ZERO {
+            return None;
+        }
+
+        let overlap_start = p2.t_down;
+        let overlap_end = if p1_end < now { p1_end } else { now };
+        let overlap_dur = if overlap_end > overlap_start {
+            overlap_end.duration_since(overlap_start)
+        } else {
+            Duration::ZERO
+        };
+
+        Some(overlap_dur.as_secs_f64() / p2_dur.as_secs_f64())
+    }
+
+    fn pair_overlap_duration(p1: &PendingKey, p2: &PendingKey) -> Option<Duration> {
+        let p1_end = p1.t_up?;
+        let p2_end = p2.t_up?;
+        let overlap_start = if p1.t_down > p2.t_down {
+            p1.t_down
+        } else {
+            p2.t_down
+        };
+        let overlap_end = if p1_end < p2_end { p1_end } else { p2_end };
+
+        if overlap_end > overlap_start {
+            Some(overlap_end.duration_since(overlap_start))
+        } else {
+            Some(Duration::ZERO)
         }
     }
 
@@ -1431,6 +1550,140 @@ mod tests {
 
         let res = engine.on_event(make_event(k_c, KeyEdge::Up, t0 + Duration::from_millis(90)));
         assert_single_chord(&res, k_b, k_c);
+    }
+
+    #[test]
+    fn test_noncontinuous_rollover_flushes_released_key_before_later_chord() {
+        let t0 = Instant::now();
+        let k_f = make_key(0x21);
+        let k_s = make_key(0x1F);
+        let k_m = make_key(0x32);
+
+        let mut profile = Profile::default();
+        profile.char_key_continuous = false;
+        profile.char_key_overlap_ratio = 0.35;
+        let mut engine = ChordEngine::new(profile);
+
+        assert!(engine
+            .on_event(make_event(k_f, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_s,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(10)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_f, KeyEdge::Up, t0 + Duration::from_millis(20)))
+            .is_empty());
+
+        let res = engine.on_event(make_event(
+            k_m,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        ));
+        assert_eq!(res, vec![Decision::KeyTap(k_f)]);
+
+        let res = engine.on_event(make_event(k_m, KeyEdge::Up, t0 + Duration::from_millis(80)));
+        assert_single_chord(&res, k_s, k_m);
+        assert!(
+            !res.iter()
+                .any(|d| matches!(d, Decision::KeyTap(k) if *k == k_f)),
+            "F must not be delayed after the S+M chord"
+        );
+
+        assert!(engine
+            .on_event(make_event(k_s, KeyEdge::Up, t0 + Duration::from_millis(90)))
+            .is_empty());
+    }
+
+    #[test]
+    fn test_short_completed_pair_is_not_chorded_when_later_key_is_pending() {
+        let t0 = Instant::now();
+        let k_k = make_key(0x25);
+        let k_f = make_key(0x21);
+        let k_s = make_key(0x1F);
+
+        let mut profile = Profile::default();
+        profile.char_key_continuous = false;
+        profile.char_key_overlap_ratio = 0.35;
+        profile
+            .trigger_keys
+            .insert(k_k, "<k>".to_string());
+        profile
+            .trigger_keys
+            .insert(k_f, "<f>".to_string());
+        profile
+            .trigger_keys
+            .insert(k_s, "<s>".to_string());
+
+        let mut engine = ChordEngine::new(profile);
+
+        assert!(engine
+            .on_event(make_event(k_k, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_f, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(5)))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_s, KeyEdge::Down, t0 + Duration::from_millis(5)))
+            .is_empty());
+
+        // Without rollover-chain guard this became Chord(K,F).
+        let res = engine.on_event(make_event(k_f, KeyEdge::Up, t0 + Duration::from_millis(10)));
+        assert_eq!(res, vec![Decision::KeyTap(k_k)]);
+    }
+
+    #[test]
+    fn test_repress_same_key_flushes_previous_unresolved_group() {
+        let t0 = Instant::now();
+        let k_f = make_key(0x21);
+        let k_k = make_key(0x25);
+
+        let mut profile = Profile::default();
+        profile.char_key_continuous = false;
+        profile.char_key_overlap_ratio = 0.35;
+        profile.trigger_keys.insert(k_k, "<k>".to_string());
+        profile.trigger_keys.insert(k_f, "<f>".to_string());
+
+        let mut engine = ChordEngine::new(profile);
+
+        // First stroke: F + K, then release F while K stays down (still unresolved).
+        assert!(engine
+            .on_event(make_event(k_f, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_k,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(10)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_f, KeyEdge::Up, t0 + Duration::from_millis(20)))
+            .is_empty());
+
+        // Re-press F before releasing K.
+        // Older unresolved group must be flushed first, yielding F+K chord.
+        let res = engine.on_event(make_event(
+            k_f,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(25),
+        ));
+        assert_single_chord(&res, k_f, k_k);
+
+        // New F stroke should be tracked independently.
+        let pending_f_count = engine
+            .state
+            .pending
+            .iter()
+            .filter(|p| p.key == k_f && p.t_up.is_none())
+            .count();
+        assert_eq!(pending_f_count, 1);
     }
 
     #[test]
