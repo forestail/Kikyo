@@ -498,3 +498,30 @@ input[type=range]:focus::-webkit-slider-runnable-track {
     padding: 16px;
   }
 }
+
+/* Floating Status Message (Chrome-style overlay) */
+.status-toast {
+  position: fixed;
+  bottom: 6px;
+  right: 8px;
+  max-width: 60%;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #aaaaaa;
+  background-color: rgba(37, 37, 38, 0.92);
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}

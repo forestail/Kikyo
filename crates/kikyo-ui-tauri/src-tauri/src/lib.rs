@@ -594,9 +594,11 @@ fn create_layout_entry_from_path(
 
     let mut settings = load_settings_with_migration(&app);
     let normalized = normalize_layout_path_for_compare(&path);
-    if settings.layout_entries.iter().any(|entry| {
-        normalize_layout_path_for_compare(&entry.path) == normalized
-    }) {
+    if settings
+        .layout_entries
+        .iter()
+        .any(|entry| normalize_layout_path_for_compare(&entry.path) == normalized)
+    {
         return Err(DUPLICATE_LAYOUT_PATH_MESSAGE.to_string());
     }
     let layout_name = detect_layout_name_from_file(&path)?;
@@ -634,6 +636,7 @@ fn update_layout_entry(
     let mut settings = load_settings_with_migration(&app);
     let is_active = settings.active_layout_id.as_deref() == Some(id.as_str());
     let mut active_display_name: Option<String> = None;
+    let mut active_path_for_reload: Option<String> = None;
     {
         let entry = settings
             .layout_entries
@@ -657,6 +660,7 @@ fn update_layout_entry(
 
         if is_active {
             active_display_name = Some(preferred_entry_display_name(entry));
+            active_path_for_reload = Some(entry.path.clone());
         }
     }
 
@@ -664,8 +668,9 @@ fn update_layout_entry(
     save_settings(&app, &settings);
 
     if let Some(display_name) = active_display_name {
-        *state.layout_name.lock().unwrap() = Some(display_name.clone());
-        update_window_title(&app, Some(display_name.as_str()));
+        if let Some(path) = active_path_for_reload {
+            let _ = apply_layout_from_path(&app, &state, &path, Some(display_name));
+        }
     }
     let _ = update_tray_menu(&app);
 

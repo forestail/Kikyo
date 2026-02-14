@@ -143,7 +143,7 @@ async function persistLayoutEntryOrder() {
       ordered_ids: orderedIds,
     });
   } catch (e) {
-    statusMsg.innerText = "鬯ｮ・｣陋ｹ繝ｻ・ｽ・ｽ繝ｻ・ｳ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｦ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｳ鬯ｮ・ｫ繝ｻ・ｴ髯ｷ・ｴ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｿ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ鬮ｯ蜈ｷ・ｽ・ｹ郢晢ｽｻ繝ｻ・ｻ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    statusMsg.innerText = "並び替えに失敗しました: " + e;
     await refreshLayoutEntries();
   }
 }
@@ -151,13 +151,14 @@ async function persistLayoutEntryOrder() {
 async function activateLayoutEntry(entryId) {
   if (!entryId) return;
   try {
-    statusMsg.innerText = "Loading...";
+    statusMsg.innerText = "\u8aad\u307f\u8fbc\u307f\u4e2d...";
     const res = await invoke("activate_layout_entry", { id: entryId });
     activeLayoutEntryId = entryId;
-    statusMsg.innerText = "鬯ｯ・ｮ繝ｻ・ｫ郢晢ｽｻ繝ｻ・ｱ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・ｴ鬮ｮ諛ｶ・ｽ・｣郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ: " + res;
+    statusMsg.innerText = "\u914d\u5217\u5b9a\u7fa9\u3092\u8aad\u307f\u8fbc\u307f\u307e\u3057\u305f";
     renderLayoutEntryList();
   } catch (e) {
-    statusMsg.innerText = "鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    console.error("activate_layout_entry error:", e);
+    statusMsg.innerText = "\u30A8\u30E9\u30FC: " + e;
     renderLayoutEntryList();
   }
 }
@@ -171,7 +172,7 @@ async function updateLayoutEntryState(entryId, alias, path) {
       entry.path = path;
     }
   } catch (e) {
-    statusMsg.innerText = "鬯ｮ・ｫ繝ｻ・ｴ髯ｷ・ｴ郢晢ｽｻ繝ｻ・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｴ鬯ｮ・ｫ繝ｻ・ｴ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｰ鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    statusMsg.innerText = "更新に失敗しました: " + e;
     await refreshLayoutEntries();
   }
 }
@@ -185,7 +186,7 @@ async function deleteLayoutEntry(entryId) {
       await activateLayoutEntry(activeLayoutEntryId);
     }
   } catch (e) {
-    statusMsg.innerText = "鬯ｮ・ｯ繝ｻ・ｷ髯ｷ・ｿ繝ｻ・ｰ郢晢ｽｻ繝ｻ・ｼ驕ｶ荵怜・繝ｻ・ｱ郢ｧ蜍､譁舌・繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    statusMsg.innerText = "削除に失敗しました: " + e;
   }
 }
 
@@ -309,7 +310,7 @@ function buildLayoutEntryRow(entry) {
       pathInput.value = selected;
       await updateLayoutEntryState(entry.id, aliasInput.value, pathInput.value);
     } catch (e) {
-      statusMsg.innerText = "鬩幢ｽ｢隴弱・・ｽ・ｼ隴∵腸・ｼ諞ｺﾎ斐・・ｧ郢晢ｽｻ繝ｻ・､鬩幢ｽ｢隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｫ鬯ｯ・ｩ陋ｹ繝ｻ・ｽ・ｽ繝ｻ・ｸ鬮ｫ・ｰ陞｢・ｽ繝ｻ・ｧ繝ｻ・ｭ驍ｵ・ｺ鬯倩ｲｻ・ｽ・ｹ隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｩ鬩幢ｽ｢隴趣ｽ｢繝ｻ・ｽ繝ｻ・ｼ: " + e;
+      statusMsg.innerText = "ファイル選択に失敗しました: " + e;
     }
   });
 
@@ -390,7 +391,7 @@ async function addLayoutEntry() {
       await activateLayoutEntry(created.id);
     }
   } catch (e) {
-    statusMsg.innerText = "鬯ｯ・ｮ繝ｻ・ｴ髫ｰ繝ｻ竏槭・・ｽ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｽ鬯ｮ・ｯ繝ｻ・ｷ髣費ｽｨ陞滂ｽｲ繝ｻ・ｽ繝ｻ・｣郢晢ｽｻ繝ｻ・ｰ鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    statusMsg.innerText = "追加に失敗しました: " + e;
   }
 }
 
@@ -398,7 +399,7 @@ async function toggleEnabled() {
   if (!globalEnabledCb) return;
   const val = globalEnabledCb.checked;
   await invoke("set_enabled", { enabled: val });
-  statusMsg.innerText = val ? "Enabled" : "Disabled";
+  statusMsg.innerText = val ? "\u6709\u52b9" : "\u7121\u52b9";
 }
 
 async function loadProfile() {
@@ -408,7 +409,7 @@ async function loadProfile() {
     currentProfile = profile;
     updateUI(profile);
   } catch (e) {
-    statusMsg.innerText = "鬯ｩ蟷｢・ｽ・｢髫ｴ諠ｹ・ｸ讖ｸ・ｽ・ｹ繝ｻ・ｲ郢晢ｽｻ陷ｿ蜴・ｽｽ・ｺ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｵ閻ｸ繝ｻ・ｼ隲橸ｽｺ・取鱒繝ｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・､鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｫ鬯ｯ・ｮ繝ｻ・ｫ郢晢ｽｻ繝ｻ・ｱ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・ｴ鬮ｮ諛ｶ・ｽ・｣郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ鬯ｩ謳ｾ・ｽ・ｵ郢晢ｽｻ繝ｻ・ｺ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｿ鬯ｩ蟷｢・ｽ・｢郢晢ｽｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    statusMsg.innerText = "設定の読み込みに失敗しました: " + e;
   }
 }
 
@@ -538,7 +539,7 @@ async function saveProfile() {
     try {
       currentProfile = await invoke("get_profile");
     } catch (e) {
-      if (statusMsg) statusMsg.innerText = "鬯ｩ蟷｢・ｽ・｢髫ｴ諠ｹ・ｸ讖ｸ・ｽ・ｹ繝ｻ・ｲ郢晢ｽｻ陷ｿ蜴・ｽｽ・ｺ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｹ髫ｴ蠑ｱ繝ｻ繝ｻ・ｽ繝ｻ・ｼ髫ｴ竏ｵ閻ｸ繝ｻ・ｼ隲橸ｽｺ・取鱒繝ｻ繝ｻ・ｧ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・､鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｫ鬯ｮ・ｯ繝ｻ・ｷ郢晢ｽｻ繝ｻ・ｿ鬯ｯ・ｮ繝ｻ・｢繝ｻ縺､ﾂ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｾ鬮ｯ・ｷ闔ｨ螟ｲ・ｽ・ｽ繝ｻ・ｱ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+      if (statusMsg) statusMsg.innerText = "設定の読み込みに失敗しました。プロファイルを更新できません: " + e;
       return;
     }
   }
@@ -614,9 +615,9 @@ async function saveProfile() {
   try {
     console.log("Saving profile:", currentProfile);
     await invoke("set_profile", { profile: currentProfile });
-    statusMsg.innerText = "Profile saved";
+    statusMsg.innerText = "\u8a2d\u5b9a\u3092\u4fdd\u5b58\u3057\u307e\u3057\u305f";
   } catch (e) {
-    statusMsg.innerText = "鬯ｮ・｣陷ｴ繝ｻ・ｽ・ｽ繝ｻ・ｫ鬮ｫ・ｴ陷ｿ髢・ｾ蜉ｱ繝ｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｭ鬮ｯ蛹ｺ・ｻ繧托ｽｽ・ｽ繝ｻ・･鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+    statusMsg.innerText = "設定の保存に失敗しました: " + e;
   }
 }
 
@@ -798,12 +799,47 @@ function setupSidebar() {
 
 window.addEventListener("DOMContentLoaded", () => {
   // Elements binding
-  statusMsg = document.querySelector("#status-msg");
+  // Floating status toast setup
+  const toastEl = document.createElement("div");
+  toastEl.className = "status-toast";
+  document.body.appendChild(toastEl);
+  let _statusHideTimer = null;
+  let _statusSwapTimer = null;
+  statusMsg = {
+    set innerText(v) {
+      clearTimeout(_statusHideTimer);
+      clearTimeout(_statusSwapTimer);
+      const show = () => {
+        toastEl.textContent = v || "";
+        toastEl.classList.add("is-visible");
+        _statusHideTimer = setTimeout(() => {
+          toastEl.classList.remove("is-visible");
+        }, 3000);
+      };
+      if (toastEl.classList.contains("is-visible")) {
+        toastEl.classList.remove("is-visible");
+        _statusSwapTimer = setTimeout(show, 260);
+      } else {
+        show();
+      }
+    },
+    get innerText() {
+      return toastEl.textContent;
+    }
+  };
 
   layoutEntryListEl = document.querySelector("#layout-entry-list");
   const reloadLayoutBtn = document.querySelector("#reload-layout-btn");
   if (reloadLayoutBtn) {
     reloadLayoutBtn.addEventListener("click", async () => {
+      const checked = document.querySelector('input[name="active-layout-entry"]:checked');
+      if (checked) {
+        const row = checked.closest(".layout-entry-row");
+        if (row && row.dataset.entryId) {
+          await activateLayoutEntry(row.dataset.entryId);
+          return;
+        }
+      }
       if (activeLayoutEntryId) {
         await activateLayoutEntry(activeLayoutEntryId);
       }
@@ -890,7 +926,7 @@ window.addEventListener("DOMContentLoaded", () => {
   window.__TAURI__.event.listen("enabled-state-changed", (event) => {
     const enabled = event.payload;
     if (globalEnabledCb) globalEnabledCb.checked = enabled;
-    statusMsg.innerText = enabled ? "Enabled" : "Disabled";
+    statusMsg.innerText = enabled ? "\u6709\u52b9" : "\u7121\u52b9";
   });
 
   // Autostart init
@@ -910,7 +946,7 @@ async function refreshEnabledState() {
   try {
     const enabled = await invoke("get_enabled");
     globalEnabledCb.checked = enabled;
-    statusMsg.innerText = enabled ? "Enabled" : "Disabled";
+    statusMsg.innerText = enabled ? "\u6709\u52b9" : "\u7121\u52b9";
   } catch (e) {
     console.error(e);
   }
@@ -947,7 +983,7 @@ async function initAutoLaunch() {
       }
     } catch (e) {
       console.error("Autostart toggle failed:", e);
-      statusMsg.innerText = "鬯ｯ・ｮ繝ｻ・｢郢晢ｽｻ繝ｻ・ｾ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｪ鬯ｮ・ｯ繝ｻ・ｷ鬮｢・ｧ繝ｻ・ｴ驛｢譎｢・ｽ・ｻ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｵ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｷ鬯ｮ・ｯ繝ｻ・ｷ鬮｢・ｧ繝ｻ・ｴ驛｢譎｢・ｽ・ｻ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｨ驛｢譎｢・ｽ・ｻ郢晢ｽｻ繝ｻ・ｭ鬯ｮ・ｯ隶厄ｽｸ繝ｻ・ｽ繝ｻ・ｳ鬮ｯ讖ｸ・ｽ・｢郢晢ｽｻ繝ｻ・ｹ鬩搾ｽｵ繝ｻ・ｺ鬯ｯ蛟ｩ・ｲ・ｻ繝ｻ・ｽ繝ｻ・ｹ髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｩ鬯ｩ蟷｢・ｽ・｢髫ｴ雜｣・ｽ・｢郢晢ｽｻ繝ｻ・ｽ郢晢ｽｻ繝ｻ・ｼ: " + e;
+      statusMsg.innerText = "自動起動の切り替えに失敗しました: " + e;
       // Revert
       autoLaunchCb.checked = !autoLaunchCb.checked;
     }
