@@ -543,8 +543,14 @@ impl ChordEngine {
                 // 1. Update state
                 self.state.pressed.remove(&event.key);
                 // Mark t_up in pending
+                let mut found_in_pending = false;
                 if let Some(p) = self.state.pending.iter_mut().find(|p| p.key == event.key) {
                     p.t_up = Some(now);
+                    found_in_pending = true;
+                }
+
+                if !found_in_pending {
+                    self.state.used_modifiers.remove(&event.key);
                 }
 
                 // 2. Check for chord formation
