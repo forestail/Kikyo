@@ -30,3 +30,9 @@ crates/kikyo-ui-tauri/src-tauri/gen/
 *.yab
 *.bnz
 *.kky
+
+# テスト結果
+*.test
+test_*.txt
+stderr.txt
+stdout.txt

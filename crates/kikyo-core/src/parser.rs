@@ -202,9 +202,6 @@ fn parse_token(raw: &str) -> Token {
         return Token::None;
     }
 
-    if let Some(token) = parse_modded_single_token(raw) {
-        return token;
-    }
     // If double-quoted, it was returned as DirectChar above.
     // If single-quoted, it was returned as ImeChar above.
     // Wait, the plan says:
@@ -243,89 +240,140 @@ pub fn parse_key_sequence_expanded(raw: &str) -> Vec<KeyStroke> {
     let mut seq = Vec::new();
     let chars: Vec<char> = raw.chars().collect();
     let mut i = 0;
+
+    let mut current_mods = Modifiers::none();
+
     while i < chars.len() {
         let c = chars[i];
 
-        // 1. Try Kana -> Romaji
-        if let Some(romaji) = crate::romaji_map::kana_to_romaji(c) {
-            for r in romaji.chars() {
-                seq.push(KeyStroke {
-                    key: KeySpec::Char(r),
-                    mods: Modifiers::none(),
-                });
+        // Check for modifiers
+        match c {
+            'S' => {
+                current_mods.shift = true;
+                i += 1;
+                continue;
             }
-            i += 1;
-            continue;
+            'C' => {
+                current_mods.ctrl = true;
+                i += 1;
+                continue;
+            }
+            'A' => {
+                current_mods.alt = true;
+                i += 1;
+                continue;
+            }
+            'W' => {
+                current_mods.win = true;
+                i += 1;
+                continue;
+            }
+            _ => {}
         }
 
-        // 2. Try normalized symbol
-        if let Some(norm) = crate::romaji_map::normalize_symbol(c) {
-            // Special case: `!` might need shift.
-            // But parser returns KeySpec::Char('!').
-            // engine.rs will convert '!' to Shift+1 scancode if needed.
-            // So we just push Char here.
-            seq.push(KeyStroke {
-                key: KeySpec::Char(norm),
-                mods: Modifiers::none(),
-            });
-            i += 1;
-            continue;
+        let (mut strokes, consumed) = parse_unit(&chars[i..]);
+
+        // Apply accumulated modifiers to the first stroke of the sequence
+        if let Some(first) = strokes.first_mut() {
+            first.mods.ctrl |= current_mods.ctrl;
+            first.mods.shift |= current_mods.shift;
+            first.mods.alt |= current_mods.alt;
+            first.mods.win |= current_mods.win;
         }
 
-        // 3. Fallback to existing logic (Machine keys, V-keys, etc.)
-        // Copying existing logic from parse_key_sequence but applied to `c`
+        // Reset modifiers after applying (or discarding if no strokes)
+        current_mods = Modifiers::none();
 
-        if let Some(stroke) = fullwidth_shifted_keystroke(c) {
-            seq.push(stroke);
-            i += 1;
-            continue;
-        }
-        if c == '機' {
-            let mut j = i + 1;
-            let mut digits = String::new();
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                digits.push(chars[j]);
-                j += 1;
-            }
-            if let Ok(num) = digits.parse::<u8>() {
-                if let Some(sc) = function_key_scancode(num) {
-                    seq.push(KeyStroke {
-                        key: KeySpec::Scancode(sc, false),
-                        mods: Modifiers::none(),
-                    });
-                    i = j;
-                    continue;
-                }
-            }
-        } else if c == 'V' {
-            let mut j = i + 1;
-            let mut digits = String::new();
-            while j < chars.len() && chars[j].is_ascii_hexdigit() {
-                digits.push(chars[j]);
-                j += 1;
-            }
-            if !digits.is_empty() {
-                if let Ok(value) = u32::from_str_radix(&digits, 16) {
-                    if value <= 0xFF {
-                        seq.push(KeyStroke {
-                            key: KeySpec::VirtualKey(value as u16),
-                            mods: Modifiers::none(),
-                        });
-                        i = j;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        // Default single char
-        seq.push(KeyStroke {
-            key: parse_single_key_char(c),
-            mods: Modifiers::none(),
-        });
-        i += 1;
+        seq.extend(strokes);
+        i += consumed;
     }
     seq
+}
+
+fn parse_unit(chars: &[char]) -> (Vec<KeyStroke>, usize) {
+    if chars.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let c = chars[0];
+
+    // 1. Try Kana -> Romaji
+    if let Some(romaji) = crate::romaji_map::kana_to_romaji(c) {
+        let mut seq = Vec::new();
+        for r in romaji.chars() {
+            seq.push(KeyStroke {
+                key: KeySpec::Char(r),
+                mods: Modifiers::none(),
+            });
+        }
+        return (seq, 1);
+    }
+
+    // 2. Try normalized symbol
+    if let Some(norm) = crate::romaji_map::normalize_symbol(c) {
+        return (
+            vec![KeyStroke {
+                key: KeySpec::Char(norm),
+                mods: Modifiers::none(),
+            }],
+            1,
+        );
+    }
+
+    // 3. Fallback to existing logic
+    if let Some(stroke) = fullwidth_shifted_keystroke(c) {
+        return (vec![stroke], 1);
+    }
+
+    if c == '機' {
+        let mut j = 1;
+        let mut digits = String::new();
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            digits.push(chars[j]);
+            j += 1;
+        }
+        if let Ok(num) = digits.parse::<u8>() {
+            if let Some(sc) = function_key_scancode(num) {
+                return (
+                    vec![KeyStroke {
+                        key: KeySpec::Scancode(sc, false),
+                        mods: Modifiers::none(),
+                    }],
+                    j,
+                );
+            }
+        }
+        return (Vec::new(), j);
+    } else if c == 'V' {
+        let mut j = 1;
+        let mut digits = String::new();
+        while j < chars.len() && chars[j].is_ascii_hexdigit() {
+            digits.push(chars[j]);
+            j += 1;
+        }
+        if !digits.is_empty() {
+            if let Ok(value) = u32::from_str_radix(&digits, 16) {
+                if value <= 0xFF {
+                    return (
+                        vec![KeyStroke {
+                            key: KeySpec::VirtualKey(value as u16),
+                            mods: Modifiers::none(),
+                        }],
+                        j,
+                    );
+                }
+            }
+        }
+        return (Vec::new(), j);
+    }
+
+    // Default single char
+    (
+        vec![KeyStroke {
+            key: parse_single_key_char(c),
+            mods: Modifiers::none(),
+        }],
+        1,
+    )
 }
 
 fn strip_quotes(raw: &str) -> Option<(char, &str)> {
@@ -397,74 +445,6 @@ fn parse_function_key_swap_line(line: &str) -> Option<(String, String)> {
         return None;
     }
     Some((left, right))
-}
-
-fn parse_modded_single_token(raw: &str) -> Option<Token> {
-    let (mods, rest) = parse_modifiers(raw);
-    if mods.is_empty() || rest.is_empty() {
-        return None;
-    }
-
-    if let Some(key) = parse_key_spec(rest) {
-        return Some(Token::KeySequence(vec![KeyStroke { key, mods }]));
-    }
-
-    None
-}
-
-fn parse_modifiers(raw: &str) -> (Modifiers, &str) {
-    let mut mods = Modifiers::none();
-    let mut idx = 0;
-    let mut iter = raw.char_indices().peekable();
-    while let Some((offset, c)) = iter.next() {
-        let is_mod = matches!(c, 'C' | 'S' | 'A' | 'W');
-        if !is_mod {
-            break;
-        }
-        if iter.peek().is_none() {
-            break;
-        }
-        match c {
-            'C' => mods.ctrl = true,
-            'S' => mods.shift = true,
-            'A' => mods.alt = true,
-            'W' => mods.win = true,
-            _ => {}
-        }
-        idx = offset + c.len_utf8();
-    }
-    (mods, &raw[idx..])
-}
-
-fn parse_key_spec(raw: &str) -> Option<KeySpec> {
-    if raw.is_empty() {
-        return None;
-    }
-
-    if let Some(rest) = raw.strip_prefix('機') {
-        let num: u8 = rest.parse().ok()?;
-        let sc = function_key_scancode(num)?;
-        return Some(KeySpec::Scancode(sc, false));
-    }
-
-    if let Some(rest) = raw.strip_prefix('V') {
-        if rest.is_empty() {
-            return None;
-        }
-        let value = u32::from_str_radix(rest, 16).ok()?;
-        if value <= 0xFF {
-            return Some(KeySpec::VirtualKey(value as u16));
-        }
-        return None;
-    }
-
-    let mut chars = raw.chars();
-    let c = chars.next()?;
-    if chars.next().is_some() {
-        return None;
-    }
-
-    Some(parse_single_key_char(c))
 }
 
 fn parse_single_key_char(c: char) -> KeySpec {
@@ -542,6 +522,7 @@ fn special_key_scancode(c: char) -> Option<(u16, bool)> {
         '終' => Some((0x4F, true)),         // End
         '前' => Some((0x49, true)),         // Page Up
         '次' => Some((0x51, true)),         // Page Down
+        '変' => Some((0x79, false)),        // Convert
         _ => None,
     }
 }
@@ -645,7 +626,8 @@ mod tests {
         );
 
         // Case sensitivity check
-        assert_eq!(parse_token("A"), Token::KeySequence(vec![stroke_char('A')]));
+        // "A" is now treated as Alt modifier, so it produces no keystroke locally if not followed by a key.
+        assert_eq!(parse_token("A"), Token::None);
         assert_eq!(
             parse_token("Ａ"), // Fullwidth A
             Token::KeySequence(vec![stroke_char('A')])
@@ -704,10 +686,16 @@ mod tests {
         );
 
         // Modifiers (single-stroke)
+
+        // Modifiers (single-stroke)
+        // "CA" -> Ctrl + Alt (accumulated modifiers, no key)
+        assert_eq!(parse_token("CA"), Token::None);
+
+        // "Cａ" -> Ctrl + a
         assert_eq!(
-            parse_token("CA"),
+            parse_token("Cａ"),
             Token::KeySequence(vec![KeyStroke {
-                key: KeySpec::Char('A'),
+                key: KeySpec::Char('a'),
                 mods: Modifiers {
                     ctrl: true,
                     shift: false,
@@ -732,6 +720,76 @@ mod tests {
                 mods: Modifiers::none(),
             }])
         );
+    }
+
+    #[test]
+    fn test_parse_token_extended() {
+        // "変" -> Scancode 0x79
+        assert_eq!(
+            parse_token("変"),
+            Token::KeySequence(vec![stroke_scancode(0x79, false)])
+        );
+
+        // "S左" -> Shift + Left
+        assert_eq!(
+            parse_token("S左"),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Scancode(0x4B, true),
+                mods: Modifiers {
+                    shift: true,
+                    ..Modifiers::none()
+                }
+            }])
+        );
+
+        // "S左S左" -> Shift+Left, Shift+Left
+        assert_eq!(
+            parse_token("S左S左"),
+            Token::KeySequence(vec![
+                KeyStroke {
+                    key: KeySpec::Scancode(0x4B, true),
+                    mods: Modifiers {
+                        shift: true,
+                        ..Modifiers::none()
+                    }
+                },
+                KeyStroke {
+                    key: KeySpec::Scancode(0x4B, true),
+                    mods: Modifiers {
+                        shift: true,
+                        ..Modifiers::none()
+                    }
+                }
+            ])
+        );
+
+        // "SCS左" -> Shift+Ctrl+Left
+        assert_eq!(
+            parse_token("SCS左"),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Scancode(0x4B, true),
+                mods: Modifiers {
+                    shift: true,
+                    ctrl: true,
+                    ..Modifiers::none()
+                }
+            }])
+        );
+
+        // "Sａ" -> Shift + a
+        assert_eq!(
+            parse_token("Sａ"), // Fullwidth a -> stroke_char('a')
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('a'),
+                mods: Modifiers {
+                    shift: true,
+                    ..Modifiers::none()
+                }
+            }])
+        );
+
+        // "S" -> Empty (No key following)
+        assert_eq!(parse_token("S"), Token::None);
     }
 
     #[test]
