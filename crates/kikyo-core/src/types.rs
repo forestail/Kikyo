@@ -22,6 +22,12 @@ pub enum InputEvent {
     Unicode(char, bool),
     /// IME Control (true=ON, false=OFF).
     ImeControl(bool),
+    /// Wait until IME status matches the expected value (expected, timeout_ms).
+    WaitUntilImeStatus(bool, u64),
+    /// Delay for a specified duration (ms).
+    Delay(u64),
+    /// Inject a string with robust IME handling (check status -> OFF -> inject -> ON).
+    DirectString(String),
 }
 
 /// Action to be taken by the hook.
@@ -83,6 +89,8 @@ pub enum KeySpec {
     ImeOn,
     /// Turn IME Off (Alphanumeric Input).
     ImeOff,
+    /// Direct string output (IME confirmed).
+    DirectString(String),
 }
 
 /// A single keystroke with optional modifiers.

@@ -202,33 +202,95 @@ fn parse_token(raw: &str) -> Token {
         return Token::None;
     }
 
-    // If double-quoted, it was returned as DirectChar above.
-    // If single-quoted, it was returned as ImeChar above.
-    // Wait, the plan says:
-    // "Double quotes" -> DirectChar (Unicode)
-    // "Single quotes / Bare" -> KeySequence (Expanded)
+    // If double-quoted, it was returned as DirectString.
+    // If single-quoted, it was returned as ImeChar (currently treated as expanded sequence).
 
-    // So we need to modify the strip_quotes block.
-    if let Some((quote, inner)) = strip_quotes(raw) {
-        if quote == '"' {
-            return Token::DirectChar(parse_quoted(inner, quote));
+    // We want to support mixed sequences like "【】"Left.
+    // So we need to parse the string into tokens.
+    // But current logic parses the whole string at once.
+    // Examples: "ni", "'ni'", "\"ni\"", "SLeft", "\"【】\"Left"
+
+    // If it starts with quote, we can try to parse a quoted string first.
+    // But bare keys can also be mixed? e.g. Left"【】" -> Left, DirectString.
+
+    // Let's implement a simple loop to consume valid tokens.
+    let mut seq = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // 1. Check for quoted string
+        if chars[i] == '"' || chars[i] == '\'' {
+            let quote = chars[i];
+            // Find closing quote
+            let mut j = i + 1;
+            let mut escaped = false;
+            let mut close_found = false;
+            while j < chars.len() {
+                if escaped {
+                    escaped = false;
+                } else if chars[j] == '\\' {
+                    escaped = true;
+                } else if chars[j] == quote {
+                    close_found = true;
+                    break;
+                }
+                j += 1;
+            }
+
+            if close_found {
+                let inner: String = chars[i + 1..j].iter().collect();
+                let unquoted = parse_quoted(&inner, quote);
+                if quote == '"' {
+                    seq.push(KeyStroke {
+                        key: KeySpec::DirectString(unquoted),
+                        mods: Modifiers::none(),
+                    });
+                } else {
+                    // Single quote -> Expand as before
+                    let sub_seq = parse_key_sequence_expanded(&unquoted);
+                    seq.extend(sub_seq);
+                }
+                i = j + 1;
+                continue;
+            } else {
+                // Mismatched quote -> fallback to old logic or error?
+                // Old logic: treat as part of sequence if not valid quote block?
+                // For now, let's treat it as part of bare sequence if not closed.
+            }
         }
-        // Single quotes fall through to expansion logic
-        // But we first need to unescape/parse quoted content
-        let unquoted = parse_quoted(inner, quote);
-        let seq = parse_key_sequence_expanded(&unquoted);
-        if seq.is_empty() {
-            return Token::None;
+
+        // 2. Parse as bare key sequence until next quote or end
+        // But wait, "SLeft" is parsed by parse_key_sequence_expanded which handles modifiers like 'S'.
+        // If we have "S\"a\"", 'S' is Modifier, '"a"' is DirectString.
+        // Can we apply Shift to DirectString? No.
+        // So Modifiers should only apply to the next KEY.
+
+        // Let's grab a chunk of chars until a quote is seen.
+        let mut j = i;
+        while j < chars.len() && chars[j] != '"' && chars[j] != '\'' {
+            j += 1;
         }
-        return Token::KeySequence(seq);
+
+        if j > i {
+            let chunk: String = chars[i..j].iter().collect();
+            // This chunk might contain modifiers and keys.
+            let sub_seq = parse_key_sequence_expanded(&chunk);
+            seq.extend(sub_seq);
+            i = j;
+        } else {
+            // j == i. This happens if chars[i] is quote (and not handled by 1).
+            // This implies an unclosed quote or a logic error.
+            // To prevent infinite loop, we MUST advance i.
+            // We can treat the quote as a literal char or just skip it.
+            // Let's treat it as a part of the sequence (literal quote).
+            let chunk: String = chars[i..i + 1].iter().collect();
+            let sub_seq = parse_key_sequence_expanded(&chunk);
+            seq.extend(sub_seq);
+            i += 1;
+        }
     }
 
-    // Bare token -> Expansion logic
-    // Special check for existing logic (function keys starting with '機', etc.)
-    // parse_key_spec handles single char special keys etc.
-    // But parse_key_sequence handles multiple chars.
-
-    let seq = parse_key_sequence_expanded(raw);
     if seq.is_empty() {
         Token::None
     } else {
@@ -374,17 +436,6 @@ fn parse_unit(chars: &[char]) -> (Vec<KeyStroke>, usize) {
         }],
         1,
     )
-}
-
-fn strip_quotes(raw: &str) -> Option<(char, &str)> {
-    let mut chars = raw.chars();
-    let first = chars.next()?;
-    let last = raw.chars().last()?;
-    if (first == '\'' || first == '"') && first == last && raw.len() >= 2 {
-        Some((first, &raw[first.len_utf8()..raw.len() - last.len_utf8()]))
-    } else {
-        None
-    }
 }
 
 fn parse_quoted(raw: &str, quote: char) -> String {
@@ -581,8 +632,14 @@ mod tests {
             Token::KeySequence(vec![stroke_char('a')])
         );
 
-        // "です" -> DirectChar (Unicode)
-        assert_eq!(parse_token("\"です\""), Token::DirectChar("です".into()));
+        // "です" -> DirectString (Unicode)
+        assert_eq!(
+            parse_token("\"です\""),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::DirectString("です".to_string()),
+                mods: Modifiers::none(),
+            }])
+        );
 
         // 'です' -> Expanded to d,e,s,u
         assert_eq!(
@@ -613,7 +670,13 @@ mod tests {
             parse_token("'a\\n'"),
             Token::KeySequence(vec![stroke_char('a'), stroke_scancode(0x1C, false)])
         );
-        assert_eq!(parse_token("\"\\u0041\""), Token::DirectChar("A".into()));
+        assert_eq!(
+            parse_token("\"\\u0041\""),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::DirectString("A".to_string()),
+                mods: Modifiers::none(),
+            }])
+        );
 
         // Full-width conversion
         assert_eq!(
@@ -790,6 +853,67 @@ mod tests {
 
         // "S" -> Empty (No key following)
         assert_eq!(parse_token("S"), Token::None);
+    }
+
+    #[test]
+    fn test_parse_mixed_string_and_keys() {
+        // "【】"左 -> DirectString("【】") + Left
+        assert_eq!(
+            parse_token("\"【】\"左"),
+            Token::KeySequence(vec![
+                KeyStroke {
+                    key: KeySpec::DirectString("【】".to_string()),
+                    mods: Modifiers::none(),
+                },
+                KeyStroke {
+                    key: KeySpec::Scancode(0x4B, true),
+                    mods: Modifiers::none(),
+                }
+            ])
+        );
+
+        // Mixed with modifiers: S"【】" -> Shift + "【】" (Shift ignored for string?)
+        // In current logic: 'S' is parsed in a bare chunk.
+        // If "S" is before quote, it's parsed as bare.
+        // parse_key_sequence_expanded("S") -> Empty (modifiers reset).
+        // Then quote parsed.
+        // So S is effectively ignored if not followed by a key in the same chunk.
+        // This is acceptable or maybe we want "S" to apply to next key AFTER string?
+        // E.g. "S" "text" "Left" -> Shift+Left?
+        // No, current logic resets modifiers after each chunk in parse_key_sequence_expanded.
+        // And my loop in parse_token processes chunks independently.
+        // So "S" in one chunk does NOT affect next chunk.
+
+        // Let's verify "Left" "Right" -> sequence
+        assert_eq!(
+            parse_token("左右"),
+            Token::KeySequence(vec![
+                KeyStroke {
+                    key: KeySpec::Scancode(0x4B, true),
+                    mods: Modifiers::none(),
+                },
+                KeyStroke {
+                    key: KeySpec::Scancode(0x4D, true),
+                    mods: Modifiers::none(),
+                }
+            ])
+        );
+
+        // "Left""Right" (quoted?) -> No, Left and Right are special keys, not strings.
+        // "a" "b" -> a, b.
+        assert_eq!(
+            parse_token("'a''b'"),
+            Token::KeySequence(vec![
+                KeyStroke {
+                    key: KeySpec::Char('a'),
+                    mods: Modifiers::none(),
+                },
+                KeyStroke {
+                    key: KeySpec::Char('b'),
+                    mods: Modifiers::none(),
+                }
+            ])
+        );
     }
 
     #[test]

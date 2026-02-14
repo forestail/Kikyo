@@ -1767,6 +1767,12 @@ fn append_keystroke_events(
             events.push(InputEvent::ImeControl(false));
             return;
         }
+        KeySpec::DirectString(ref s) => {
+            // Hand off the complex IME handling logic to the hook (outside the lock).
+            // This avoids deadlock when calling IME APIs while holding the Engine lock.
+            events.push(InputEvent::DirectString(s.clone()));
+            return;
+        }
     };
 
     if let Some((sc, ext, needs_shift)) = key_events {
@@ -4473,5 +4479,69 @@ xx,xx,xx,xx,xx,4,xx,xx,xx,xx,xx
              If '3' (0x03) was output, F-only shift was used instead of D+F.",
             events2
         );
+    }
+
+    #[test]
+    fn test_mixed_string_and_keys() {
+        let config = "
+[ローマ字シフト無し]
+xx
+xx
+\"test\"b
+";
+        let layout = crate::parser::parse_yab_content(config).expect("Failed to parse config");
+
+        if let Some(sec) = layout.sections.get("ローマ字シフト無し") {
+            println!("Section found. Map keys: {:?}", sec.base_plane.map.keys());
+            let rc = crate::types::Rc::new(2, 0);
+            println!("Looking for (2,0): {:?}", sec.base_plane.map.get(&rc));
+        } else {
+            println!(
+                "Section 'ローマ字シフト無し' NOT found. Available: {:?}",
+                layout.sections.keys()
+            );
+        }
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // 'a' (0x1E) -> "test" then 'b' (0x30)
+        // Down
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        // Up
+        let res = engine.process_key(0x1E, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                // Now we expect a DirectString event, followed by 'b' key events.
+                // The complex IME handling is offloaded to the hook.
+
+                // Expected events:
+                // 1. DirectString("test")
+                // 2. Scancode(0x30, false, false) (b down)
+                // 3. Scancode(0x30, false, true) (b up)
+
+                assert_eq!(evs.len(), 3);
+
+                match &evs[0] {
+                    InputEvent::DirectString(s) => assert_eq!(s, "test"),
+                    _ => panic!("Expected DirectString, got {:?}", evs[0]),
+                }
+
+                match &evs[1] {
+                    InputEvent::Scancode(sc, _, false) => assert_eq!(*sc, 0x30),
+                    _ => panic!("Expected Scancode down, got {:?}", evs[1]),
+                }
+
+                match &evs[2] {
+                    InputEvent::Scancode(sc, _, true) => assert_eq!(*sc, 0x30),
+                    _ => panic!("Expected Scancode up, got {:?}", evs[2]),
+                }
+            }
+            other => panic!("Expected Inject for direct string + key, got {:?}", other),
+        }
     }
 }

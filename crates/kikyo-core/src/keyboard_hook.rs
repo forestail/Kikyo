@@ -13,17 +13,36 @@ use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetLastInputInfo, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, LASTINPUTINFO,
-    VIRTUAL_KEY, VK_CONTROL,
+    GetAsyncKeyState,
+    GetLastInputInfo,
+    SendInput,
+    INPUT,
+    INPUT_0,
+    INPUT_KEYBOARD,
+    KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP,
+    KEYEVENTF_SCANCODE,
+    KEYEVENTF_UNICODE,
+    LASTINPUTINFO,
+    VIRTUAL_KEY,
+    VK_CONTROL,
     // VK_ESCAPE, // Emergency stop is currently disabled.
-    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
-    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    VK_LCONTROL,
+    VK_LMENU,
+    VK_LSHIFT,
+    VK_LWIN,
+    VK_MENU,
+    VK_RCONTROL,
+    VK_RMENU,
+    VK_RSHIFT,
+    VK_RWIN,
+    VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
-    LLKHF_ALTDOWN, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
+    LLKHF_ALTDOWN, MSG, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
 };
 /// Magic number to identify our own injected events.
 const INJECTED_EXTRA_INFO: usize = 0xFFC3C3C3;
@@ -298,6 +317,89 @@ fn process_event(event: HookEvent) {
                         // Ideally we should execute it only once.
                         // Since engine emits it as a single event, we just execute it.
                         crate::ime::set_force_ime_status(open);
+                    }
+                    InputEvent::WaitUntilImeStatus(expected, timeout_ms) => {
+                        let start = monotonic_ms();
+                        loop {
+                            // Check current IME status (using relaxed check to avoid excessive overhead?)
+                            // is_japanese_input_active queries OS.
+                            // If expected is true (ON), we want is_japanese_input_active to be true.
+                            // If expected is false (OFF), we want it to be false.
+
+                            // Note: We might want to pass ImeMode here if needed, but Engine manages it.
+                            // For now, assume Ignore mode behavior (check actual status) or use Auto.
+                            // Let's use ImeMode::Ignore to force check actual OS status without mode override logic.
+                            let current = crate::ime::is_japanese_input_active(
+                                crate::chord_engine::ImeMode::Auto,
+                            );
+                            if current == expected {
+                                break;
+                            }
+
+                            if monotonic_ms() - start >= timeout_ms {
+                                warn!(
+                                    "WaitUntilImeStatus timed out after {}ms (expected: {}, actual: {})",
+                                    timeout_ms, expected, current
+                                );
+                                break;
+                            }
+
+                            // Sleep briefly to yield CPU
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                    InputEvent::Delay(ms) => {
+                        thread::sleep(Duration::from_millis(ms));
+                    }
+                    InputEvent::DirectString(s) => {
+                        // Robust IME handling implemented here to avoid deadlock in Engine.
+                        let ime_active = crate::ime::is_japanese_input_active(
+                            crate::chord_engine::ImeMode::Auto,
+                        );
+
+                        if ime_active {
+                            crate::ime::set_force_ime_status(false);
+                            // Wait for OFF
+                            let start = monotonic_ms();
+                            loop {
+                                if !crate::ime::is_japanese_input_active(
+                                    crate::chord_engine::ImeMode::Auto,
+                                ) {
+                                    break;
+                                }
+                                if monotonic_ms() - start >= 50 {
+                                    warn!("DirectString: Wait for IME OFF timed out");
+                                    break;
+                                }
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                        }
+
+                        for c in s.chars() {
+                            let _ = inject_unicode(c, false);
+                            let _ = inject_unicode(c, true);
+                        }
+
+                        if ime_active {
+                            // Delay to prevent overtaking
+                            thread::sleep(Duration::from_millis(10));
+
+                            crate::ime::set_force_ime_status(true);
+                            // Wait for ON
+                            let start = monotonic_ms();
+                            loop {
+                                if crate::ime::is_japanese_input_active(
+                                    crate::chord_engine::ImeMode::Auto,
+                                ) {
+                                    break;
+                                }
+                                if monotonic_ms() - start >= 50 {
+                                    warn!("DirectString: Wait for IME ON timed out");
+                                    break;
+                                }
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                        }
                     }
                 }
             }
