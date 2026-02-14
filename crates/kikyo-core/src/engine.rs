@@ -3,9 +3,9 @@ use crate::chord_engine::{
     EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
 };
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
-use std::cell::RefCell;
 use crate::JIS_SC_TO_RC;
 use parking_lot::Mutex;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -1119,13 +1119,13 @@ impl Engine {
             } // else {
               //     eprintln!("DEBUG: No RC for target {:?}", target);
               // }
-            // } else {
-            //     eprintln!(
-            //         "DEBUG: Sub-plane NOT found for {}. Available keys: {:?}",
-            //         tag1,
-            //         section.sub_planes.keys()
-            //     );
-            // }
+              // } else {
+              //     eprintln!(
+              //         "DEBUG: Sub-plane NOT found for {}. Available keys: {:?}",
+              //         tag1,
+              //         section.sub_planes.keys()
+              //     );
+              // }
             None
         })
     }
@@ -1167,14 +1167,49 @@ impl Engine {
         }
 
         let deferred_keys: Vec<ScKey> = self.pending_nonshift_for_shift.iter().copied().collect();
-        let has_valid_chord = deferred_keys
-            .into_iter()
-            .filter(|k| self.chord_engine.state.pressed.contains(k))
-            .any(|k| self.deferred_key_can_form_chord_with(k, key, shift, is_japanese));
-        if has_valid_chord {
+        let mut keep_keys = HashSet::new();
+
+        for k in deferred_keys {
+            // If the deferred key is no longer pressed, we can't use it for chords regardless.
+            // (It will be drained/removed at the end if not in keep_keys)
+            if !self.chord_engine.state.pressed.contains(&k) {
+                continue;
+            }
+
+            // 1. Check if [k, key] forms a valid 2-key chord
+            if self.deferred_key_can_form_chord_with(k, key, shift, is_japanese) {
+                keep_keys.insert(k);
+                continue;
+            }
+
+            // 2. Check if [other, k, key] forms a valid 3-key chord using any other pressed key
+            for other in self.chord_engine.state.pressed.iter() {
+                if *other == k {
+                    continue;
+                }
+                // Check if [*other, k, key] forms a valid chord.
+                // resolve_with_modifier handles permutations for 3-key lookups.
+                let (token, _) = self.resolve_with_modifier(&[*other, k, key], shift, is_japanese);
+                if token.is_some() {
+                    keep_keys.insert(k);
+                    break;
+                }
+            }
+        }
+
+        if !keep_keys.is_empty() {
+            // Keep only keys that can form a valid chord.
+            // Remove others.
+            let remove: HashSet<ScKey> = self
+                .pending_nonshift_for_shift
+                .difference(&keep_keys)
+                .copied()
+                .collect();
+            self.remove_keys_from_pending(&remove, true);
             return;
         }
 
+        // If no keys can form a valid chord, release all pending deferred keys.
         let remove: HashSet<ScKey> = self.pending_nonshift_for_shift.drain().collect();
         self.remove_keys_from_pending(&remove, true);
     }
@@ -4341,5 +4376,102 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             _ => panic!("Expected Inject(ImeControl(false)) on Up, got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_3key_continuous_shift_with_non_trigger_target() {
+        // Simulates D+F held, N tapped repeatedly.
+        // D and F are both trigger keys (<d>, <f>, <d><f> sections exist).
+        // N has a mapping in <f> section (similar to 薙刀式 where <f><n> = だ).
+        //
+        // Key codes: d=0x20, f=0x21, n=0x31
+        // n is at bottom row position 5 (0-indexed)
+        //
+        // Note: <f> section is intentionally omitted (or empty) to verify that
+        // D+F+N chord works even when F+N is not defined in <f> section.
+        // Previously, F was released immediately because F+N formed no chord,
+        // breaking the D+F+N chord.
+        let config = "
+[英数シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d,f,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,n,xx,xx,xx,xx,xx
+
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d,f,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,n,xx,xx,xx,xx,xx
+
+<d>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,2,xx,xx,xx,xx,xx
+
+<f>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+
+<d><f>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,4,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.35;
+        engine.set_profile(profile);
+
+        // ==== First chord: D+F+N → should output '4' ====
+        engine.process_key(0x20, false, false, false); // D down
+        std::thread::sleep(Duration::from_millis(5));
+        engine.process_key(0x21, false, false, false); // F down
+        std::thread::sleep(Duration::from_millis(15));
+        engine.process_key(0x31, false, false, false); // N down
+        std::thread::sleep(Duration::from_millis(30));
+        let r1 = engine.process_key(0x31, false, true, false); // N up
+
+        let events1 = match r1 {
+            KeyAction::Inject(evs) => evs,
+            other => panic!("First N(Up): expected Inject, got {:?}", other),
+        };
+        assert!(
+            events1
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x05, _, false))),
+            "First chord: expected '4' (sc=0x05) but got {:?}",
+            events1
+        );
+
+        // ==== Second chord: D+F still held, N tapped again → should also output '4' ====
+        std::thread::sleep(Duration::from_millis(10));
+        engine.process_key(0x31, false, false, false); // N down
+        std::thread::sleep(Duration::from_millis(30));
+        let r2 = engine.process_key(0x31, false, true, false); // N up
+
+        let events2 = match r2 {
+            KeyAction::Inject(evs) => evs,
+            other => panic!("Second N(Up): expected Inject, got {:?}", other),
+        };
+        assert!(
+            events2
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x05, _, false))),
+            "Second chord: expected '4' (sc=0x05) but got {:?}. \
+             If '3' (0x03) was output, F-only shift was used instead of D+F.",
+            events2
+        );
     }
 }

@@ -744,9 +744,33 @@ impl ChordEngine {
                         let p2 = &self.state.pending[idx2];
                         let p3 = &self.state.pending[idx3];
 
-                        let r12 = self.pair_overlap_ratio(p1, p2, now, trigger);
-                        let r23 = self.pair_overlap_ratio(p2, p3, now, trigger);
-                        let r13 = self.pair_overlap_ratio(p1, p3, now, trigger);
+                        // For 3-key chords, if two keys are both pressed (t_up=None),
+                        // their overlap is effectively 100%. We only need at least one
+                        // key in the triple to have been released (t_up=Some) so we can
+                        // evaluate the triple.
+                        let has_any_released =
+                            p1.t_up.is_some() || p2.t_up.is_some() || p3.t_up.is_some();
+                        if !has_any_released {
+                            // All three still held – wait for a release.
+                            break;
+                        }
+
+                        let ratio_or_both_pressed =
+                            |pa: &PendingKey, pb: &PendingKey| -> Option<f64> {
+                                if let Some(r) = self.pair_overlap_ratio(pa, pb, now, trigger) {
+                                    return Some(r);
+                                }
+                                // Both keys still pressed (t_up=None for both) means they
+                                // fully overlap – treat as 100%.
+                                if pa.t_up.is_none() && pb.t_up.is_none() {
+                                    return Some(1.0);
+                                }
+                                None
+                            };
+
+                        let r12 = ratio_or_both_pressed(p1, p2);
+                        let r23 = ratio_or_both_pressed(p2, p3);
+                        let r13 = ratio_or_both_pressed(p1, p3);
 
                         if r12.is_none() || r23.is_none() || r13.is_none() {
                             // Wait for release
@@ -757,13 +781,27 @@ impl ChordEngine {
                             && r13.unwrap() >= self.profile.char_key_overlap_ratio;
 
                         if valid {
-                            output.push(Decision::Chord(vec![p1.key, p2.key, p3.key]));
-                            consumed_indices[idx1] = true;
-                            consumed_indices[idx2] = true;
-                            consumed_indices[idx3] = true;
-                            // Break out of loops to restart or continue?
-                            // With consumed_indices, we can continue but should be careful.
-                            // Break ok loop.
+                            let k1 = p1.key;
+                            let k2 = p2.key;
+                            let k3 = p3.key;
+                            output.push(Decision::Chord(vec![k1, k2, k3]));
+
+                            // Continuous shift keep logic (same as 2-key pair):
+                            // Modifier keys that are continuous and still pressed
+                            // should remain in pending for the next chord.
+                            for &(idx, k) in &[(idx1, k1), (idx2, k2), (idx3, k3)] {
+                                let kind = self.modifier_kind(k);
+                                if kind.is_modifier() {
+                                    self.state.used_modifiers.insert(k);
+                                }
+                                let continuous = self.modifier_is_continuous(kind);
+                                let keep = kind.is_modifier()
+                                    && continuous
+                                    && self.state.pressed.contains(&k);
+                                if !keep {
+                                    consumed_indices[idx] = true;
+                                }
+                            }
                             break;
                         }
                     }
@@ -775,6 +813,34 @@ impl ChordEngine {
                     continue;
                 }
             }
+        }
+
+        // Immediately apply consumed_indices from 3-key chord detection.
+        // The 2-key pair loop below may `return output` early (e.g. when
+        // allow_three_key_chord is set and a ratio is None), which would
+        // skip the final pending-cleanup code. By flushing consumed keys
+        // here, we ensure that keys consumed in a 3-key chord are always
+        // removed from pending before we proceed.
+        let has_3key_consumed = consumed_indices.iter().any(|v| *v);
+        if has_3key_consumed {
+            let old_pending = std::mem::take(&mut self.state.pending);
+            let mut new_pending = Vec::with_capacity(old_pending.len());
+            for (i, p) in old_pending.into_iter().enumerate() {
+                if consumed_indices[i] {
+                    if !self.state.pressed.contains(&p.key) {
+                        self.state.down_ts.remove(&p.key);
+                    }
+                    continue;
+                }
+                new_pending.push(p);
+            }
+            self.state.pending = new_pending;
+            // Reset indices after shrinking pending
+            let pending_len = self.state.pending.len();
+            consumed_indices = vec![false; pending_len];
+            flushed_indices = vec![false; pending_len];
+            ordered_indices = (0..pending_len).collect();
+            ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
         }
 
         for oi in 0..ordered_indices.len() {
@@ -845,10 +911,9 @@ impl ChordEngine {
                     if has_later_pending
                         && p1.t_up.is_some()
                         && p2.t_up.is_some()
-                        && Self::pair_overlap_duration(p1, p2)
-                            .is_some_and(|dur| {
-                                dur < Duration::from_millis(Self::ROLLOVER_CHAIN_GUARD_OVERLAP_MS)
-                            })
+                        && Self::pair_overlap_duration(p1, p2).is_some_and(|dur| {
+                            dur < Duration::from_millis(Self::ROLLOVER_CHAIN_GUARD_OVERLAP_MS)
+                        })
                     {
                         flushed_indices[idx1] = true;
 
@@ -1608,15 +1673,9 @@ mod tests {
         let mut profile = Profile::default();
         profile.char_key_continuous = false;
         profile.char_key_overlap_ratio = 0.35;
-        profile
-            .trigger_keys
-            .insert(k_k, "<k>".to_string());
-        profile
-            .trigger_keys
-            .insert(k_f, "<f>".to_string());
-        profile
-            .trigger_keys
-            .insert(k_s, "<s>".to_string());
+        profile.trigger_keys.insert(k_k, "<k>".to_string());
+        profile.trigger_keys.insert(k_f, "<f>".to_string());
+        profile.trigger_keys.insert(k_s, "<s>".to_string());
 
         let mut engine = ChordEngine::new(profile);
 
@@ -1630,7 +1689,11 @@ mod tests {
             .on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(5)))
             .is_empty());
         assert!(engine
-            .on_event(make_event(k_s, KeyEdge::Down, t0 + Duration::from_millis(5)))
+            .on_event(make_event(
+                k_s,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(5)
+            ))
             .is_empty());
 
         // Without rollover-chain guard this became Chord(K,F).
@@ -1782,5 +1845,173 @@ mod tests {
             t0 + Duration::from_millis(60),
         ));
         assert_eq!(res, vec![Decision::Chord(vec![thumb, k_b])]);
+    }
+
+    fn three_key_continuous_profile(threshold: f64, modifiers: &[ScKey]) -> Profile {
+        let mut profile = Profile::default();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = threshold;
+        profile.max_chord_size = 3;
+        for key in modifiers {
+            profile
+                .trigger_keys
+                .insert(*key, format!("<{:02X}>", key.sc));
+        }
+        profile
+    }
+
+    fn assert_single_three_key_chord(res: &[Decision], k1: ScKey, k2: ScKey, k3: ScKey) {
+        assert_eq!(res.len(), 1, "Expected single decision, got {:?}", res);
+        match &res[0] {
+            Decision::Chord(keys) => {
+                assert_eq!(keys.len(), 3, "Expected 3-key chord, got {:?}", keys);
+                assert!(
+                    keys.contains(&k1) && keys.contains(&k2) && keys.contains(&k3),
+                    "Expected keys {:?}, {:?}, {:?} but got {:?}",
+                    k1,
+                    k2,
+                    k3,
+                    keys
+                );
+            }
+            _ => panic!(
+                "Expected Chord({:?}, {:?}, {:?}), got {:?}",
+                k1, k2, k3, res
+            ),
+        }
+    }
+
+    #[test]
+    fn test_three_key_chord_both_pressed_plus_released() {
+        // D(Down) -> F(Down) -> J(Down) -> J(Up)
+        // D and F are held, J is tapped. Should produce Chord(D, F, J).
+        let t0 = Instant::now();
+        let k_d = make_key(0x20); // D
+        let k_f = make_key(0x21); // F
+        let k_j = make_key(0x24); // J
+
+        let mut engine = ChordEngine::new(three_key_continuous_profile(0.35, &[k_d, k_f]));
+
+        assert!(engine
+            .on_event(make_event(k_d, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_f,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(5)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_j,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(20)
+            ))
+            .is_empty());
+
+        let res = engine.on_event(make_event(k_j, KeyEdge::Up, t0 + Duration::from_millis(50)));
+        assert_single_three_key_chord(&res, k_d, k_f, k_j);
+    }
+
+    #[test]
+    fn test_three_key_chord_continuous_shift() {
+        // D(Down) -> F(Down) -> J(Down) -> J(Up) -> K(Down) -> K(Up)
+        // D and F are held throughout. Should produce:
+        // 1. Chord(D, F, J) on J(Up)
+        // 2. Chord(D, F, K) on K(Up)
+        let t0 = Instant::now();
+        let k_d = make_key(0x20); // D
+        let k_f = make_key(0x21); // F
+        let k_j = make_key(0x24); // J
+        let k_k = make_key(0x25); // K
+
+        let mut engine = ChordEngine::new(three_key_continuous_profile(0.35, &[k_d, k_f]));
+
+        // D and F held down
+        assert!(engine
+            .on_event(make_event(k_d, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_f,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(5)
+            ))
+            .is_empty());
+
+        // J tap
+        assert!(engine
+            .on_event(make_event(
+                k_j,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(20)
+            ))
+            .is_empty());
+        let res = engine.on_event(make_event(k_j, KeyEdge::Up, t0 + Duration::from_millis(50)));
+        assert_single_three_key_chord(&res, k_d, k_f, k_j);
+
+        // K tap - should still form 3-key chord with D and F
+        assert!(engine
+            .on_event(make_event(
+                k_k,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(60),
+            ))
+            .is_empty());
+        let res = engine.on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(90)));
+        assert_single_three_key_chord(&res, k_d, k_f, k_k);
+    }
+
+    #[test]
+    fn test_three_key_chord_continuous_shift_multiple() {
+        // D(Down) -> F(Down) -> J tap -> K tap -> L tap
+        // All should produce 3-key chords with D and F
+        let t0 = Instant::now();
+        let k_d = make_key(0x20);
+        let k_f = make_key(0x21);
+        let k_j = make_key(0x24);
+        let k_k = make_key(0x25);
+        let k_l = make_key(0x26);
+
+        let mut engine = ChordEngine::new(three_key_continuous_profile(0.35, &[k_d, k_f]));
+
+        engine.on_event(make_event(k_d, KeyEdge::Down, t0));
+        engine.on_event(make_event(
+            k_f,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(5),
+        ));
+
+        // J tap
+        engine.on_event(make_event(
+            k_j,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(20),
+        ));
+        let res = engine.on_event(make_event(k_j, KeyEdge::Up, t0 + Duration::from_millis(50)));
+        assert_single_three_key_chord(&res, k_d, k_f, k_j);
+
+        // K tap
+        engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(60),
+        ));
+        let res = engine.on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(90)));
+        assert_single_three_key_chord(&res, k_d, k_f, k_k);
+
+        // L tap
+        engine.on_event(make_event(
+            k_l,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(100),
+        ));
+        let res = engine.on_event(make_event(
+            k_l,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(130),
+        ));
+        assert_single_three_key_chord(&res, k_d, k_f, k_l);
     }
 }

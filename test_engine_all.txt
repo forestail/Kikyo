@@ -1,0 +1,81 @@
+﻿cargo :     Finished `test` profile [unoptimized + 
+debuginfo] target(s) in 0.14s
+発生場所 行:1 文字:1
++ cargo test --lib engine::tests -- --nocapture 2>&
+1 | Out-File -FilePa ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~
+    + CategoryInfo          : NotSpecified: (    F 
+   inished `t...get(s) in 0.14s:String) [], Remot  
+  eException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+     Running unittests src\lib.rs (D:\Study\Kikyo\t
+arget\debug\deps\kikyo_core-928802e17a5427cc.exe)
+
+running 62 tests
+test chord_engine::tests::test_basic_chord_nested_overlap ... ok
+test chord_engine::tests::test_char_continuous_case1_ab_then_ac ... ok
+test chord_engine::tests::test_char_continuous_case2_rollover_ab_then_ac ... ok
+test chord_engine::tests::test_char_continuous_case3_a_up_before_c_up_ratio_pass ... ok
+test chord_engine::tests::test_char_continuous_case4_ab_fail_then_a_tap_and_bc ... ok
+test chord_engine::tests::test_chord_long_delay ... ok
+test chord_engine::tests::test_ratio_chord_fail ... ok
+test chord_engine::tests::test_ratio_chord_pass ... ok
+test chord_engine::tests::test_repress_same_key_flushes_previous_unresolved_group ... ok
+test chord_engine::tests::test_short_completed_pair_is_not_chorded_when_later_key_is_pending ... ok
+test chord_engine::tests::test_three_key_chord_both_pressed_plus_released ... ok
+test engine::tests::test_chord_logic ... ok
+test chord_engine::tests::test_three_key_chord_continuous_shift ... ok
+test chord_engine::tests::test_char_continuous_case4_b_up_before_c_up_ratio_fail_for_bc ... ok
+test chord_engine::tests::test_thumb_prefix_shift_single_press_applies_every_time ... ok
+test chord_engine::tests::test_char_continuous_case3_a_up_before_c_up_ratio_fail ... ok
+test engine::tests::test_continuous_shift_keeps_non_modifier_even_if_trigger_key ... ok
+test engine::tests::test_char_key_continuous_off ... ok
+test engine::tests::test_char_key_continuous_on ... ok
+test engine::tests::test_chord_logic_fallback ... ok
+test chord_engine::tests::test_ratio_sequential ... ok
+test engine::tests::test_continuous_shift_case4_outputs_ab_then_bc_with_non_trigger_c ... ok
+test chord_engine::tests::test_three_key_chord_continuous_shift_multiple ... ok
+test engine::tests::test_chord_logic_simple_chars ... ok
+test chord_engine::tests::test_char_continuous_case4_ab_judged_on_third_down_then_bc ... ok
+test engine::tests::test_char_to_scancode ... ok
+test chord_engine::tests::test_noncontinuous_rollover_flushes_released_key_before_later_chord ... ok
+test engine::tests::test_continuous_shift_undefined_rollover_emits_only_later_key ... ok
+test engine::tests::test_continuous_shift_undefined_rollover_non_modifier_later_key ... ok
+test engine::tests::test_continuous_shift_undefined_rollover_when_older_released_first ... ok
+test engine::tests::test_extended_thumb_prefix_shift_via_function_swap_uses_extended_section_without_base_section ... ok
+test engine::tests::test_extended_thumb_shift_section_2 ... ok
+test engine::tests::test_function_key_swap_remaps_passthrough_key ... ok
+test engine::tests::test_extended_thumb_shift_section_1 ... ok
+test engine::tests::test_function_key_swap_virtual_extension_can_drive_extended_thumb_shift_1 ... ok
+test engine::tests::test_function_key_swap_virtual_extension_without_binding_is_blocked ... ok
+test engine::tests::test_function_key_swap_virtual_extension_can_drive_thumb_shift ... ok
+test engine::tests::test_ime_control_keys ... ok
+test engine::tests::test_load_layout_sets_max_chord_size_to_two_without_double_modifier_tag ... ok
+test engine::tests::test_ime_section_switching ... ok
+test engine::tests::test_missing_section_fallback ... ok
+test engine::tests::test_load_layout_sets_max_chord_size_to_three_with_double_modifier_tag ... ok
+test engine::tests::test_needs_alt_handling_for_function_key_swap_source ... ok
+test engine::tests::test_repeat_assigned_key_disabled_allows_release_output ... ok
+test engine::tests::test_repeat_assigned_key_emits_repeat_and_suppresses_release ... ok
+test engine::tests::test_repeat_start_uses_chord_definition ... ok
+test engine::tests::test_shift_rollover_chord_fallback_preserves_shift ... ok
+test engine::tests::test_nonshift_continues_only_for_next_shift ... ok
+test engine::tests::test_space_rollover_flushes_previous_key ... ok
+test engine::tests::test_shifted_layout ... ok
+test engine::tests::test_suspend_key_persists_when_disabled ... ok
+test engine::tests::test_space_rollover_preserves_chord ... ok
+test engine::tests::test_undefined_enter_pass ... ok
+test engine::tests::test_thumb_shift_filtering ... ok
+test engine::tests::test_unicode_fallback ... ok
+test engine::tests::test_undefined_key_passthrough ... ok
+test engine::tests::test_thumb_shift_switching ... ok
+test engine::tests::test_set_profile_preserves_targets ... ok
+test engine::tests::test_continuous_shift_sequential_rollover_does_not_leak_old_modifier_tap ... ok
+test engine::tests::test_3key_continuous_shift_with_non_trigger_target ... ok
+test engine::tests::test_3key_chord_resolution ... ok
+test engine::tests::test_mixed_2key_and_3key_definitions ... ok
+
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.73s
+

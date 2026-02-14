@@ -1,0 +1,38 @@
+﻿cargo :    Compiling kikyo-core v0.1.0 (D:\Study\Ki
+kyo\crates\kikyo-core)
+発生場所 行:1 文字:1
++ cargo test --lib engine::tests::test_3key_continu
+ous_shift_with_non_t ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Co 
+   mpiling ki...tes\kikyo-core):String) [], Remot  
+  eException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Finished `test` profile [unoptimized + debuginf
+o] target(s) in 0.83s
+     Running unittests src\lib.rs (D:\Study\Kikyo\t
+arget\debug\deps\kikyo_core-928802e17a5427cc.exe)
+
+running 1 test
+
+thread 'engine::tests::test_3key_continuous_shift_w
+ith_non_trigger_target' (41284) panicked at crates\
+kikyo-core\src\engine.rs:4428:9:
+Second chord: expected '4' (sc=0x05) but got [Scanc
+ode(3, false, false), Scancode(3, false, true)]. If
+ '3' (0x03) was output, F-only shift was used inste
+ad of D+F.
+note: run with `RUST_BACKTRACE=1` environment varia
+ble to display a backtrace
+test engine::tests::test_3key_continuous_shift_with_non_trigger_target ... FAILED
+
+failures:
+
+failures:
+    engine::tests::test_3key_continuous_shift_with_non_trigger_target
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 70 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `--lib`
