@@ -29,3 +29,4 @@ crates/kikyo-ui-tauri/src-tauri/gen/
 # 配列定義ファイル
 *.yab
 *.bnz
+*.kky
