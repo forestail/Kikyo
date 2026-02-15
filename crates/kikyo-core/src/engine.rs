@@ -1,6 +1,6 @@
 use crate::chord_engine::{
-    ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile, EXTENDED_KEY_1_SC,
-    EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
+    ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile, ThumbShiftSinglePress,
+    EXTENDED_KEY_1_SC, EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
 };
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use crate::JIS_SC_TO_RC;
@@ -379,15 +379,7 @@ impl Engine {
 
         // Check IME state
         let is_japanese = crate::ime::is_japanese_input_active(self.chord_engine.profile.ime_mode);
-        // Note: previous logic had early return if !ime_on.
-        // Now if !ime_on (meaning Not Japanese Input), we use is_japanese=false -> [英数...] sections.
-        // However, if IME is effectively disabled/closed, logic is similar to "英数" mode.
-        // But we must also ensure we don't block keys if we shouldn't hook?
-        // Requirement says "relevant definition ... -> hook". If "definition missing -> no hook".
-        // So checking for section existence in resolve() handles the "no hook" case.
-        // But existing ime_on check also handled "Don't run ANY logic if IME off".
-        // The new requirement implies we DO run logic even if IME off, specifically for [英数...] sections.
-        // So we remove the early return.
+        // ...
 
         if self.layout.is_none() {
             return KeyAction::Pass;
@@ -1406,6 +1398,55 @@ impl Engine {
         } else {
             self.compute_repeat_plan(key, now)
         };
+
+        // Check if the repeating key is a thumb key and handle specifically
+        let thumb_config = {
+            let p = &self.chord_engine.profile;
+            if p.thumb_left.key.to_sckey() == Some(key) {
+                Some(&p.thumb_left)
+            } else if p.thumb_right.key.to_sckey() == Some(key) {
+                Some(&p.thumb_right)
+            } else if p.extended_thumb1.key.to_sckey() == Some(key) {
+                Some(&p.extended_thumb1)
+            } else if p.extended_thumb2.key.to_sckey() == Some(key) {
+                Some(&p.extended_thumb2)
+            } else {
+                None
+            }
+        };
+
+        if let Some(config) = thumb_config {
+            if !config.repeat {
+                return KeyAction::Block;
+            }
+            match config.single_press {
+                ThumbShiftSinglePress::SpaceKey => {
+                    if consume_pending {
+                        self.consume_pending_for_repeat(&keys);
+                    }
+                    self.repeat_plans.entry(key).or_insert(keys);
+                    return KeyAction::Inject(vec![
+                        InputEvent::Scancode(0x39, false, false),
+                        InputEvent::Scancode(0x39, false, true),
+                    ]);
+                }
+                ThumbShiftSinglePress::Enable => {
+                    // Force repeat of the key itself
+                    if consume_pending {
+                        self.consume_pending_for_repeat(&keys);
+                    }
+                    self.repeat_plans.entry(key).or_insert(keys);
+                    return KeyAction::Inject(vec![
+                        InputEvent::Scancode(key.sc, key.ext, false),
+                        InputEvent::Scancode(key.sc, key.ext, true),
+                    ]);
+                }
+                _ => {
+                    // None, PrefixShift -> Do not repeat
+                    return KeyAction::Block;
+                }
+            }
+        }
 
         let token = self.resolve(&keys, shift, is_japanese);
         let allow_repeat = self.repeat_allowed_for_token(token.as_ref());

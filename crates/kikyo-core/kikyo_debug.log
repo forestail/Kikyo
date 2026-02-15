@@ -1,0 +1,10 @@
+DEBUG: process_key ENTRY sc=39 ext=false up=false
+DEBUG: process_key sc=39 up=false repeat=false
+DEBUG: on_event Down key=ScKey { sc: 57, ext: false } is_mod=true
+DEBUG: on_event Inserted pressed: ScKey { sc: 57, ext: false } len=1
+DEBUG: process_key ENTRY sc=39 ext=false up=false
+DEBUG: process_key sc=39 up=false repeat=true
+DEBUG: process_key ENTRY sc=39 ext=false up=false
+DEBUG: process_key sc=39 up=false repeat=true
+DEBUG: process_key ENTRY sc=39 ext=false up=true
+DEBUG: process_key sc=39 up=true repeat=true
