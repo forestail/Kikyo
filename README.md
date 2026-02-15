@@ -1,42 +1,33 @@
-# Kikyo (桔梗)
+﻿# Kikyo
 
-Windows 向けのキーボード配列エミュレータです。  
-`Tauri v2 + Rust` で実装されており、`.yab` / `.bnz` レイアウトを読み込んでキー入力を変換します。
+Windows 向けのキーボード入力変換アプリです。  
+`Tauri v2 + Rust` で実装されており、レイアウトファイル（`.kky` / `.yab` / `.bnz`）を読み込んで入力を変換します。
 
-## 現在の実装状況（2026-02 時点）
+## 現在の実装状態（2026-02-15 時点）
 
-- 配列読み込み
-  - `.yab` / `.bnz` ファイル選択と読み込み（GUI）
-  - レイアウト名の取得とトレイ/ウィンドウタイトル反映
-  - `UTF-8` / `BOM付き` / `Shift_JIS` のデコードに対応
+- レイアウト読込
+  - `.kky` / `.yab` / `.bnz` を GUI から選択して読み込み可能
+  - UTF-8 / BOM 付き / Shift_JIS の自動判定デコード対応
+  - 複数レイアウトを登録・並べ替え・切替可能（設定画面 + トレイ）
 - 入力エンジン
-  - 親指シフト（左/右）＋拡張親指シフト（1/2）
-  - 文字キー同時打鍵（Chord）判定
-  - 連続シフト（ロールオーバー）と重なり率しきい値調整
-  - 単独打鍵動作（無効 / 有効 / 前置シフト / Space）
-  - キーリピート制御（割り当てあり/なし、親指キー側）
-- レイアウト機能
-  - サブプレーン `<...>` による修飾打鍵
-  - `[機能キー]` セクションによるキー差し替え
-  - 仮想拡張キー `拡張1..4`（`Extended1..4`）を入力元キーとして利用可能
-- 動作制御
-  - IMEモード切替（`Auto` / `Tsf` / `Imm` / `Ignore`）
-  - Suspendキーで有効/無効トグル（`ScrollLock`, `Pause`, `Insert`, `RightShift`, `RightControl`, `RightAlt`）
-  <!-- - 緊急停止 `Ctrl + Alt + Esc` -->
-- デスクトップアプリ機能
-  - タスクトレイ常駐（表示・再読み込み・有効切替・終了）
-  - ウィンドウを閉じても終了せず、トレイへ格納
-  - シングルインスタンス（多重起動時は既存ウィンドウを前面化）
-  - Windows ログオン時自動起動（UIからON/OFF）
-  - 設定保存（`settings.json`）
+  - 親指シフト（左/右）と拡張親指（1/2）
+  - 親指シフト / 文字キー連続シフト判定
+  - 2キー同時打鍵 / 3キー同時打鍵判定
+  - 機能キー入替（`[機能キー]` セクション）
+  - IME 判定モード（`Auto` / `Tsf` / `Imm` / `Ignore`）
+- アプリ運用
+  - 常駐トレイ（有効/無効切替、レイアウト切替、再読込、終了）
+  - ウィンドウを閉じても終了せずトレイへ格納
+  - Windows 自動起動トグル
+  - 単一起動（2重起動時は既存ウィンドウを前面化）
 
-## 必要環境
+## 動作要件
 
 - Windows 10/11
-- Rust（Cargo）
+- Rust（cargo）
 - Node.js / npm
 
-## 起動方法（開発）
+## 開発実行
 
 ```bash
 cd crates/kikyo-ui-tauri
@@ -44,16 +35,12 @@ npm install
 npm run tauri dev
 ```
 
-## ビルド（リリース）
+## ビルド
 
 ```bash
 cd crates/kikyo-ui-tauri
 npm run tauri build
 ```
-
-主な生成物:
-
-- `crates/kikyo-ui-tauri/src-tauri/target/release/kikyo-ui-tauri.exe`
 
 ## テスト
 
@@ -61,34 +48,35 @@ npm run tauri build
 cargo test -p kikyo-core
 ```
 
-## 使い方（最短）
+## 設定ファイル
 
-1. 起動後、設定画面で配列ファイル（`.yab` / `.bnz`）を読み込む
-2. 必要に応じて親指シフト・同時打鍵・IMEモード・Suspendキーを調整
-3. 画面上部トグルまたはトレイメニューで有効化
-4. 設定画面を閉じてもバックグラウンドで動作（終了はトレイメニューから）
+- アプリ設定は `settings.json` に保存されます（Tauri の app config dir）。
+- 主な保存項目:
+  - レイアウト一覧（`layout_entries`）
+  - 現在のアクティブレイアウト（`active_layout_id`）
+  - プロファイル（`profile`）
+  - 有効/無効状態（`enabled`）
+- 旧キー `last_yab_path` は起動時に `last_layout_path` へ移行されます。
 
-## 設定保存
+## レイアウト仕様（要点）
 
-アプリは以下を `settings.json` に保存します。
+- セクション: `[セクション名]`
+- サブプレーン: `<q>`, `<q><w>` のようなタグ
+- セル値:
+  - `xx` / `無` / 空: 未定義
+  - 通常文字列: キー列として展開
+  - `'...'`: キー列展開（かな→ローマ字変換など）
+  - `"..."`: 直接文字列出力
+  - `機10`: F10 など
+  - `V1B`: 仮想キー（16進）
+- 機能キー入替:
+  - `[機能キー]` セクションに `元キー,先キー` を列挙
 
-- 最後に読み込んだレイアウトファイルパス
-- 入力プロファイル（親指シフト・同時打鍵・IMEモード・Suspendキー等）
+詳細は `chord_specs.md` を参照してください。
 
 ## ワークスペース構成
 
-- `crates/kikyo-core`: 入力エンジン・フック・IME判定・レイアウトパーサ
-- `crates/kikyo-ui-tauri`: Tauri UI（フロントエンド + バックエンド）
+- `crates/kikyo-core`: 入力エンジン、フック、IME、パーサ
+- `crates/kikyo-ui-tauri`: 設定 UI / トレイ / 永続化 / Tauri 統合
+- `layout`: サンプル配列ファイル
 
-<!--
-## 緊急停止
-
-万が一制御不能になった場合は次で即時終了できます。
-
-- `Ctrl + Alt + Esc`
--->
-
-## 連絡先
-
-- X (Twitter): [https://x.com/SurikireOfGokou](https://x.com/SurikireOfGokou)
-- Email: [forestailjp@gmail.com](mailto:forestailjp@gmail.com)

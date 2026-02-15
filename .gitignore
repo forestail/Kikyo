@@ -30,6 +30,7 @@ crates/kikyo-ui-tauri/src-tauri/gen/
 *.yab
 *.bnz
 *.kky
+*.zip
 
 # テスト結果
 *.test

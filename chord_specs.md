@@ -1,105 +1,144 @@
-# 現状の同時打鍵仕様まとめ
+﻿# 打鍵判定 仕様
 
-現在のコード実装（`chord_engine.rs`）に基づく同時打鍵および親指シフトの判定仕様は以下の通りです。
+## 1. 基本モデル
 
-## 1. 基本アーキテクチャ
+- 入力は `KeyEvent { key, edge(Down/Up), injected, t }`
+- 内部状態:
+  - `pressed`: 現在押下中キー
+  - `pending`: 未確定キー列（`t_down`, `t_up`, `used`）
+  - `used_modifiers`: 和音で消費した修飾キー
+  - `prefix_pending`: `PrefixShift` 用のワンショット修飾キー
+- 判定出力（`Decision`）:
+  - `Passthrough`
+  - `KeyTap`
+  - `Chord(Vec<ScKey>)`
+  - `LatchOn` / `LatchOff`（型はあるが現状ほぼ未使用）
 
-`ChordEngine` はキーイベント（Down/Up）を時系列で監視し、`Pending` バッファに一時保存して判定を行います。
-判定結果として `Decision` (Passthrough, KeyTap, Chord, LatchOn/Off) を出力します。
+## 2. 対象キー判定
 
-### キーの状態管理
-- **Pressed**: 現在物理的に押されているキーのセット。
-- **Pending**: 判定待ちのキーイベント（押下時刻 `t_down`、離上時刻 `t_up` を保持）。
-- **UsedModifiers**: 同時打鍵（またはシフト）の一部として消費されたモディファイアキーを追跡（単独打鍵判定の抑制に使用）。
+- `profile.target_keys` が `Some` の場合、対象外キーは即 `Passthrough`
+- `target_keys` はレイアウト読込時に自動再構築
+  - 定義済みセル（base/sub plane）の RC から逆引き
+  - トリガータグ `<...>` に含まれるキー
+  - 親指キー（左/右/拡張1/拡張2）
 
-## 2. 判定ロジック
+## 3. 同時打鍵判定の重なり率
 
-### 判定のトリガー
-1. **キー押下 (Down)**:
-   - `Pending` リストに追加。
-   - 既存の `Pending` キーとのペア判定を実行（Check Chords）。
-2. **キー離上 (Up)**:
-   - `Pending` 内の該当キーに `t_up` を記録。
-   - ペア判定を実行（Check Chords）。
-   - 単独で残ったキー（Lonely Tap）のフラッシュ処理。
+2キー判定の基本式:
 
-### 同時打鍵成立条件
+`ratio = overlap_duration / second_key_duration`
 
-2つのキー（Key A, Key B）が以下の条件を満たす場合、同時打鍵として認定されます。
+- `overlap_duration`: 2キーが同時押下だった時間
+- `second_key_duration`: 後から押されたキーの押下時間
+- 閾値: `profile.char_key_overlap_ratio`（既定 0.35）
 
-#### A. 重なり割合 (Overlap Ratio) チェック
-後から押されたキー（Key B）の押下時間に対し、2つのキーが同時に押されていた時間の割合で判定します。
+注意:
 
-**計算式**:
-```
-Ratio = (Overlap Duration) / (Key B Duration)
-```
-- **Overlap Duration**: 両方のキーが押されていた期間。
-- **Key B Duration**: Key B が押されてから離されるまでの期間（離されていない場合は「現在時刻 - Key B Down」）。
+- `profile.thumb_shift_overlap_ratio` は現行実装では判定に使われません
+  - 親指和音にも実際には `char_key_overlap_ratio` が使われます
 
-**判定**:
-`Ratio >= Threshold (設定値)` ならば **同時打鍵**。
+## 4. 2キー同時
 
-#### B. 特例ロジック
+- `pending` を `t_down` 順に走査
+- `ratio >= char_key_overlap_ratio` で和音成立
+- 成立時:
+  - `Decision::Chord([k1, k2])`
+  - 修飾キーは `used_modifiers` に記録
+  - `continuous=true` かつ押下中の修飾キーは pending に残す（`used=true`）
+- 不成立時:
+  - 古い側キーを `KeyTap` として先に確定（順序維持）
 
-1. **親指シフト・連続シフト (Immediate Continuous Modifier)**
-   - 条件:
-     - 1打目(A)は通常キー、2打目(B)がモディファイアキー（かつ連続シフト有効）。
-     - またはその逆。
-   - 挙動:
-     - モディファイア側が離されるのを待たず、キーAが離された時点（または即時）で判定を行う場合があります。
+## 5. 3キー同時
 
-2. **文字キー同時打鍵の連続判定 (Char Key Continuous / Rollover)**
-   - 条件: `char_key_continuous` が有効かつ、文字キー同士のペアである場合。
-   - 挙動:
-     - 3つ目のキー(C)が押されたタイミングで、確定していないAとBの判定を強制的に行うことがあります（ロールオーバー対策）。
+- 有効条件: `profile.max_chord_size >= 3`
+- 成立条件:
+  - 3キー中少なくとも1キーが `Up` 済み
+  - 3組すべてのペア比率が閾値以上
+  - `require_modifier_for_char_chord=true` 時は修飾キーを少なくとも1つ含む
+- 成立時:
+  - `Decision::Chord([k1, k2, k3])`
+  - 連続修飾キーは 2キー時と同様に保持
 
-## 3. 設定パラメータ (`Profile`)
+## 6. 連続シフト
 
-| パラメータ名 | デフォルト | 説明 |
-| :--- | :--- | :--- |
-| `thumb_shift_overlap_ratio` | **35%** | 親指シフト判定の閾値（※実装上は `char_key_overlap_ratio` と共通または個別設定だが、現在は共通値が参照されやすい）。 |
-| `char_key_overlap_ratio` | **35%** | 文字キー同士の同時打鍵判定の閾値。 |
-| `thumb_left` / `thumb_right` | (Struct) | 左右親指キーの個別設定。 |
-| `char_key_continuous` | `false` | 文字キー同時打鍵における連続シフト（ロールオーバー時の判定）を有効にするか。 |
+### 6.1 親指連続
 
-### 親指キー設定 (`ThumbSideConfig`)
-- **key**: 使用するキー（無変換、Spaceなど）。
-- **continuous**: 連続シフト（押したまま他のキーを連打）を許可するか。
-- **repeat**: キーリピートを許可するか。
-- **single_press**: 単独打鍵時の動作。
-  - `None`: 何もしない（無効）。
-  - `Enable`: 通常のキー入力として出力。
-  - `PrefixShift`: 前置シフト（次の1打にシフト効果を適用）。
-  - `SpaceKey`: Spaceキーとして出力。
+- 各親指設定 `thumb_left/right/extended_thumb1/extended_thumb2.continuous` を参照
+- `continuous=true` かつ押しっぱなしなら次の和音へ持ち越し
 
-## 4. 出力判定 (`Decision`)
+### 6.2 文字キー連続
 
-判定アルゴリズムによって導かれる結果は以下の通りです。
+- 文字修飾キー（`trigger_keys`）を連続修飾として扱う
+- ロールオーバー時に旧キーの誤出力を防ぐため以下を実装
+  - 同一キー再押下時の旧 pending グループ先行 flush
+  - 短すぎる重なり（`ROLLOVER_CHAIN_GUARD_OVERLAP_MS = 12ms`）の誤和音ガード
+  - 未定義和音時の後段キー優先フォールバック
 
-- **Chord(A, B)**:
-  - 2つのキーを同時打鍵ペアとして出力。
-  - 使用されたモディファイアキーは `used_modifiers` に記録され、単独打鍵時の出力が抑制されます。
-  - **連続シフト有効時**: モディファイアキーは `Pending` から削除されず、次のキーとの判定に残ります。
+## 7. 単打鍵挙動
 
-- **KeyTap(A)**:
-  - 重なり条件を満たさなかった場合、または単独で確定した場合。
-  - **親指キーの単独打鍵**:
-    - `used_modifiers` に含まれていない（同時打鍵に使われていない）場合のみ、`single_press` 設定に従って出力されます。
+親指キーの `single_press`:
 
-- **Passthrough**:
-  - 対象外のキーや、Spaceキーの特殊処理（モディファイアでない場合）などで即座に出力されます。
+- `None`: 単打を出力しない
+- `Enable`: 親指キーそのものを `KeyTap`
+- `PrefixShift`: 次のキー Down を即 `Chord([thumb, next])` として扱う
+- `SpaceKey`: Space（scancode `0x39`）を `KeyTap`
 
-## 5. 既知の挙動詳細
+補足:
 
-1. **Spaceキーの特例**:
-   - Spaceキーが親指シフトキーとして設定されて **いない** 場合、入力遅延を防ぐため、Downイベントで即座に `Passthrough` されます。
-   - 親指シフトキーの場合は `Pending` に入り、判定対象となります。
+- その親指が和音で使用済みなら単打出力は抑制される
+- 文字修飾キーも使用済みなら単打抑制される
 
-2. **Prefix Shift**:
-   - `single_press = PrefixShift` に設定された親指キーを単打すると、`prefix_pending` 状態になります。
-   - 次に入力されたキーに対し、強制的にその親指キーとの同時打鍵 (`Chord`) を生成します。
+## 8. リピート
 
-3. **ロールオーバー**:
-   - 3キー以上の同時押し（A->B->C）などの場合、ペア（A-B, B-C）ごとの判定となります。
-   - `char_key_continuous` が有効であれば、滑らかなロールオーバー入力（Aを押したままB、Bを押したままC...）が可能になります。
+### 8.1 発火条件
+
+- 押下中キーに対する再度の Down をリピートイベントとして扱う
+
+### 8.2 許可判定
+
+- `char_key_repeat_assigned`
+- `char_key_repeat_unassigned`
+- トークン種別（文字割当かどうか）で分岐
+
+### 8.3 親指リピート
+
+- `thumb_side.repeat = true` かつ以下の場合のみ有効
+  - `single_press = Enable`: 親指キーを繰り返し出力
+  - `single_press = SpaceKey`: Space を繰り返し出力
+- `None` / `PrefixShift` はリピート抑止
+
+## 9. IME とセクション選択
+
+- 実行時に `ImeMode` で日本語入力状態を判定
+  - `Auto`, `Tsf`, `Imm`, `Ignore`, `ForceAlpha`
+- 日本語モード時はローマ字系セクション、英数モード時は英数系セクションを選択
+- 英数モードでは内部的に以下を強制
+  - `require_modifier_for_char_chord = true`
+  - `max_chord_size` は最大2に制限
+
+## 10. 特記事項（実装依存）
+
+- Space（非修飾）は Down 時に即 `Passthrough`、同時に pending を先行確定
+- Enter はロールオーバー時の取りこぼし回避のため遅延パススルー処理あり
+- `[機能キー]` セクションで入力キーの前段リマップを実施
+  - 拡張仮想キー `Extended1..4` を内部修飾として利用可能
+  - 一部ターゲットは疑似キー出力（Caps/Kana ロック）に変換
+- `DirectString` は hook 側で IME OFF/ON を伴う安全出力
+
+## 11. Profile 既定値（主要）
+
+- `chord_window_ms = 200`（現実装では時間切れ判定に未使用）
+- `max_chord_size = 2`（レイアウト解析で2/3に更新）
+- `char_key_overlap_ratio = 0.35`
+- `char_key_continuous = false`
+- `char_key_repeat_assigned = false`
+- `char_key_repeat_unassigned = true`
+- `ime_mode = Auto`
+- `suspend_key = None`
+- `thumb_left = Muhenkan`
+- `thumb_right = Henkan`
+- `extended_thumb1 = Extended1`
+- `extended_thumb2 = Extended2`
+
+
+
