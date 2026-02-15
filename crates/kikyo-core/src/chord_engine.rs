@@ -226,6 +226,8 @@ pub struct Profile {
     pub char_key_continuous: bool,
     #[serde(default = "default_char_key_overlap_ratio")]
     pub char_key_overlap_ratio: f64,
+    #[serde(default)]
+    pub require_modifier_for_char_chord: bool,
 }
 
 fn default_chord_window_ms() -> u64 {
@@ -294,6 +296,7 @@ impl Default for Profile {
 
             char_key_continuous: false,
             char_key_overlap_ratio: 0.35,
+            require_modifier_for_char_chord: false,
         }
     }
 }
@@ -803,8 +806,11 @@ impl ChordEngine {
                         let valid = r12.unwrap() >= self.profile.char_key_overlap_ratio
                             && r23.unwrap() >= self.profile.char_key_overlap_ratio
                             && r13.unwrap() >= self.profile.char_key_overlap_ratio;
+                        let has_modifier = self.modifier_kind(p1.key).is_modifier()
+                            || self.modifier_kind(p2.key).is_modifier()
+                            || self.modifier_kind(p3.key).is_modifier();
 
-                        if valid {
+                        if valid && (!self.profile.require_modifier_for_char_chord || has_modifier) {
                             println!(
                                 "DEBUG: 3-key chord formed: {:?}, {:?}, {:?}",
                                 p1.key, p2.key, p3.key
@@ -881,7 +887,11 @@ impl ChordEngine {
             ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
         }
 
+        let mut stop_for_ordering = false;
         for oi in 0..ordered_indices.len() {
+            if stop_for_ordering {
+                break;
+            }
             let idx1 = ordered_indices[oi];
             if consumed_indices[idx1] || flushed_indices[idx1] {
                 continue;
@@ -955,6 +965,23 @@ impl ChordEngine {
                 let valid_overlap = ratio >= self.profile.char_key_overlap_ratio;
 
                 if valid_overlap {
+                    let kind1 = self.modifier_kind(p1.key);
+                    let kind2 = self.modifier_kind(p2.key);
+                    let has_modifier = kind1.is_modifier() || kind2.is_modifier();
+                    if self.profile.require_modifier_for_char_chord && !has_modifier {
+                        if p1.t_up.is_some() {
+                            flushed_indices[idx1] = true;
+                            if !p1.used {
+                                output.push(Decision::KeyTap(p1.key));
+                            }
+                            break;
+                        }
+                        // Keep chronological output for plain (non-modifier) typing:
+                        // do not resolve newer overlaps until the older key is released.
+                        stop_for_ordering = true;
+                        break;
+                    }
+
                     let has_later_pending = ordered_indices
                         .iter()
                         .skip(oj + 1)
@@ -1009,8 +1036,6 @@ impl ChordEngine {
 
                     let k1 = p1.key;
                     let k2 = p2.key;
-                    let kind1 = self.modifier_kind(k1);
-                    let kind2 = self.modifier_kind(k2);
 
                     if kind1.is_modifier() {
                         self.state.used_modifiers.insert(k1);

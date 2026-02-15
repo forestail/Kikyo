@@ -401,6 +401,7 @@ impl Engine {
             return self.handle_repeat_event(key, shift, is_japanese);
         }
 
+        self.refresh_active_char_shift_keys(shift, is_japanese);
         self.handle_deferred_nonshift_before_event(key, up, shift, is_japanese);
 
         // Pre-check: Verify if the key is defined in the current section.
@@ -570,7 +571,16 @@ impl Engine {
             t: Instant::now(),
         };
 
+        let prev_require_modifier = self.chord_engine.profile.require_modifier_for_char_chord;
+        let prev_max_chord_size = self.chord_engine.profile.max_chord_size;
+        self.chord_engine.profile.require_modifier_for_char_chord = !is_japanese;
+        if !is_japanese {
+            self.chord_engine.profile.max_chord_size =
+                self.chord_engine.profile.max_chord_size.min(2);
+        }
         let decisions = self.chord_engine.on_event(event);
+        self.chord_engine.profile.require_modifier_for_char_chord = prev_require_modifier;
+        self.chord_engine.profile.max_chord_size = prev_max_chord_size;
 
         let mut inject_ops = Vec::new();
         let mut pass_current = false;
@@ -622,7 +632,11 @@ impl Engine {
                             && self.is_char_shift_key(keys[0])
                             && self.chord_engine.state.used_modifiers.contains(&keys[0]);
 
-                        if undefined_rollover_pair && older_pressed && !newer_pressed {
+                        if undefined_rollover_pair
+                            && older_pressed
+                            && !newer_pressed
+                            && older_is_continuous_used_modifier
+                        {
                             let k = keys[1];
                             self.chord_engine.state.used_modifiers.remove(&k);
                             let mut resolved = false;
@@ -638,7 +652,11 @@ impl Engine {
                                 inject_ops.push(InputEvent::Scancode(k.sc, k.ext, false));
                                 inject_ops.push(InputEvent::Scancode(k.sc, k.ext, true));
                             }
-                        } else if undefined_rollover_pair && !older_pressed && newer_pressed {
+                        } else if undefined_rollover_pair
+                            && !older_pressed
+                            && newer_pressed
+                            && older_is_continuous_used_modifier
+                        {
                             // Older key was released first during rollover.
                             // Suppress older key output and let newer key resolve on its own Up.
                             self.chord_engine.state.used_modifiers.remove(&keys[1]);
@@ -1295,6 +1313,110 @@ impl Engine {
             .retain(|k| !remove.contains(k));
 
         self.remove_keys_from_pending(&remove, false);
+    }
+
+    fn refresh_active_char_shift_keys(&mut self, shift: bool, is_japanese: bool) {
+        let active_trigger_keys = {
+            let Some(layout) = self.layout.as_ref() else {
+                return;
+            };
+
+            let mut has_left_thumb = false;
+            let mut has_right_thumb = false;
+            let mut has_ext1_thumb = false;
+            let mut has_ext2_thumb = false;
+
+            if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                let mut mark_thumb_state = |k: &ScKey| {
+                    if tk.left.contains(k) {
+                        has_left_thumb = true;
+                    }
+                    if tk.right.contains(k) {
+                        has_right_thumb = true;
+                    }
+                    if tk.ext1.contains(k) {
+                        has_ext1_thumb = true;
+                    }
+                    if tk.ext2.contains(k) {
+                        has_ext2_thumb = true;
+                    }
+                };
+
+                for k in &self.chord_engine.state.pressed {
+                    mark_thumb_state(k);
+                }
+
+                if let Some(prefix_thumb) = self.chord_engine.state.prefix_pending {
+                    mark_thumb_state(&prefix_thumb);
+                }
+            }
+
+            let prefix = if is_japanese {
+                "ローマ字"
+            } else {
+                "英数"
+            };
+            let suffix = if shift {
+                if has_left_thumb {
+                    "小指左親指シフト"
+                } else if has_right_thumb {
+                    "小指右親指シフト"
+                } else {
+                    "小指シフト"
+                }
+            } else if has_left_thumb {
+                "左親指シフト"
+            } else if has_right_thumb {
+                "右親指シフト"
+            } else {
+                "シフト無し"
+            };
+
+            let forced_section_name =
+                if is_japanese && !has_left_thumb && !has_right_thumb && has_ext1_thumb {
+                    Some(EXTENDED_THUMB_SHIFT_1_SECTION)
+                } else if is_japanese && !has_left_thumb && !has_right_thumb && has_ext2_thumb {
+                    Some(EXTENDED_THUMB_SHIFT_2_SECTION)
+                } else {
+                    None
+                };
+
+            let section = if let Some(section_name) = forced_section_name {
+                layout.sections.get(section_name)
+            } else {
+                with_section_name(prefix, suffix, |section_name| {
+                    layout.sections.get(section_name)
+                })
+            };
+
+            let mut active = HashMap::new();
+            if let Some(section) = section {
+                Self::register_trigger_keys_from_tag(&section.name, &mut active);
+                for tag in section.sub_planes.keys() {
+                    Self::register_trigger_keys_from_tag(tag, &mut active);
+                }
+            }
+
+            active
+        };
+
+        self.chord_engine.profile.trigger_keys = active_trigger_keys;
+    }
+
+    fn register_trigger_keys_from_tag(tag: &str, trigger_keys: &mut HashMap<ScKey, String>) {
+        let mut start = 0;
+        while let Some(open) = tag[start..].find('<') {
+            if let Some(close) = tag[start + open..].find('>') {
+                let inner = &tag[start + open + 1..start + open + close];
+                if let Some(sc) = crate::jis_map::key_name_to_sc(inner) {
+                    let key = ScKey::new(sc, false);
+                    trigger_keys.entry(key).or_insert_with(|| tag.to_string());
+                }
+                start += open + close + 1;
+            } else {
+                break;
+            }
+        }
     }
 
     fn key_to_rc(&self, key: ScKey) -> Option<crate::types::Rc> {
@@ -3816,6 +3938,112 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             _ => panic!("Expected Inject for H tap, got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_continuous_shift_plain_alpha_rollover_emits_both_keys_when_newer_released_first() {
+        let alpha_section = "\u{82f1}\u{6570}\u{30b7}\u{30d5}\u{30c8}\u{7121}\u{3057}";
+        let config = format!(
+            "
+[{alpha_section}]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+a,s,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+"
+        );
+        let layout = parse_yab_content(&config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ime_mode(ImeMode::ForceAlpha);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.0;
+        engine.set_profile(profile);
+
+        // A down -> S down -> S up -> A up
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1F, false, false, false),
+            KeyAction::Block
+        );
+
+        let mut downs = Vec::new();
+        for action in [
+            engine.process_key(0x1F, false, true, false),
+            engine.process_key(0x1E, false, true, false),
+        ] {
+            if let KeyAction::Inject(evs) = action {
+                downs.extend(evs.into_iter().filter_map(|e| match e {
+                    InputEvent::Scancode(sc, _, false) => Some(sc),
+                    _ => None,
+                }));
+            }
+        }
+
+        assert_eq!(downs, vec![0x1E, 0x1F], "Expected rollover to emit A then S");
+    }
+
+    #[test]
+    fn test_continuous_shift_plain_alpha_rollover_emits_both_keys_when_older_released_first() {
+        let alpha_section = "\u{82f1}\u{6570}\u{30b7}\u{30d5}\u{30c8}\u{7121}\u{3057}";
+        let config = format!(
+            "
+[{alpha_section}]
+; R0
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R1
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R2
+a,s,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+; R3
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+"
+        );
+        let layout = parse_yab_content(&config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ime_mode(ImeMode::ForceAlpha);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.0;
+        engine.set_profile(profile);
+
+        // A down -> S down -> A up -> S up
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1F, false, false, false),
+            KeyAction::Block
+        );
+
+        let mut downs = Vec::new();
+        for action in [
+            engine.process_key(0x1E, false, true, false),
+            engine.process_key(0x1F, false, true, false),
+        ] {
+            if let KeyAction::Inject(evs) = action {
+                downs.extend(evs.into_iter().filter_map(|e| match e {
+                    InputEvent::Scancode(sc, _, false) => Some(sc),
+                    _ => None,
+                }));
+            }
+        }
+
+        assert_eq!(downs, vec![0x1E, 0x1F], "Expected rollover to emit A then S");
     }
 
     #[test]
