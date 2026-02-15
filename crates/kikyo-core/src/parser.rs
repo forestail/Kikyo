@@ -631,6 +631,14 @@ mod tests {
             parse_token("'あ'"),
             Token::KeySequence(vec![stroke_char('a')])
         );
+        assert_eq!(
+            parse_token("'ゔ'"),
+            Token::KeySequence(vec![stroke_char('v'), stroke_char('u')])
+        );
+        assert_eq!(
+            parse_token("ゔ"),
+            Token::KeySequence(vec![stroke_char('v'), stroke_char('u')])
+        );
 
         // "です" -> DirectString (Unicode)
         assert_eq!(

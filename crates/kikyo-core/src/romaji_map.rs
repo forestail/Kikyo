@@ -20,6 +20,7 @@ lazy_static::lazy_static! {
         m.insert('ざ', "za"); m.insert('じ', "ji"); m.insert('ず', "zu"); m.insert('ぜ', "ze"); m.insert('ぞ', "zo");
         m.insert('だ', "da"); m.insert('ぢ', "di"); m.insert('づ', "du"); m.insert('で', "de"); m.insert('ど', "do");
         m.insert('ば', "ba"); m.insert('び', "bi"); m.insert('ぶ', "bu"); m.insert('べ', "be"); m.insert('ぼ', "bo");
+        m.insert('\u{3094}', "vu");
 
         // Semi-voiced (Handakuten)
         m.insert('ぱ', "pa"); m.insert('ぴ', "pi"); m.insert('ぷ', "pu"); m.insert('ぺ', "pe"); m.insert('ぽ', "po");
