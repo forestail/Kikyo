@@ -1238,6 +1238,7 @@ impl Engine {
             key,
             t_down,
             t_up: None,
+            used: false,
         });
     }
 

@@ -408,6 +408,9 @@ pub struct PendingKey {
     pub key: ScKey,
     pub t_down: Instant,
     pub t_up: Option<Instant>,
+    /// Whether this key has been used/consumed in a chord decision.
+    /// If true, this key will not be emitted as a KeyTap when flushed.
+    pub used: bool,
     // kind_hint: PendingKindHint
 }
 
@@ -532,6 +535,7 @@ impl ChordEngine {
                         key: event.key,
                         t_down: now,
                         t_up: None,
+                        used: false,
                     });
                 }
 
@@ -559,10 +563,13 @@ impl ChordEngine {
 
                 // 3. Flush Single Taps
                 if self.state.pending.len() == 1 {
-                    let p = &self.state.pending[0];
-                    if p.t_up.is_some() {
+                    let (key, t_up, used) = {
+                        let p = &self.state.pending[0];
+                        (p.key, p.t_up, p.used)
+                    };
+
+                    if t_up.is_some() {
                         // It's a lonely tap
-                        let key = p.key;
                         let mod_kind = self.modifier_kind(key);
 
                         self.state.pending.clear();
@@ -593,18 +600,22 @@ impl ChordEngine {
                                         _ => ThumbShiftSinglePress::None,
                                     };
 
-                                    match sp_setting {
-                                        ThumbShiftSinglePress::None => {
-                                            // Disable single press (swallow)
-                                        }
-                                        ThumbShiftSinglePress::Enable => {
-                                            output.push(Decision::KeyTap(key));
-                                        }
-                                        ThumbShiftSinglePress::PrefixShift => {
-                                            self.state.prefix_pending = Some(key);
-                                        }
-                                        ThumbShiftSinglePress::SpaceKey => {
-                                            output.push(Decision::KeyTap(ScKey::new(0x39, false)));
+                                    if !used {
+                                        match sp_setting {
+                                            ThumbShiftSinglePress::None => {
+                                                // Disable single press (swallow)
+                                            }
+                                            ThumbShiftSinglePress::Enable => {
+                                                output.push(Decision::KeyTap(key));
+                                            }
+                                            ThumbShiftSinglePress::PrefixShift => {
+                                                self.state.prefix_pending = Some(key);
+                                            }
+                                            ThumbShiftSinglePress::SpaceKey => {
+                                                output.push(Decision::KeyTap(ScKey::new(
+                                                    0x39, false,
+                                                )));
+                                            }
                                         }
                                     }
                                 }
@@ -612,12 +623,14 @@ impl ChordEngine {
                             ModifierKind::CharShift => {
                                 if self.state.used_modifiers.contains(&key) {
                                     self.state.used_modifiers.remove(&key);
-                                } else {
+                                } else if !used {
                                     output.push(Decision::KeyTap(key));
                                 }
                             }
                             ModifierKind::None => {
-                                output.push(Decision::KeyTap(key));
+                                if !used {
+                                    output.push(Decision::KeyTap(key));
+                                }
                             }
                         }
                     }
@@ -685,7 +698,9 @@ impl ChordEngine {
         if !self.state.pending.is_empty() {
             let pending = std::mem::take(&mut self.state.pending);
             for p in pending {
-                output.push(Decision::KeyTap(p.key));
+                if !p.used {
+                    output.push(Decision::KeyTap(p.key));
+                }
                 // Clean up down_ts if it's not pressed
                 if !self.state.pressed.contains(&p.key) {
                     self.state.down_ts.remove(&p.key);
@@ -702,7 +717,9 @@ impl ChordEngine {
         let pending = std::mem::take(&mut self.state.pending);
 
         for p in pending {
-            output.push(Decision::KeyTap(p.key));
+            if !p.used {
+                output.push(Decision::KeyTap(p.key));
+            }
             // Clean up down_ts if it's not pressed
             if !self.state.pressed.contains(&p.key) {
                 self.state.down_ts.remove(&p.key);
@@ -722,6 +739,7 @@ impl ChordEngine {
 
         let mut consumed_indices = vec![false; pending_len];
         let mut flushed_indices = vec![false; pending_len];
+        let mut mark_as_used = vec![false; pending_len];
 
         let mut ordered_indices: Vec<usize> = (0..pending_len).collect();
         ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
@@ -787,6 +805,10 @@ impl ChordEngine {
                             && r13.unwrap() >= self.profile.char_key_overlap_ratio;
 
                         if valid {
+                            println!(
+                                "DEBUG: 3-key chord formed: {:?}, {:?}, {:?}",
+                                p1.key, p2.key, p3.key
+                            );
                             let k1 = p1.key;
                             let k2 = p2.key;
                             let k3 = p3.key;
@@ -806,6 +828,12 @@ impl ChordEngine {
                                     && self.state.pressed.contains(&k);
                                 if !keep {
                                     consumed_indices[idx] = true;
+                                } else {
+                                    println!(
+                                        "DEBUG: Marking 3-key component as used: {:?} idx={}",
+                                        k, idx
+                                    );
+                                    mark_as_used[idx] = true;
                                 }
                             }
                             break;
@@ -831,12 +859,15 @@ impl ChordEngine {
         if has_3key_consumed {
             let old_pending = std::mem::take(&mut self.state.pending);
             let mut new_pending = Vec::with_capacity(old_pending.len());
-            for (i, p) in old_pending.into_iter().enumerate() {
+            for (i, mut p) in old_pending.into_iter().enumerate() {
                 if consumed_indices[i] {
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
                     continue;
+                }
+                if mark_as_used[i] {
+                    p.used = true;
                 }
                 new_pending.push(p);
             }
@@ -845,6 +876,7 @@ impl ChordEngine {
             let pending_len = self.state.pending.len();
             consumed_indices = vec![false; pending_len];
             flushed_indices = vec![false; pending_len];
+            mark_as_used = vec![false; pending_len];
             ordered_indices = (0..pending_len).collect();
             ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
         }
@@ -863,6 +895,24 @@ impl ChordEngine {
 
                 let p1 = &self.state.pending[idx1];
                 let p2 = &self.state.pending[idx2];
+
+                // If both keys have already been used in a chord (e.g. continuous shift),
+                // they should not form a new chord with each other.
+                if p1.used && p2.used {
+                    println!("DEBUG: Both keys used: {:?} {:?}", p1.key, p2.key);
+                    // If p1 is released, we must flush it to prevent it from sticking in pending forever.
+                    if p1.t_up.is_some() {
+                        println!("DEBUG: Flushing released used key: {:?}", p1.key);
+                        flushed_indices[idx1] = true;
+                        // KeyTap is suppressed by !p1.used check in flush block or automatic checks
+                    }
+                    // Move to next pair (or break if p1 flushed)
+                    if flushed_indices[idx1] {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
 
                 let ratio = match self.pair_overlap_ratio(p1, p2, now, trigger) {
                     Some(ratio) => ratio,
@@ -892,7 +942,7 @@ impl ChordEngine {
                                         && self.modifier_is_continuous(kind1)
                                         && self.state.used_modifiers.contains(&p1.key);
 
-                                    if !suppress_p1_tap {
+                                    if !suppress_p1_tap && !p1.used {
                                         output.push(Decision::KeyTap(p1.key));
                                     }
                                 }
@@ -928,7 +978,7 @@ impl ChordEngine {
                             && self.modifier_is_continuous(kind1)
                             && self.state.used_modifiers.contains(&p1.key);
 
-                        if !suppress_p1_tap {
+                        if !suppress_p1_tap && !p1.used {
                             output.push(Decision::KeyTap(p1.key));
                         }
 
@@ -979,9 +1029,13 @@ impl ChordEngine {
 
                     if !keep1 {
                         consumed_indices[idx1] = true;
+                    } else {
+                        mark_as_used[idx1] = true;
                     }
                     if !keep2 {
                         consumed_indices[idx2] = true;
+                    } else {
+                        mark_as_used[idx2] = true;
                     }
 
                     output.push(Decision::Chord(vec![k1, k2]));
@@ -997,7 +1051,7 @@ impl ChordEngine {
                         && self.modifier_is_continuous(kind1)
                         && self.state.used_modifiers.contains(&p1.key);
 
-                    if !suppress_p1_tap {
+                    if !suppress_p1_tap && !p1.used {
                         output.push(Decision::KeyTap(p1.key));
                     }
 
@@ -1006,21 +1060,38 @@ impl ChordEngine {
             }
         }
 
+        // Update 'used' status on pending keys before removal
+        for (i, p) in self.state.pending.iter_mut().enumerate() {
+            if mark_as_used[i] {
+                p.used = true;
+            }
+        }
+
         let has_consumed = consumed_indices.iter().any(|v| *v);
         let has_flushed = flushed_indices.iter().any(|v| *v);
         if has_consumed || has_flushed {
             let old_pending = std::mem::take(&mut self.state.pending);
             let mut new_pending = Vec::with_capacity(old_pending.len());
-            for (i, p) in old_pending.into_iter().enumerate() {
+            for (i, mut p) in old_pending.into_iter().enumerate() {
                 if consumed_indices[i] || flushed_indices[i] {
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
                     continue;
                 }
+                if mark_as_used[i] {
+                    p.used = true;
+                }
                 new_pending.push(p);
             }
             self.state.pending = new_pending;
+        } else {
+            // No structural change, but we might need to update 'used' flags
+            for (i, p) in self.state.pending.iter_mut().enumerate() {
+                if mark_as_used[i] {
+                    p.used = true;
+                }
+            }
         }
 
         output
@@ -2019,5 +2090,157 @@ mod tests {
             t0 + Duration::from_millis(130),
         ));
         assert_single_three_key_chord(&res, k_d, k_f, k_l);
+    }
+
+    #[test]
+    fn test_repro_ghost_release_3key_continuous() {
+        let t0 = Instant::now();
+        let k_j = make_key(0x24); // J
+        let k_k = make_key(0x25); // K
+        let k_a = make_key(0x1E); // A
+
+        // Setup profile where J and K are trigger keys (CharShift) and continuous is enabled.
+        // We simulate this by using continuous_char_profile which sets char_key_continuous=true.
+        // And we add J, K, A as trigger keys.
+        let mut profile = continuous_char_profile(0.35, &[k_j, k_k, k_a]);
+        profile.max_chord_size = 3;
+        let mut engine = ChordEngine::new(profile);
+
+        // 1. J Down
+        engine.on_event(make_event(k_j, KeyEdge::Down, t0));
+        // 2. K Down
+        engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+
+        // 3. A Down
+        engine.on_event(make_event(
+            k_a,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(100),
+        ));
+
+        // 4. A Up. This should finalize the 3-key chord.
+        let res = engine.on_event(make_event(
+            k_a,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(150),
+        ));
+
+        // Should output Chord(J, K, A)
+        assert_eq!(res.len(), 1);
+        if let Decision::Chord(keys) = &res[0] {
+            assert_eq!(keys.len(), 3);
+            assert!(keys.contains(&k_j));
+            assert!(keys.contains(&k_k));
+            assert!(keys.contains(&k_a));
+        } else {
+            panic!("Expected Chord(J,K,A), got {:?}", res);
+        }
+
+        // At this point, J and K are still pressed.
+        // Since it's continuous mode, they should remain in pending.
+        // And they should be in `used_modifiers`.
+        assert!(
+            engine.state.used_modifiers.contains(&k_j),
+            "J should be in used_modifiers"
+        );
+        assert!(
+            engine.state.used_modifiers.contains(&k_k),
+            "K should be in used_modifiers"
+        );
+
+        // 5. Release J while K is still down
+        // This simulates the user scenario: "JキーをKキーより先にキーアップすると"
+        let res_j = engine.on_event(make_event(
+            k_j,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(300),
+        ));
+
+        // BUG CHECK: Should NOT output J Tap.
+        for d in &res_j {
+            if let Decision::KeyTap(k) = d {
+                if *k == k_j {
+                    panic!("Bug Reproduced: Got KeyTap(J) on release after 3-key chord!");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_repro_ghost_release_3key_not_trigger() {
+        // Case where J and K are NOT in trigger_keys, so they are not modifiers.
+        // But max_chord_size is 3.
+        let t0 = Instant::now();
+        let k_j = make_key(0x24); // J
+        let k_k = make_key(0x25); // K
+        let k_a = make_key(0x1E); // A
+
+        let mut profile = Profile::default();
+        profile.max_chord_size = 3;
+        profile.char_key_overlap_ratio = 0.35;
+        // Do NOT add to trigger_keys.
+
+        let mut engine = ChordEngine::new(profile);
+
+        // 1. J Down
+        engine.on_event(make_event(k_j, KeyEdge::Down, t0));
+        // 2. K Down
+        engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        // 3. A Down
+        engine.on_event(make_event(
+            k_a,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(100),
+        ));
+
+        // 4. A Up.
+        let res = engine.on_event(make_event(
+            k_a,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(150),
+        ));
+
+        // Should output Chord(J, K, A) if logic allows non-trigger 3-key chords?
+        // Note: 3-key logic in check_chords does not strictly require keys to be modifiers.
+        // However, pair_overlap_ratio might return None if they are not modifiers and continuous is false...
+        // Wait, if continuous is false, pair_overlap_ratio relies on simple overlap?
+        // Let's check pair_overlap_ratio logic.
+        // It checks `is_char_pair`.
+        // If continuous is false, it proceeds to check overlap.
+
+        // So hopefully we get a chord.
+        assert_eq!(res.len(), 1);
+        if let Decision::Chord(keys) = &res[0] {
+            assert_eq!(keys.len(), 3);
+        }
+
+        // At this point, J and K are consumed. Since they are not modifiers, keep=false.
+        // So they should be removed from pending.
+
+        // 5. Release J
+        let res_j = engine.on_event(make_event(
+            k_j,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(300),
+        ));
+
+        // BUG CHECK:
+        for d in &res_j {
+            if let Decision::KeyTap(k) = d {
+                if *k == k_j {
+                    panic!(
+                        "Bug Reproduced: Got KeyTap(J) on release after 3-key chord (non-trigger)!"
+                    );
+                }
+            }
+        }
     }
 }
