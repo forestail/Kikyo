@@ -18,6 +18,7 @@ use tauri::WindowEvent;
 static ENTRY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 const TRAY_LAYOUT_ITEM_ID_PREFIX: &str = "layout_entry::";
 const DUPLICATE_LAYOUT_PATH_MESSAGE: &str = "\u{3059}\u{3067}\u{306b}\u{767b}\u{9332}\u{3055}\u{308c}\u{3066}\u{3044}\u{308b}\u{5b9a}\u{7fa9}\u{30d5}\u{30a1}\u{30a4}\u{30eb}\u{3067}\u{3059}";
+const SETTINGS_FILE_NAME: &str = "settings.json";
 
 fn tray_layout_item_menu_id(entry_id: &str) -> String {
     format!("{TRAY_LAYOUT_ITEM_ID_PREFIX}{entry_id}")
@@ -290,11 +291,49 @@ fn migrate_settings(settings: &mut Settings) -> bool {
     changed
 }
 
-fn get_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn settings_path_in_current_exe_dir() -> Result<PathBuf, String> {
+    let exe_path = std::env::current_exe()
+        .map_err(|err| format!("Failed to resolve current executable path: {}", err))?;
+    let exe_dir = exe_path.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve executable directory from path: {}",
+            exe_path.display()
+        )
+    })?;
+    Ok(exe_dir.join(SETTINGS_FILE_NAME))
+}
+
+fn get_settings_path(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    settings_path_in_current_exe_dir()
+}
+
+fn get_legacy_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
-        .map(|dir| dir.join("settings.json"))
+        .map(|dir| dir.join(SETTINGS_FILE_NAME))
         .map_err(|err| err.to_string())
+}
+
+fn load_settings_from_path(path: &Path) -> Option<Settings> {
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::warn!("Failed to read settings file ({}): {}", path.display(), err);
+            return None;
+        }
+    };
+
+    match serde_json::from_str(&content) {
+        Ok(settings) => Some(settings),
+        Err(err) => {
+            tracing::warn!(
+                "Failed to parse settings json ({}): {}",
+                path.display(),
+                err
+            );
+            None
+        }
+    }
 }
 
 fn load_settings(app: &tauri::AppHandle) -> Settings {
@@ -306,29 +345,47 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
         }
     };
 
-    if !path.exists() {
-        return Settings::default();
+    if path.exists() {
+        return load_settings_from_path(&path).unwrap_or_default();
     }
 
-    let content = match fs::read_to_string(&path) {
-        Ok(content) => content,
+    let legacy_path = match get_legacy_settings_path(app) {
+        Ok(path) => path,
         Err(err) => {
-            tracing::warn!("Failed to read settings file ({}): {}", path.display(), err);
+            tracing::error!("Failed to resolve legacy settings path: {}", err);
             return Settings::default();
         }
     };
 
-    match serde_json::from_str(&content) {
-        Ok(settings) => settings,
-        Err(err) => {
-            tracing::warn!(
-                "Failed to parse settings json ({}): {}",
-                path.display(),
-                err
+    if legacy_path.exists() {
+        if let Some(settings) = load_settings_from_path(&legacy_path) {
+            tracing::info!(
+                "Loaded settings from legacy path ({}).",
+                legacy_path.display()
             );
-            Settings::default()
+            return settings;
         }
     }
+
+    Settings::default()
+}
+
+fn write_settings_to_path(path: &Path, settings: &Settings) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create settings directory ({}): {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+
+    let content = serde_json::to_string(settings)
+        .map_err(|err| format!("Failed to serialize settings json: {}", err))?;
+
+    fs::write(path, content)
+        .map_err(|err| format!("Failed to write settings file ({}): {}", path.display(), err))
 }
 
 fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
@@ -349,7 +406,7 @@ fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
 }
 
 fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> bool {
-    let path = match get_settings_path(app) {
+    let primary_path = match get_settings_path(app) {
         Ok(path) => path,
         Err(err) => {
             tracing::error!("Failed to resolve settings path: {}", err);
@@ -357,32 +414,34 @@ fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> bool {
         }
     };
 
-    if let Some(parent) = path.parent() {
-        if let Err(err) = fs::create_dir_all(parent) {
-            tracing::error!(
-                "Failed to create settings directory ({}): {}",
-                parent.display(),
-                err
-            );
+    if let Err(primary_err) = write_settings_to_path(&primary_path, settings) {
+        let legacy_path = match get_legacy_settings_path(app) {
+            Ok(path) => path,
+            Err(err) => {
+                tracing::error!("{}", primary_err);
+                tracing::error!("Failed to resolve legacy settings path: {}", err);
+                return false;
+            }
+        };
+
+        if legacy_path == primary_path {
+            tracing::error!("{}", primary_err);
+            return false;
+        }
+
+        tracing::warn!(
+            "{}. Falling back to legacy path ({}).",
+            primary_err,
+            legacy_path.display()
+        );
+
+        if let Err(legacy_err) = write_settings_to_path(&legacy_path, settings) {
+            tracing::error!("{}", legacy_err);
             return false;
         }
     }
 
-    let content = match serde_json::to_string(settings) {
-        Ok(content) => content,
-        Err(err) => {
-            tracing::error!("Failed to serialize settings json: {}", err);
-            return false;
-        }
-    };
-
-    match fs::write(&path, content) {
-        Ok(_) => true,
-        Err(err) => {
-            tracing::error!("Failed to write settings file ({}): {}", path.display(), err);
-            false
-        }
-    }
+    true
 }
 
 fn sanitize_profile_for_save(mut profile: Profile) -> Profile {
@@ -798,7 +857,7 @@ fn activate_layout_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_layout_path_for_compare, Settings};
+    use super::{normalize_layout_path_for_compare, settings_path_in_current_exe_dir, Settings};
 
     #[test]
     fn settings_default_enabled_is_true() {
@@ -832,6 +891,14 @@ mod tests {
             Some("layout.yab")
         );
         assert!(value.get("last_yab_path").is_none());
+    }
+
+    #[test]
+    fn settings_path_resolves_to_current_exe_directory() {
+        let resolved = settings_path_in_current_exe_dir().expect("resolve settings path");
+        let current_exe = std::env::current_exe().expect("current exe");
+        let exe_dir = current_exe.parent().expect("current exe parent");
+        assert_eq!(resolved, exe_dir.join("settings.json"));
     }
 
     #[cfg(target_os = "windows")]

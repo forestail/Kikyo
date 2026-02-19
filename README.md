@@ -35,10 +35,21 @@ npm run tauri dev
 
 ## ビルド
 
+インストーラ版:
+
 ```bash
 cd crates/kikyo-ui-tauri
 npm run tauri build
 ```
+
+ポータブル版 (zip):
+
+```bash
+cd crates/kikyo-ui-tauri
+npm run build:portable
+```
+
+生成した zip は展開してから実行してください（zip 内の `kikyo.exe` を直接起動しない）。
 
 ## テスト
 
@@ -48,7 +59,8 @@ cargo test -p kikyo-core
 
 ## 設定ファイル
 
-- アプリ設定は `settings.json` に保存されます（Tauri の app config dir）。
+- アプリ設定は `settings.json` に保存されます（既定: `kikyo.exe` と同じディレクトリ）。
+- `kikyo.exe` と同じディレクトリに書き込めない場合は、従来どおり Tauri の app config dir へフォールバックします。
 - 主な保存項目:
   - レイアウト一覧（`layout_entries`）
   - 現在のアクティブレイアウト（`active_layout_id`）
@@ -77,4 +89,3 @@ cargo test -p kikyo-core
 - `crates/kikyo-core`: 入力エンジン、フック、IME、パーサ
 - `crates/kikyo-ui-tauri`: 設定 UI / トレイ / 永続化 / Tauri 統合
 - `layout`: サンプル配列ファイル
-

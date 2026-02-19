@@ -1,10 +1,12 @@
 {
   "name": "kikyo-ui-tauri",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:installer": "tauri build",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
