@@ -56,6 +56,8 @@ static LAST_REINSTALL_MS: AtomicU64 = AtomicU64::new(0);
 static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static START_INSTANT: OnceLock<std::time::Instant> = OnceLock::new();
 
 const HOOK_QUEUE_SIZE: usize = 1024;
@@ -112,6 +114,8 @@ pub fn refresh_runtime_flags_from_engine() {
     ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
     LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
     RIGHT_SHIFT_NEEDS_HANDLING.store(engine.needs_right_shift_handling(), Ordering::Relaxed);
+    LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
+    RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
 }
 
 /// Starts the keyboard hook.
@@ -233,6 +237,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let alt_needs_handling = ALT_NEEDS_HANDLING.load(Ordering::Relaxed);
         let left_shift_needs_handling = LEFT_SHIFT_NEEDS_HANDLING.load(Ordering::Relaxed);
         let right_shift_needs_handling = RIGHT_SHIFT_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let left_ctrl_needs_handling = LEFT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let right_ctrl_needs_handling = RIGHT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
         let shift_event_needs_handling = if !is_shift_vk {
             false
         } else if kbd.vkCode == VK_LSHIFT.0 as u32 || kbd.scanCode as u16 == 0x2A {
@@ -242,10 +248,25 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         } else {
             left_shift_needs_handling || right_shift_needs_handling
         };
+        let ctrl_event_needs_handling = if !is_ctrl_vk {
+            false
+        } else if kbd.vkCode == VK_LCONTROL.0 as u32
+            || ((kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) == 0
+                && kbd.scanCode as u16 == 0x1D)
+        {
+            left_ctrl_needs_handling
+        } else if kbd.vkCode == VK_RCONTROL.0 as u32
+            || ((kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0
+                && kbd.scanCode as u16 == 0x1D)
+        {
+            right_ctrl_needs_handling
+        } else {
+            left_ctrl_needs_handling || right_ctrl_needs_handling
+        };
 
         // Pass through Modifier key events themselves to ensure OS state is updated
         if (is_shift_vk && !shift_event_needs_handling)
-            || is_ctrl_vk
+            || (is_ctrl_vk && !ctrl_event_needs_handling)
             || is_win_vk
             || (is_alt_vk && !alt_needs_handling)
         {
@@ -253,7 +274,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
 
         // Check modifier states only for non-modifier keys that can be handled.
-        let ctrl_pressed = GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0;
+        let lctrl_pressed = GetAsyncKeyState(VK_LCONTROL.0 as i32) as u16 & 0x8000 != 0;
+        let rctrl_pressed = GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000 != 0;
+        let ctrl_pressed = (lctrl_pressed && !left_ctrl_needs_handling)
+            || (rctrl_pressed && !right_ctrl_needs_handling);
         let lshift_pressed = GetAsyncKeyState(VK_LSHIFT.0 as i32) as u16 & 0x8000 != 0;
         let rshift_pressed = GetAsyncKeyState(VK_RSHIFT.0 as i32) as u16 & 0x8000 != 0;
         let shift_pressed = (lshift_pressed && !left_shift_needs_handling)
@@ -311,6 +335,8 @@ fn process_event(event: HookEvent) {
         ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
         LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
         RIGHT_SHIFT_NEEDS_HANDLING.store(engine.needs_right_shift_handling(), Ordering::Relaxed);
+        LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
+        RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
 
         if let Some(vk) = suspend_key_vk(engine.get_suspend_key()) {
             if event.vk == vk && !event.up {

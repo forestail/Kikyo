@@ -97,6 +97,7 @@ pub struct Engine {
     on_enabled_change: Option<Box<dyn Fn(bool) + Send + Sync>>,
     repeat_plans: HashMap<ScKey, Vec<ScKey>>,
     pending_nonshift_for_shift: HashSet<ScKey>,
+    passthrough_thumb_shift_modifiers: HashMap<ScKey, ScKey>,
     function_key_swaps: HashMap<ScKey, FunctionKeySwapTarget>,
     deferred_enter_rollover: Option<DeferredEnterRollover>,
 }
@@ -112,6 +113,7 @@ impl Default for Engine {
             on_enabled_change: None,
             repeat_plans: HashMap::new(),
             pending_nonshift_for_shift: HashSet::new(),
+            passthrough_thumb_shift_modifiers: HashMap::new(),
             function_key_swaps: HashMap::new(),
             deferred_enter_rollover: None,
         }
@@ -128,6 +130,7 @@ impl Engine {
                 self.chord_engine = ChordEngine::new(profile);
                 self.repeat_plans.clear();
                 self.pending_nonshift_for_shift.clear();
+                self.passthrough_thumb_shift_modifiers.clear();
                 self.deferred_enter_rollover = None;
             }
             if let Some(ref cb) = self.on_enabled_change {
@@ -212,6 +215,14 @@ impl Engine {
         self.needs_sc_key_handling(ScKey::new(0x36, false))
     }
 
+    pub fn needs_left_ctrl_handling(&self) -> bool {
+        self.needs_sc_key_handling(ScKey::new(0x1D, false))
+    }
+
+    pub fn needs_right_ctrl_handling(&self) -> bool {
+        self.needs_sc_key_handling(ScKey::new(0x1D, true))
+    }
+
     fn has_thumb_shift_sections_in_layout(&self) -> bool {
         if let Some(ref layout) = self.layout {
             let targets = [
@@ -267,6 +278,7 @@ impl Engine {
             }
         }
 
+        self.passthrough_thumb_shift_modifiers.clear();
         self.chord_engine.set_profile(profile);
     }
 
@@ -551,7 +563,12 @@ impl Engine {
                             return KeyAction::Block;
                         }
                         // Defined section, but key is not in it -> Pass
-                        return passthrough_action(pass_through_current, source_key, up);
+                        return self.passthrough_with_thumb_shift_fallback(
+                            source_key,
+                            key,
+                            pass_through_current,
+                            up,
+                        );
                     }
                 } else {
                     // Section does NOT exist -> Pass
@@ -565,7 +582,12 @@ impl Engine {
                         ) {
                             return KeyAction::Block;
                         }
-                        return passthrough_action(pass_through_current, source_key, up);
+                        return self.passthrough_with_thumb_shift_fallback(
+                            source_key,
+                            key,
+                            pass_through_current,
+                            up,
+                        );
                     }
                 }
             }
@@ -742,6 +764,64 @@ impl Engine {
         }
 
         KeyAction::Block
+    }
+
+    fn active_shift_thumb_for_passthrough(&self) -> Option<ScKey> {
+        let left_shift = ScKey::new(0x2A, false);
+        if self.is_thumb_key(left_shift) && self.chord_engine.state.pressed.contains(&left_shift) {
+            return Some(left_shift);
+        }
+
+        let right_shift = ScKey::new(0x36, false);
+        if self.is_thumb_key(right_shift)
+            && self.chord_engine.state.pressed.contains(&right_shift)
+        {
+            return Some(right_shift);
+        }
+
+        None
+    }
+
+    fn passthrough_with_thumb_shift_fallback(
+        &mut self,
+        source_key: ScKey,
+        key: ScKey,
+        pass_through_current: PassThroughCurrent,
+        up: bool,
+    ) -> KeyAction {
+        if up {
+            if let Some(shift_key) = self.passthrough_thumb_shift_modifiers.remove(&key) {
+                let mut events = Vec::new();
+                if let Some(event) = passthrough_event(pass_through_current, source_key, true) {
+                    events.push(event);
+                }
+                events.push(InputEvent::Scancode(shift_key.sc, shift_key.ext, true));
+                return KeyAction::Inject(events);
+            }
+            return passthrough_action(pass_through_current, source_key, true);
+        }
+
+        if self.key_to_rc(key).is_some() {
+            return passthrough_action(pass_through_current, source_key, false);
+        }
+
+        let Some(shift_key) = self.active_shift_thumb_for_passthrough() else {
+            return passthrough_action(pass_through_current, source_key, false);
+        };
+
+        let Some(current_event) = passthrough_event(pass_through_current, source_key, false) else {
+            return KeyAction::Block;
+        };
+
+        if self.passthrough_thumb_shift_modifiers.contains_key(&key) {
+            return KeyAction::Inject(vec![current_event]);
+        }
+
+        self.passthrough_thumb_shift_modifiers.insert(key, shift_key);
+        KeyAction::Inject(vec![
+            InputEvent::Scancode(shift_key.sc, shift_key.ext, false),
+            current_event,
+        ])
     }
 
     fn is_enter_key(key: ScKey) -> bool {
@@ -4121,6 +4201,146 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         assert!(
             !engine.needs_right_shift_handling(),
             "RightShift should not be handled when it is not assigned"
+        );
+    }
+
+    #[test]
+    fn test_needs_ctrl_handling_for_thumb_shift_assignment() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::LeftCtrl;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert!(
+            engine.needs_left_ctrl_handling(),
+            "LeftCtrl should be handled when it is assigned as thumb shift"
+        );
+        assert!(
+            !engine.needs_right_ctrl_handling(),
+            "RightCtrl should not be handled when it is not assigned"
+        );
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::RightCtrl;
+        engine.set_profile(profile);
+
+        assert!(
+            !engine.needs_left_ctrl_handling(),
+            "LeftCtrl should not be handled when it is not assigned"
+        );
+        assert!(
+            engine.needs_right_ctrl_handling(),
+            "RightCtrl should be handled when it is assigned as thumb shift"
+        );
+    }
+
+    #[test]
+    fn test_thumb_shift_key_falls_back_to_normal_shift_for_non_character_keys() {
+        let config = r#"
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+b,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+"#;
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::LeftShift;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert_eq!(
+            engine.process_key(0x2A, false, false, false),
+            KeyAction::Block
+        );
+
+        match engine.process_key(0x47, true, false, false) {
+            KeyAction::Inject(evs) => {
+                assert_eq!(
+                    evs,
+                    vec![
+                        InputEvent::Scancode(0x2A, false, false),
+                        InputEvent::Scancode(0x47, true, false),
+                    ],
+                    "Home down should be emitted with synthetic Shift down"
+                );
+            }
+            other => panic!("Expected Inject for Shift+Home down fallback, got {:?}", other),
+        }
+
+        match engine.process_key(0x47, true, true, false) {
+            KeyAction::Inject(evs) => {
+                assert_eq!(
+                    evs,
+                    vec![
+                        InputEvent::Scancode(0x47, true, true),
+                        InputEvent::Scancode(0x2A, false, true),
+                    ],
+                    "Home up should be emitted with synthetic Shift up"
+                );
+            }
+            other => panic!("Expected Inject for Shift+Home up fallback, got {:?}", other),
+        }
+
+        assert_eq!(
+            engine.process_key(0x2A, false, true, false),
+            KeyAction::Block
+        );
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::RightShift;
+        engine.set_profile(profile);
+
+        assert_eq!(
+            engine.process_key(0x36, false, false, false),
+            KeyAction::Block
+        );
+
+        match engine.process_key(0x4F, true, false, false) {
+            KeyAction::Inject(evs) => {
+                assert_eq!(
+                    evs,
+                    vec![
+                        InputEvent::Scancode(0x36, false, false),
+                        InputEvent::Scancode(0x4F, true, false),
+                    ],
+                    "End down should be emitted with synthetic RightShift down"
+                );
+            }
+            other => panic!("Expected Inject for RightShift+End down fallback, got {:?}", other),
+        }
+
+        match engine.process_key(0x4F, true, true, false) {
+            KeyAction::Inject(evs) => {
+                assert_eq!(
+                    evs,
+                    vec![
+                        InputEvent::Scancode(0x4F, true, true),
+                        InputEvent::Scancode(0x36, false, true),
+                    ],
+                    "End up should be emitted with synthetic RightShift up"
+                );
+            }
+            other => panic!("Expected Inject for RightShift+End up fallback, got {:?}", other),
+        }
+
+        assert_eq!(
+            engine.process_key(0x36, false, true, false),
+            KeyAction::Block
         );
     }
 
