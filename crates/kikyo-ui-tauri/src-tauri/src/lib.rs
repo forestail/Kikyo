@@ -290,41 +290,97 @@ fn migrate_settings(settings: &mut Settings) -> bool {
     changed
 }
 
-fn get_settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn get_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map(|dir| dir.join("settings.json"))
-        .ok()
+        .map_err(|err| err.to_string())
 }
 
 fn load_settings(app: &tauri::AppHandle) -> Settings {
-    if let Some(path) = get_settings_path(app) {
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(settings) = serde_json::from_str(&content) {
-                    return settings;
-                }
-            }
+    let path = match get_settings_path(app) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::error!("Failed to resolve settings path: {}", err);
+            return Settings::default();
+        }
+    };
+
+    if !path.exists() {
+        return Settings::default();
+    }
+
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::warn!("Failed to read settings file ({}): {}", path.display(), err);
+            return Settings::default();
+        }
+    };
+
+    match serde_json::from_str(&content) {
+        Ok(settings) => settings,
+        Err(err) => {
+            tracing::warn!(
+                "Failed to parse settings json ({}): {}",
+                path.display(),
+                err
+            );
+            Settings::default()
         }
     }
-    Settings::default()
 }
 
 fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
     let mut settings = load_settings(app);
-    if migrate_settings(&mut settings) {
-        save_settings(app, &settings);
+    let migrated = migrate_settings(&mut settings);
+    let needs_initial_write = match get_settings_path(app) {
+        Ok(path) => !path.exists(),
+        Err(err) => {
+            tracing::error!("Failed to resolve settings path: {}", err);
+            false
+        }
+    };
+
+    if migrated || needs_initial_write {
+        let _ = save_settings(app, &settings);
     }
     settings
 }
 
-fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
-    if let Some(path) = get_settings_path(app) {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> bool {
+    let path = match get_settings_path(app) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::error!("Failed to resolve settings path: {}", err);
+            return false;
         }
-        if let Ok(content) = serde_json::to_string(settings) {
-            let _ = fs::write(path, content);
+    };
+
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            tracing::error!(
+                "Failed to create settings directory ({}): {}",
+                parent.display(),
+                err
+            );
+            return false;
+        }
+    }
+
+    let content = match serde_json::to_string(settings) {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::error!("Failed to serialize settings json: {}", err);
+            return false;
+        }
+    };
+
+    match fs::write(&path, content) {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::error!("Failed to write settings file ({}): {}", path.display(), err);
+            false
         }
     }
 }
