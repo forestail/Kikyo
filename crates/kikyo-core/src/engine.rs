@@ -172,37 +172,44 @@ impl Engine {
         self.chord_engine.profile.suspend_key
     }
 
-    pub fn needs_alt_handling(&self) -> bool {
-        let left_alt = ScKey::new(0x38, false);
-        let right_alt = ScKey::new(0x38, true);
-
-        if self.function_key_swaps.contains_key(&left_alt)
-            || self.function_key_swaps.contains_key(&right_alt)
-        {
+    fn needs_sc_key_handling(&self, key: ScKey) -> bool {
+        if self.function_key_swaps.contains_key(&key) {
             return true;
         }
 
         if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-            if tk.left.contains(&left_alt)
-                || tk.left.contains(&right_alt)
-                || tk.right.contains(&left_alt)
-                || tk.right.contains(&right_alt)
-                || tk.ext1.contains(&left_alt)
-                || tk.ext1.contains(&right_alt)
-                || tk.ext2.contains(&left_alt)
-                || tk.ext2.contains(&right_alt)
+            if tk.left.contains(&key)
+                || tk.right.contains(&key)
+                || tk.ext1.contains(&key)
+                || tk.ext2.contains(&key)
             {
                 return true;
             }
         }
 
         if let Some(ref targets) = self.chord_engine.profile.target_keys {
-            if targets.contains(&left_alt) || targets.contains(&right_alt) {
+            if targets.contains(&key) {
                 return true;
             }
         }
 
         false
+    }
+
+    fn needs_any_sc_key_handling(&self, keys: &[ScKey]) -> bool {
+        keys.iter().any(|k| self.needs_sc_key_handling(*k))
+    }
+
+    pub fn needs_alt_handling(&self) -> bool {
+        self.needs_any_sc_key_handling(&[ScKey::new(0x38, false), ScKey::new(0x38, true)])
+    }
+
+    pub fn needs_left_shift_handling(&self) -> bool {
+        self.needs_sc_key_handling(ScKey::new(0x2A, false))
+    }
+
+    pub fn needs_right_shift_handling(&self) -> bool {
+        self.needs_sc_key_handling(ScKey::new(0x36, false))
     }
 
     fn has_thumb_shift_sections_in_layout(&self) -> bool {
@@ -4096,6 +4103,24 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         assert!(
             engine.needs_alt_handling(),
             "Alt should be handled when it is used as [機能キー] swap source"
+        );
+    }
+
+    #[test]
+    fn test_needs_shift_handling_for_thumb_shift_assignment() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::LeftShift;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert!(
+            engine.needs_left_shift_handling(),
+            "LeftShift should be handled when it is assigned as thumb shift"
+        );
+        assert!(
+            !engine.needs_right_shift_handling(),
+            "RightShift should not be handled when it is not assigned"
         );
     }
 
