@@ -6,7 +6,7 @@ $workspaceDir = Resolve-Path (Join-Path $projectDir "..\..")
 
 Push-Location $projectDir
 try {
-    npm run tauri -- build --no-bundle
+    npm run tauri -- build --no-bundle --features portable-mode
 }
 finally {
     Pop-Location
@@ -39,7 +39,8 @@ Kikyo Portable
 ==============
 
 - Extract this zip to a normal folder first, then run kikyo.exe.
-- settings.json is created in this same directory.
+- settings.json is read/written only in this same directory.
+- This portable build never reads/writes AppData settings.
 - Microsoft Edge WebView2 Runtime is required.
 "@ | Set-Content -Path $portableReadmePath -Encoding utf8
 

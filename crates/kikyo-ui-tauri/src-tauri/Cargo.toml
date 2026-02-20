@@ -21,6 +21,10 @@ path = "src/main.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+portable-mode = []
+
 [dependencies]
 kikyo-core = { path = "../../kikyo-core" }
 tauri = { version = "2.0.0", features = ["tray-icon", "image-png"] }

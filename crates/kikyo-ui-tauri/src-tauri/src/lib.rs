@@ -291,6 +291,7 @@ fn migrate_settings(settings: &mut Settings) -> bool {
     changed
 }
 
+#[cfg(any(feature = "portable-mode", test))]
 fn settings_path_in_current_exe_dir() -> Result<PathBuf, String> {
     let exe_path = std::env::current_exe()
         .map_err(|err| format!("Failed to resolve current executable path: {}", err))?;
@@ -303,11 +304,13 @@ fn settings_path_in_current_exe_dir() -> Result<PathBuf, String> {
     Ok(exe_dir.join(SETTINGS_FILE_NAME))
 }
 
+#[cfg(feature = "portable-mode")]
 fn get_settings_path(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
     settings_path_in_current_exe_dir()
 }
 
-fn get_legacy_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+#[cfg(not(feature = "portable-mode"))]
+fn get_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map(|dir| dir.join(SETTINGS_FILE_NAME))
@@ -345,29 +348,11 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
         }
     };
 
-    if path.exists() {
-        return load_settings_from_path(&path).unwrap_or_default();
+    if !path.exists() {
+        return Settings::default();
     }
 
-    let legacy_path = match get_legacy_settings_path(app) {
-        Ok(path) => path,
-        Err(err) => {
-            tracing::error!("Failed to resolve legacy settings path: {}", err);
-            return Settings::default();
-        }
-    };
-
-    if legacy_path.exists() {
-        if let Some(settings) = load_settings_from_path(&legacy_path) {
-            tracing::info!(
-                "Loaded settings from legacy path ({}).",
-                legacy_path.display()
-            );
-            return settings;
-        }
-    }
-
-    Settings::default()
+    load_settings_from_path(&path).unwrap_or_default()
 }
 
 fn write_settings_to_path(path: &Path, settings: &Settings) -> Result<(), String> {
@@ -406,7 +391,7 @@ fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
 }
 
 fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> bool {
-    let primary_path = match get_settings_path(app) {
+    let path = match get_settings_path(app) {
         Ok(path) => path,
         Err(err) => {
             tracing::error!("Failed to resolve settings path: {}", err);
@@ -414,31 +399,9 @@ fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> bool {
         }
     };
 
-    if let Err(primary_err) = write_settings_to_path(&primary_path, settings) {
-        let legacy_path = match get_legacy_settings_path(app) {
-            Ok(path) => path,
-            Err(err) => {
-                tracing::error!("{}", primary_err);
-                tracing::error!("Failed to resolve legacy settings path: {}", err);
-                return false;
-            }
-        };
-
-        if legacy_path == primary_path {
-            tracing::error!("{}", primary_err);
-            return false;
-        }
-
-        tracing::warn!(
-            "{}. Falling back to legacy path ({}).",
-            primary_err,
-            legacy_path.display()
-        );
-
-        if let Err(legacy_err) = write_settings_to_path(&legacy_path, settings) {
-            tracing::error!("{}", legacy_err);
-            return false;
-        }
+    if let Err(err) = write_settings_to_path(&path, settings) {
+        tracing::error!("{}", err);
+        return false;
     }
 
     true

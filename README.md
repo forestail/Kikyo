@@ -39,7 +39,7 @@ npm run tauri dev
 
 ```bash
 cd crates/kikyo-ui-tauri
-npm run tauri build
+npm run build:installer
 ```
 
 ポータブル版 (zip):
@@ -59,8 +59,9 @@ cargo test -p kikyo-core
 
 ## 設定ファイル
 
-- アプリ設定は `settings.json` に保存されます（既定: `kikyo.exe` と同じディレクトリ）。
-- `kikyo.exe` と同じディレクトリに書き込めない場合は、従来どおり Tauri の app config dir へフォールバックします。
+- インストーラ版: 常に Tauri の app config dir (`%APPDATA%\com.forestail.kikyo\settings.json`) を使用します。
+- ポータブル版: 常に `kikyo.exe` と同じディレクトリの `settings.json` を使用します。
+- ポータブル版は appdata 内の設定ファイルを参照・保存しません。
 - 主な保存項目:
   - レイアウト一覧（`layout_entries`）
   - 現在のアクティブレイアウト（`active_layout_id`）
