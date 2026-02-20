@@ -417,6 +417,10 @@ function singlePressAllowsRepeat(value) {
   return value === "Enable" || value === "SpaceKey";
 }
 
+function normalizeThumbKeyValue(value) {
+  return typeof value === "string" && value.length > 0 ? value : "None";
+}
+
 function getThumbRepeatSetting(side) {
   if (side === "left") return thumbLeftRepeatSetting;
   if (side === "right") return thumbRightRepeatSetting;
@@ -481,7 +485,7 @@ function updateUI(profile) {
 
   // Left Thumb
   if (profile.thumb_left) {
-    if (thumbLeftKeySel) thumbLeftKeySel.value = profile.thumb_left.key;
+    if (thumbLeftKeySel) thumbLeftKeySel.value = normalizeThumbKeyValue(profile.thumb_left.key);
     if (thumbLeftContinuousCb) thumbLeftContinuousCb.checked = profile.thumb_left.continuous;
     if (thumbLeftSinglePressSel) thumbLeftSinglePressSel.value = profile.thumb_left.single_press;
     if (thumbLeftRepeatCb) thumbLeftRepeatCb.checked = profile.thumb_left.repeat;
@@ -489,7 +493,7 @@ function updateUI(profile) {
   }
   // Right Thumb
   if (profile.thumb_right) {
-    if (thumbRightKeySel) thumbRightKeySel.value = profile.thumb_right.key;
+    if (thumbRightKeySel) thumbRightKeySel.value = normalizeThumbKeyValue(profile.thumb_right.key);
     if (thumbRightContinuousCb) thumbRightContinuousCb.checked = profile.thumb_right.continuous;
     if (thumbRightSinglePressSel) thumbRightSinglePressSel.value = profile.thumb_right.single_press;
     if (thumbRightRepeatCb) thumbRightRepeatCb.checked = profile.thumb_right.repeat;
@@ -497,7 +501,7 @@ function updateUI(profile) {
   }
   // Extended Thumb 1
   if (profile.extended_thumb1) {
-    if (extThumb1KeySel) extThumb1KeySel.value = profile.extended_thumb1.key;
+    if (extThumb1KeySel) extThumb1KeySel.value = normalizeThumbKeyValue(profile.extended_thumb1.key);
     if (extThumb1ContinuousCb) extThumb1ContinuousCb.checked = profile.extended_thumb1.continuous;
     if (extThumb1SinglePressSel) extThumb1SinglePressSel.value = profile.extended_thumb1.single_press;
     if (extThumb1RepeatCb) extThumb1RepeatCb.checked = profile.extended_thumb1.repeat;
@@ -505,7 +509,7 @@ function updateUI(profile) {
   }
   // Extended Thumb 2
   if (profile.extended_thumb2) {
-    if (extThumb2KeySel) extThumb2KeySel.value = profile.extended_thumb2.key;
+    if (extThumb2KeySel) extThumb2KeySel.value = normalizeThumbKeyValue(profile.extended_thumb2.key);
     if (extThumb2ContinuousCb) extThumb2ContinuousCb.checked = profile.extended_thumb2.continuous;
     if (extThumb2SinglePressSel) extThumb2SinglePressSel.value = profile.extended_thumb2.single_press;
     if (extThumb2RepeatCb) extThumb2RepeatCb.checked = profile.extended_thumb2.repeat;
@@ -550,7 +554,7 @@ async function saveProfile() {
 
   // Left Thumb
   if (!currentProfile.thumb_left) currentProfile.thumb_left = {};
-  currentProfile.thumb_left.key = thumbLeftKeySel.value;
+  currentProfile.thumb_left.key = normalizeThumbKeyValue(thumbLeftKeySel.value);
   currentProfile.thumb_left.continuous = thumbLeftContinuousCb.checked;
   currentProfile.thumb_left.single_press = thumbLeftSinglePressSel.value;
   const leftAllowsRepeat = singlePressAllowsRepeat(thumbLeftSinglePressSel.value);
@@ -562,7 +566,7 @@ async function saveProfile() {
 
   // Right Thumb
   if (!currentProfile.thumb_right) currentProfile.thumb_right = {};
-  currentProfile.thumb_right.key = thumbRightKeySel.value;
+  currentProfile.thumb_right.key = normalizeThumbKeyValue(thumbRightKeySel.value);
   currentProfile.thumb_right.continuous = thumbRightContinuousCb.checked;
   currentProfile.thumb_right.single_press = thumbRightSinglePressSel.value;
   const rightAllowsRepeat = singlePressAllowsRepeat(thumbRightSinglePressSel.value);
@@ -574,7 +578,7 @@ async function saveProfile() {
 
   // Extended Thumb 1
   if (!currentProfile.extended_thumb1) currentProfile.extended_thumb1 = {};
-  currentProfile.extended_thumb1.key = extThumb1KeySel.value;
+  currentProfile.extended_thumb1.key = normalizeThumbKeyValue(extThumb1KeySel.value);
   currentProfile.extended_thumb1.continuous = extThumb1ContinuousCb.checked;
   currentProfile.extended_thumb1.single_press = extThumb1SinglePressSel.value;
   const ext1AllowsRepeat = singlePressAllowsRepeat(extThumb1SinglePressSel.value);
@@ -587,7 +591,7 @@ async function saveProfile() {
 
   // Extended Thumb 2
   if (!currentProfile.extended_thumb2) currentProfile.extended_thumb2 = {};
-  currentProfile.extended_thumb2.key = extThumb2KeySel.value;
+  currentProfile.extended_thumb2.key = normalizeThumbKeyValue(extThumb2KeySel.value);
   currentProfile.extended_thumb2.continuous = extThumb2ContinuousCb.checked;
   currentProfile.extended_thumb2.single_press = extThumb2SinglePressSel.value;
   const ext2AllowsRepeat = singlePressAllowsRepeat(extThumb2SinglePressSel.value);
@@ -678,13 +682,6 @@ function setupAutoSave() {
   });
 }
 
-function keyOptionsWithoutNone(selectEl) {
-  if (!selectEl) return "";
-  const clone = selectEl.cloneNode(true);
-  clone.querySelectorAll('option[value="None"]').forEach((el) => el.remove());
-  return clone.innerHTML;
-}
-
 function ensureExtendedThumbSection() {
   const thumbSection = document.querySelector("#section-thumb");
   const chordSection = document.querySelector("#section-chord");
@@ -702,7 +699,7 @@ function ensureExtendedThumbSection() {
 
   if (document.querySelector("#section-extended-thumb")) return;
 
-  const keyOptions = keyOptionsWithoutNone(document.querySelector("#thumb-left-key"));
+  const keyOptions = document.querySelector("#thumb-left-key")?.innerHTML || "";
   const singlePressOptions = document.querySelector("#thumb-left-single-press")?.innerHTML || "";
 
   const section = document.createElement("div");
