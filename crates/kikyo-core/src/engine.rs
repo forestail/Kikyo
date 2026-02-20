@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::debug;
-use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX,
+};
 
 lazy_static::lazy_static! {
     pub static ref ENGINE: Mutex<Engine> = Mutex::new(Engine::default());
@@ -42,12 +44,14 @@ struct DeferredEnterRollover {
     wait_for: ScKey,
     down_emitted: bool,
     up_seen_while_waiting: bool,
+    started_at: Instant,
 }
 
 const EXTENDED_THUMB_SHIFT_1_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1";
 const EXTENDED_THUMB_SHIFT_2_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2";
+const DEFERRED_ENTER_RECOVERY_TIMEOUT_MS: u64 = 1000;
 
 thread_local! {
     static SECTION_NAME_SCRATCH: RefCell<String> = RefCell::new(String::with_capacity(64));
@@ -409,6 +413,8 @@ impl Engine {
         if let Some(pseudo) = pseudo_key {
             return emit_pseudo_function_key(pseudo, up);
         }
+
+        self.recover_stale_deferred_enter_rollover();
 
         if let Some(action) =
             self.handle_deferred_enter_event(source_key, key, pass_through_current, up)
@@ -844,6 +850,59 @@ impl Engine {
             .map(|(k, _)| k)
     }
 
+    fn recover_stale_deferred_enter_rollover(&mut self) {
+        let Some(deferred) = self.deferred_enter_rollover else {
+            return;
+        };
+
+        if deferred.down_emitted {
+            return;
+        }
+
+        if !self.should_recover_deferred_enter_rollover(deferred) {
+            return;
+        }
+
+        self.purge_stale_key_from_state(deferred.wait_for);
+        self.deferred_enter_rollover = None;
+    }
+
+    fn should_recover_deferred_enter_rollover(&self, deferred: DeferredEnterRollover) -> bool {
+        if let Some(wait_for_down) = Self::is_sc_key_physically_down(deferred.wait_for) {
+            return !wait_for_down;
+        }
+
+        deferred.started_at.elapsed().as_millis() as u64 >= DEFERRED_ENTER_RECOVERY_TIMEOUT_MS
+    }
+
+    fn is_sc_key_physically_down(key: ScKey) -> Option<bool> {
+        let mut scan = key.sc as u32;
+        if key.ext {
+            scan |= 0xE000;
+        }
+        let vk = unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) } as i32;
+        if vk == 0 {
+            return None;
+        }
+        let pressed = unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 };
+        Some(pressed)
+    }
+
+    fn purge_stale_key_from_state(&mut self, key: ScKey) {
+        self.chord_engine.state.pressed.remove(&key);
+        self.chord_engine.state.down_ts.remove(&key);
+        self.chord_engine.state.pending.retain(|p| p.key != key);
+        self.chord_engine.state.passed_keys.remove(&key);
+        self.chord_engine.state.used_modifiers.remove(&key);
+        self.pending_nonshift_for_shift.remove(&key);
+        self.repeat_plans.remove(&key);
+        self.passthrough_thumb_shift_modifiers
+            .retain(|k, v| *k != key && *v != key);
+        if self.chord_engine.state.prefix_pending == Some(key) {
+            self.chord_engine.state.prefix_pending = None;
+        }
+    }
+
     fn start_deferred_enter_rollover(
         &mut self,
         source_key: ScKey,
@@ -865,6 +924,7 @@ impl Engine {
             wait_for,
             down_emitted: false,
             up_seen_while_waiting: false,
+            started_at: Instant::now(),
         });
         true
     }
@@ -3014,6 +3074,77 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             KeyAction::Pass,
             "Enter key (0x1C) should pass immediately (Up)"
         );
+    }
+
+    #[test]
+    fn test_stale_deferred_enter_rollover_is_recovered() {
+        let config = "
+[繝ｭ繝ｼ繝槫ｭ励す繝輔ヨ辟｡縺余
+; R2 (A only defined)
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let stale_wait_key = ScKey::new(0xFF, false);
+        let now = Instant::now();
+        engine.chord_engine.state.pressed.insert(stale_wait_key);
+        engine.chord_engine.state.down_ts.insert(stale_wait_key, now);
+        engine.chord_engine.state.pending.push(PendingKey {
+            key: stale_wait_key,
+            t_down: now,
+            t_up: None,
+            used: false,
+        });
+        engine.chord_engine.state.passed_keys.insert(stale_wait_key);
+        engine
+            .chord_engine
+            .state
+            .used_modifiers
+            .insert(stale_wait_key);
+        engine.pending_nonshift_for_shift.insert(stale_wait_key);
+        engine.repeat_plans.insert(stale_wait_key, vec![stale_wait_key]);
+        engine
+            .passthrough_thumb_shift_modifiers
+            .insert(stale_wait_key, ScKey::new(0x2A, false));
+        engine.chord_engine.state.prefix_pending = Some(stale_wait_key);
+        engine.deferred_enter_rollover = Some(DeferredEnterRollover {
+            source_key: ScKey::new(0x1C, false),
+            pass_through: PassThroughCurrent::Original,
+            wait_for: stale_wait_key,
+            down_emitted: false,
+            up_seen_while_waiting: false,
+            started_at: Instant::now()
+                - Duration::from_millis(DEFERRED_ENTER_RECOVERY_TIMEOUT_MS + 1),
+        });
+
+        // Should recover stale deferred state and pass Enter immediately.
+        let res = engine.process_key(0x1C, false, false, false);
+        assert_eq!(res, KeyAction::Pass);
+        assert!(engine.deferred_enter_rollover.is_none());
+        assert!(!engine.chord_engine.state.pressed.contains(&stale_wait_key));
+        assert!(!engine.chord_engine.state.down_ts.contains_key(&stale_wait_key));
+        assert!(
+            !engine
+                .chord_engine
+                .state
+                .pending
+                .iter()
+                .any(|p| p.key == stale_wait_key)
+        );
+        assert!(!engine.chord_engine.state.passed_keys.contains(&stale_wait_key));
+        assert!(!engine.chord_engine.state.used_modifiers.contains(&stale_wait_key));
+        assert!(!engine.pending_nonshift_for_shift.contains(&stale_wait_key));
+        assert!(!engine.repeat_plans.contains_key(&stale_wait_key));
+        assert!(
+            !engine
+                .passthrough_thumb_shift_modifiers
+                .contains_key(&stale_wait_key)
+        );
+        assert_ne!(engine.chord_engine.state.prefix_pending, Some(stale_wait_key));
     }
 
     #[test]
