@@ -1,12 +1,12 @@
-const ABOUT_CONTRIBUTORS_HEADING = "配列検証にご協力いただいた皆さま";
+const ABOUT_CONTRIBUTORS_HEADING = "開発・検証にご協力いただいた皆さま";
 const ABOUT_CONTRIBUTORS_NOTE = "（敬称略・順不同）";
 const DEFAULT_INLINE_VISIBLE_COUNT = 12;
 
 // Keep all contributor handles in one place.
 // Add names here when available.
 export const ABOUT_ARRAY_VALIDATION_CONTRIBUTORS = [
-  // "HN1",
-  // "HN2",
+  //"〇〇〇",
+  //"□□□",
 ];
 
 function normalizeContributorNames(contributors) {
