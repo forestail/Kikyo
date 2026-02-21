@@ -810,7 +810,8 @@ impl ChordEngine {
                             || self.modifier_kind(p2.key).is_modifier()
                             || self.modifier_kind(p3.key).is_modifier();
 
-                        if valid && (!self.profile.require_modifier_for_char_chord || has_modifier) {
+                        if valid && (!self.profile.require_modifier_for_char_chord || has_modifier)
+                        {
                             println!(
                                 "DEBUG: 3-key chord formed: {:?}, {:?}, {:?}",
                                 p1.key, p2.key, p3.key

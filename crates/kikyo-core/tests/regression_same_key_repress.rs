@@ -1,4 +1,4 @@
-﻿use kikyo_core::engine::Engine;
+use kikyo_core::engine::Engine;
 use kikyo_core::parser;
 use kikyo_core::types::{InputEvent, KeyAction};
 use std::path::PathBuf;
@@ -44,16 +44,16 @@ fn delayed_release_of_first_k_does_not_drop_second_f() {
     // Keep the first K pressed across the second F down.
     run_and_collect(&mut engine, 0x21, false, &mut all); // F1 down
     run_and_collect(&mut engine, 0x25, false, &mut all); // K1 down
-    run_and_collect(&mut engine, 0x21, true, &mut all);  // F1 up
+    run_and_collect(&mut engine, 0x21, true, &mut all); // F1 up
     run_and_collect(&mut engine, 0x21, false, &mut all); // F2 down
-    run_and_collect(&mut engine, 0x25, true, &mut all);  // K1 up (delayed)
-    run_and_collect(&mut engine, 0x21, true, &mut all);  // F2 up
+    run_and_collect(&mut engine, 0x25, true, &mut all); // K1 up (delayed)
+    run_and_collect(&mut engine, 0x21, true, &mut all); // F2 up
     run_and_collect(&mut engine, 0x1F, false, &mut all); // S down
     run_and_collect(&mut engine, 0x32, false, &mut all); // M down
-    run_and_collect(&mut engine, 0x32, true, &mut all);  // M up
-    run_and_collect(&mut engine, 0x1F, true, &mut all);  // S up
+    run_and_collect(&mut engine, 0x32, true, &mut all); // M up
+    run_and_collect(&mut engine, 0x1F, true, &mut all); // S up
     run_and_collect(&mut engine, 0x25, false, &mut all); // K2 down
-    run_and_collect(&mut engine, 0x25, true, &mut all);  // K2 up
+    run_and_collect(&mut engine, 0x25, true, &mut all); // K2 up
 
     // mo nn da i (scancode down order)
     let downs = collect_down_sc(&all);

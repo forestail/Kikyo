@@ -56,6 +56,8 @@ static LAST_REINSTALL_MS: AtomicU64 = AtomicU64::new(0);
 static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
+static RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
 static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static START_INSTANT: OnceLock<std::time::Instant> = OnceLock::new();
@@ -76,14 +78,95 @@ struct HookEvent {
     vk: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct CapturedShiftSideState {
+    physical_down: bool,
+    os_down_sent: bool,
+    used_for_layout_output: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CapturedShiftState {
+    left: CapturedShiftSideState,
+    right: CapturedShiftSideState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShiftSide {
+    Left,
+    Right,
+}
+
 lazy_static::lazy_static! {
     static ref HOOK_QUEUE: (Sender<HookEvent>, Receiver<HookEvent>) =
         crossbeam_channel::bounded(HOOK_QUEUE_SIZE);
+    static ref CAPTURED_SHIFT_STATE: Mutex<CapturedShiftState> =
+        Mutex::new(CapturedShiftState::default());
 }
 
 fn monotonic_ms() -> u64 {
     let start = START_INSTANT.get_or_init(std::time::Instant::now);
     start.elapsed().as_millis() as u64
+}
+
+fn shift_side_for_event(sc: u16, vk: u32) -> Option<ShiftSide> {
+    if vk == VK_LSHIFT.0 as u32 || sc == 0x2A {
+        return Some(ShiftSide::Left);
+    }
+    if vk == VK_RSHIFT.0 as u32 || sc == 0x36 {
+        return Some(ShiftSide::Right);
+    }
+    None
+}
+
+fn shift_scancode(side: ShiftSide) -> u16 {
+    match side {
+        ShiftSide::Left => 0x2A,
+        ShiftSide::Right => 0x36,
+    }
+}
+
+fn captured_shift_side_enabled(side: ShiftSide) -> bool {
+    match side {
+        ShiftSide::Left => LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.load(Ordering::Relaxed),
+        ShiftSide::Right => RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.load(Ordering::Relaxed),
+    }
+}
+
+fn captured_shift_side_mut(
+    state: &mut CapturedShiftState,
+    side: ShiftSide,
+) -> &mut CapturedShiftSideState {
+    match side {
+        ShiftSide::Left => &mut state.left,
+        ShiftSide::Right => &mut state.right,
+    }
+}
+
+fn forward_pending_captured_shift_downs_if_needed() {
+    let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    for side in [ShiftSide::Left, ShiftSide::Right] {
+        let side_state = captured_shift_side_mut(&mut state, side);
+        if side_state.physical_down && !side_state.os_down_sent {
+            let _ = inject_scancode(shift_scancode(side), false, false);
+            side_state.os_down_sent = true;
+        }
+    }
+}
+
+fn mark_captured_shift_used_for_layout_output() {
+    let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    for side in [ShiftSide::Left, ShiftSide::Right] {
+        let side_state = captured_shift_side_mut(&mut state, side);
+        if side_state.physical_down && !side_state.os_down_sent {
+            side_state.used_for_layout_output = true;
+        }
+    }
+}
+
+fn captured_shift_down_snapshot() -> (bool, bool) {
+    let state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    (state.left.physical_down, state.right.physical_down)
 }
 
 fn ensure_worker_thread() {
@@ -114,6 +197,14 @@ pub fn refresh_runtime_flags_from_engine() {
     ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
     LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
     RIGHT_SHIFT_NEEDS_HANDLING.store(engine.needs_right_shift_handling(), Ordering::Relaxed);
+    LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(
+        engine.capture_left_shift_for_romaji_pinky_shift(),
+        Ordering::Relaxed,
+    );
+    RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(
+        engine.capture_right_shift_for_romaji_pinky_shift(),
+        Ordering::Relaxed,
+    );
     LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
     RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
 }
@@ -237,16 +328,23 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let alt_needs_handling = ALT_NEEDS_HANDLING.load(Ordering::Relaxed);
         let left_shift_needs_handling = LEFT_SHIFT_NEEDS_HANDLING.load(Ordering::Relaxed);
         let right_shift_needs_handling = RIGHT_SHIFT_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let left_shift_capture_for_romaji =
+            LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.load(Ordering::Relaxed);
+        let right_shift_capture_for_romaji =
+            RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.load(Ordering::Relaxed);
         let left_ctrl_needs_handling = LEFT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
         let right_ctrl_needs_handling = RIGHT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
         let shift_event_needs_handling = if !is_shift_vk {
             false
         } else if kbd.vkCode == VK_LSHIFT.0 as u32 || kbd.scanCode as u16 == 0x2A {
-            left_shift_needs_handling
+            left_shift_needs_handling || left_shift_capture_for_romaji
         } else if kbd.vkCode == VK_RSHIFT.0 as u32 || kbd.scanCode as u16 == 0x36 {
-            right_shift_needs_handling
+            right_shift_needs_handling || right_shift_capture_for_romaji
         } else {
-            left_shift_needs_handling || right_shift_needs_handling
+            left_shift_needs_handling
+                || right_shift_needs_handling
+                || left_shift_capture_for_romaji
+                || right_shift_capture_for_romaji
         };
         let ctrl_event_needs_handling = if !is_ctrl_vk {
             false
@@ -264,6 +362,24 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             left_ctrl_needs_handling || right_ctrl_needs_handling
         };
 
+        // Keep captured Shift physical state in sync at hook time so the next key
+        // can observe Shift even before worker-thread processing catches up.
+        if is_shift_vk {
+            if let Some(side) = shift_side_for_event(kbd.scanCode as u16, kbd.vkCode) {
+                if captured_shift_side_enabled(side) {
+                    let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
+                    let side_state = captured_shift_side_mut(&mut captured, side);
+                    if up {
+                        side_state.physical_down = false;
+                    } else {
+                        side_state.physical_down = true;
+                        side_state.os_down_sent = false;
+                        side_state.used_for_layout_output = false;
+                    }
+                }
+            }
+        }
+
         // Pass through Modifier key events themselves to ensure OS state is updated
         if (is_shift_vk && !shift_event_needs_handling)
             || (is_ctrl_vk && !ctrl_event_needs_handling)
@@ -280,8 +396,13 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || (rctrl_pressed && !right_ctrl_needs_handling);
         let lshift_pressed = GetAsyncKeyState(VK_LSHIFT.0 as i32) as u16 & 0x8000 != 0;
         let rshift_pressed = GetAsyncKeyState(VK_RSHIFT.0 as i32) as u16 & 0x8000 != 0;
+        let (captured_lshift_pressed, captured_rshift_pressed) = captured_shift_down_snapshot();
         let shift_pressed = (lshift_pressed && !left_shift_needs_handling)
-            || (rshift_pressed && !right_shift_needs_handling);
+            || (rshift_pressed && !right_shift_needs_handling)
+            || (lshift_pressed && left_shift_capture_for_romaji)
+            || (rshift_pressed && right_shift_capture_for_romaji)
+            || (captured_lshift_pressed && left_shift_capture_for_romaji)
+            || (captured_rshift_pressed && right_shift_capture_for_romaji);
         let lwin_pressed = GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000 != 0;
         let rwin_pressed = GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000 != 0;
         let alt_pressed = is_alt_vk || (kbd.flags.0 & LLKHF_ALTDOWN.0) != 0;
@@ -330,11 +451,46 @@ fn hook_worker(rx: Receiver<HookEvent>) {
 }
 
 fn process_event(event: HookEvent) {
+    if let Some(side) = shift_side_for_event(event.sc, event.vk) {
+        if captured_shift_side_enabled(side) {
+            let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
+            let side_state = captured_shift_side_mut(&mut captured, side);
+
+            if !event.up {
+                side_state.physical_down = true;
+                side_state.os_down_sent = false;
+                side_state.used_for_layout_output = false;
+                return;
+            }
+
+            if side_state.os_down_sent {
+                let _ = inject_scancode(shift_scancode(side), false, true);
+            } else if !side_state.used_for_layout_output {
+                // Standalone Shift should still be observed by other apps.
+                let _ = inject_scancode(shift_scancode(side), false, false);
+                let _ = inject_scancode(shift_scancode(side), false, true);
+            }
+
+            *side_state = CapturedShiftSideState::default();
+            return;
+        }
+    }
+
+    let is_shift_event = shift_side_for_event(event.sc, event.vk).is_some();
+
     let action = {
         let mut engine = ENGINE.lock();
         ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
         LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
         RIGHT_SHIFT_NEEDS_HANDLING.store(engine.needs_right_shift_handling(), Ordering::Relaxed);
+        LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(
+            engine.capture_left_shift_for_romaji_pinky_shift(),
+            Ordering::Relaxed,
+        );
+        RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(
+            engine.capture_right_shift_for_romaji_pinky_shift(),
+            Ordering::Relaxed,
+        );
         LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
         RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
 
@@ -354,10 +510,16 @@ fn process_event(event: HookEvent) {
 
     match action {
         KeyAction::Pass => {
+            if !is_shift_event {
+                forward_pending_captured_shift_downs_if_needed();
+            }
             let _ = inject_scancode(event.sc, event.ext, event.up);
         }
         KeyAction::Block => {}
         KeyAction::Inject(events) => {
+            if !is_shift_event && event.shift {
+                mark_captured_shift_used_for_layout_output();
+            }
             for ev in events {
                 match ev {
                     InputEvent::Scancode(sc, ext, up) => {

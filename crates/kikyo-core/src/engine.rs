@@ -51,6 +51,8 @@ const EXTENDED_THUMB_SHIFT_1_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1";
 const EXTENDED_THUMB_SHIFT_2_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2";
+const ROMAJI_PINKY_SHIFT_SECTION: &str =
+    "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
 const DEFERRED_ENTER_RECOVERY_TIMEOUT_MS: u64 = 1000;
 
 thread_local! {
@@ -217,6 +219,22 @@ impl Engine {
 
     pub fn needs_right_shift_handling(&self) -> bool {
         self.needs_sc_key_handling(ScKey::new(0x36, false))
+    }
+
+    fn has_romaji_pinky_shift_section_in_layout(&self) -> bool {
+        self.layout
+            .as_ref()
+            .is_some_and(|layout| layout.sections.contains_key(ROMAJI_PINKY_SHIFT_SECTION))
+    }
+
+    pub fn capture_left_shift_for_romaji_pinky_shift(&self) -> bool {
+        self.has_romaji_pinky_shift_section_in_layout()
+            && !self.needs_sc_key_handling(ScKey::new(0x2A, false))
+    }
+
+    pub fn capture_right_shift_for_romaji_pinky_shift(&self) -> bool {
+        self.has_romaji_pinky_shift_section_in_layout()
+            && !self.needs_sc_key_handling(ScKey::new(0x36, false))
     }
 
     pub fn needs_left_ctrl_handling(&self) -> bool {
@@ -779,8 +797,7 @@ impl Engine {
         }
 
         let right_shift = ScKey::new(0x36, false);
-        if self.is_thumb_key(right_shift)
-            && self.chord_engine.state.pressed.contains(&right_shift)
+        if self.is_thumb_key(right_shift) && self.chord_engine.state.pressed.contains(&right_shift)
         {
             return Some(right_shift);
         }
@@ -823,7 +840,8 @@ impl Engine {
             return KeyAction::Inject(vec![current_event]);
         }
 
-        self.passthrough_thumb_shift_modifiers.insert(key, shift_key);
+        self.passthrough_thumb_shift_modifiers
+            .insert(key, shift_key);
         KeyAction::Inject(vec![
             InputEvent::Scancode(shift_key.sc, shift_key.ext, false),
             current_event,
@@ -1570,6 +1588,40 @@ impl Engine {
         crate::jis_map::key_to_rc(key)
     }
 
+    fn is_plain_romaji_pinky_shift_active(&self, shift_held: bool, is_japanese: bool) -> bool {
+        if !shift_held || !is_japanese {
+            return false;
+        }
+
+        let Some(layout) = self.layout.as_ref() else {
+            return false;
+        };
+        if !layout.sections.contains_key(ROMAJI_PINKY_SHIFT_SECTION) {
+            return false;
+        }
+
+        let Some(tk) = self.chord_engine.profile.thumb_keys.as_ref() else {
+            return true;
+        };
+
+        let mut has_thumb = self.chord_engine.state.pressed.iter().any(|k| {
+            tk.left.contains(k)
+                || tk.right.contains(k)
+                || tk.ext1.contains(k)
+                || tk.ext2.contains(k)
+        });
+        if !has_thumb {
+            if let Some(prefix_thumb) = self.chord_engine.state.prefix_pending {
+                has_thumb = tk.left.contains(&prefix_thumb)
+                    || tk.right.contains(&prefix_thumb)
+                    || tk.ext1.contains(&prefix_thumb)
+                    || tk.ext2.contains(&prefix_thumb);
+            }
+        }
+
+        !has_thumb
+    }
+
     fn token_to_events_with_ime(
         &self,
         token: &Token,
@@ -1580,9 +1632,21 @@ impl Engine {
             Token::None => None,
             Token::KeySequence(seq) => {
                 let mut events = Vec::new();
+                let effective_shift_held =
+                    if self.is_plain_romaji_pinky_shift_active(shift_held, is_japanese) {
+                        false
+                    } else {
+                        shift_held
+                    };
                 for stroke in seq {
                     // Strict scancode only for KeySequence (which now comes from single-quote/bare tokens)
-                    append_keystroke_events(&mut events, stroke, shift_held, false, is_japanese);
+                    append_keystroke_events(
+                        &mut events,
+                        stroke,
+                        effective_shift_held,
+                        false,
+                        is_japanese,
+                    );
                 }
                 if events.is_empty() {
                     None
@@ -2638,6 +2702,179 @@ xx,xx,s_base,xx,xx,xx,xx,xx,xx,xx,xx,xx
     }
 
     #[test]
+    fn test_romaji_pinky_shift_kana_sends_romaji_scancodes() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指シフト]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert_eq!(
+            engine.process_key(0x20, false, false, true),
+            KeyAction::Block
+        );
+        let res_up = engine.process_key(0x20, false, true, true);
+        match res_up {
+            KeyAction::Inject(evs) => {
+                let has_n = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x31, _, _)));
+                let has_o = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x18, _, _)));
+                let has_shift = evs.iter().any(|e| {
+                    matches!(
+                        e,
+                        InputEvent::Scancode(0x2A, _, _) | InputEvent::Scancode(0x36, _, _)
+                    )
+                });
+                assert!(has_n && has_o, "Expected romaji 'n' and 'o' scancodes");
+                assert!(
+                    !has_shift,
+                    "No Shift scancode should be injected for pinky-shift romaji output"
+                );
+            }
+            _ => panic!("Expected Inject for shifted kana mapping, got {:?}", res_up),
+        }
+    }
+
+    #[test]
+    fn test_romaji_pinky_shift_fullwidth_uppercase_emits_uppercase_keystroke() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指シフト]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,Ａ,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert_eq!(
+            engine.process_key(0x20, false, false, true),
+            KeyAction::Block
+        );
+        let res_up = engine.process_key(0x20, false, true, true);
+        match res_up {
+            KeyAction::Inject(evs) => {
+                let has_a = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x1E, _, _)));
+                let has_shift = evs.iter().any(|e| {
+                    matches!(
+                        e,
+                        InputEvent::Scancode(0x2A, _, _) | InputEvent::Scancode(0x36, _, _)
+                    )
+                });
+                assert!(has_a, "Expected 'A' scancode output");
+                assert!(
+                    has_shift,
+                    "Uppercase token should inject Shift modifier for uppercase key output"
+                );
+            }
+            _ => panic!(
+                "Expected Inject for shifted fullwidth uppercase mapping, got {:?}",
+                res_up
+            ),
+        }
+    }
+
+    #[test]
+    fn test_romaji_pinky_shift_undefined_key_passthrough_keeps_shift_modifier() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指シフト]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,b,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // 0x21 ('f') is undefined in both base and shifted sections.
+        // It should pass through, so the OS can apply normal Shift behavior.
+        assert_eq!(
+            engine.process_key(0x21, false, false, true),
+            KeyAction::Pass
+        );
+        assert_eq!(engine.process_key(0x21, false, true, true), KeyAction::Pass);
+    }
+
+    #[test]
+    fn test_romaji_pinky_shift_keeps_shift_key_as_plain_modifier_key() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指シフト]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert!(
+            !engine.needs_left_shift_handling(),
+            "Left Shift should remain passthrough so standalone Shift is recognized by other apps"
+        );
+        assert!(
+            !engine.needs_right_shift_handling(),
+            "Right Shift should remain passthrough so standalone Shift is recognized by other apps"
+        );
+    }
+
+    #[test]
     fn test_shift_rollover_chord_fallback_preserves_shift() {
         let config = "
 [ローマ字シフト無し]
@@ -3092,7 +3329,11 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         let stale_wait_key = ScKey::new(0xFF, false);
         let now = Instant::now();
         engine.chord_engine.state.pressed.insert(stale_wait_key);
-        engine.chord_engine.state.down_ts.insert(stale_wait_key, now);
+        engine
+            .chord_engine
+            .state
+            .down_ts
+            .insert(stale_wait_key, now);
         engine.chord_engine.state.pending.push(PendingKey {
             key: stale_wait_key,
             t_down: now,
@@ -3106,7 +3347,9 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             .used_modifiers
             .insert(stale_wait_key);
         engine.pending_nonshift_for_shift.insert(stale_wait_key);
-        engine.repeat_plans.insert(stale_wait_key, vec![stale_wait_key]);
+        engine
+            .repeat_plans
+            .insert(stale_wait_key, vec![stale_wait_key]);
         engine
             .passthrough_thumb_shift_modifiers
             .insert(stale_wait_key, ScKey::new(0x2A, false));
@@ -3126,25 +3369,36 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         assert_eq!(res, KeyAction::Pass);
         assert!(engine.deferred_enter_rollover.is_none());
         assert!(!engine.chord_engine.state.pressed.contains(&stale_wait_key));
-        assert!(!engine.chord_engine.state.down_ts.contains_key(&stale_wait_key));
-        assert!(
-            !engine
-                .chord_engine
-                .state
-                .pending
-                .iter()
-                .any(|p| p.key == stale_wait_key)
-        );
-        assert!(!engine.chord_engine.state.passed_keys.contains(&stale_wait_key));
-        assert!(!engine.chord_engine.state.used_modifiers.contains(&stale_wait_key));
+        assert!(!engine
+            .chord_engine
+            .state
+            .down_ts
+            .contains_key(&stale_wait_key));
+        assert!(!engine
+            .chord_engine
+            .state
+            .pending
+            .iter()
+            .any(|p| p.key == stale_wait_key));
+        assert!(!engine
+            .chord_engine
+            .state
+            .passed_keys
+            .contains(&stale_wait_key));
+        assert!(!engine
+            .chord_engine
+            .state
+            .used_modifiers
+            .contains(&stale_wait_key));
         assert!(!engine.pending_nonshift_for_shift.contains(&stale_wait_key));
         assert!(!engine.repeat_plans.contains_key(&stale_wait_key));
-        assert!(
-            !engine
-                .passthrough_thumb_shift_modifiers
-                .contains_key(&stale_wait_key)
+        assert!(!engine
+            .passthrough_thumb_shift_modifiers
+            .contains_key(&stale_wait_key));
+        assert_ne!(
+            engine.chord_engine.state.prefix_pending,
+            Some(stale_wait_key)
         );
-        assert_ne!(engine.chord_engine.state.prefix_pending, Some(stale_wait_key));
     }
 
     #[test]
@@ -4208,7 +4462,11 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
         }
 
-        assert_eq!(downs, vec![0x1E, 0x1F], "Expected rollover to emit A then S");
+        assert_eq!(
+            downs,
+            vec![0x1E, 0x1F],
+            "Expected rollover to emit A then S"
+        );
     }
 
     #[test]
@@ -4261,7 +4519,11 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
         }
 
-        assert_eq!(downs, vec![0x1E, 0x1F], "Expected rollover to emit A then S");
+        assert_eq!(
+            downs,
+            vec![0x1E, 0x1F],
+            "Expected rollover to emit A then S"
+        );
     }
 
     #[test]
@@ -4368,6 +4630,69 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
     }
 
     #[test]
+    fn test_capture_shift_for_romaji_pinky_shift_section() {
+        let config = "
+[ローマ字小指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        assert!(
+            engine.capture_left_shift_for_romaji_pinky_shift(),
+            "Left Shift should be capturable for romaji pinky shift when not otherwise assigned"
+        );
+        assert!(
+            engine.capture_right_shift_for_romaji_pinky_shift(),
+            "Right Shift should be capturable for romaji pinky shift when not otherwise assigned"
+        );
+    }
+
+    #[test]
+    fn test_capture_shift_for_romaji_pinky_shift_is_disabled_when_shift_is_assigned() {
+        let config = "
+[ローマ字小指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字右親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::LeftShift;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::RightShift;
+        engine.set_profile(profile);
+
+        assert!(
+            !engine.capture_left_shift_for_romaji_pinky_shift(),
+            "Left Shift capture should be off when LeftShift is explicitly assigned"
+        );
+        assert!(
+            !engine.capture_right_shift_for_romaji_pinky_shift(),
+            "Right Shift capture should be off when RightShift is explicitly assigned"
+        );
+    }
+
+    #[test]
     fn test_thumb_shift_key_falls_back_to_normal_shift_for_non_character_keys() {
         let config = r#"
 [ローマ字シフト無し]
@@ -4409,7 +4734,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                     "Home down should be emitted with synthetic Shift down"
                 );
             }
-            other => panic!("Expected Inject for Shift+Home down fallback, got {:?}", other),
+            other => panic!(
+                "Expected Inject for Shift+Home down fallback, got {:?}",
+                other
+            ),
         }
 
         match engine.process_key(0x47, true, true, false) {
@@ -4423,7 +4751,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                     "Home up should be emitted with synthetic Shift up"
                 );
             }
-            other => panic!("Expected Inject for Shift+Home up fallback, got {:?}", other),
+            other => panic!(
+                "Expected Inject for Shift+Home up fallback, got {:?}",
+                other
+            ),
         }
 
         assert_eq!(
@@ -4452,7 +4783,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                     "End down should be emitted with synthetic RightShift down"
                 );
             }
-            other => panic!("Expected Inject for RightShift+End down fallback, got {:?}", other),
+            other => panic!(
+                "Expected Inject for RightShift+End down fallback, got {:?}",
+                other
+            ),
         }
 
         match engine.process_key(0x4F, true, true, false) {
@@ -4466,7 +4800,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                     "End up should be emitted with synthetic RightShift up"
                 );
             }
-            other => panic!("Expected Inject for RightShift+End up fallback, got {:?}", other),
+            other => panic!(
+                "Expected Inject for RightShift+End up fallback, got {:?}",
+                other
+            ),
         }
 
         assert_eq!(
