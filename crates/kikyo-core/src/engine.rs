@@ -53,6 +53,15 @@ const EXTENDED_THUMB_SHIFT_2_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2";
 const ROMAJI_PINKY_SHIFT_SECTION: &str =
     "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const ROMAJI_PINKY_LEFT_THUMB_SHIFT_SECTION: &str =
+    "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{5de6}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const ROMAJI_PINKY_RIGHT_THUMB_SHIFT_SECTION: &str =
+    "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{53f3}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const ROMAJI_PINKY_SHIFT_SECTION_NAMES: [&str; 3] = [
+    ROMAJI_PINKY_SHIFT_SECTION,
+    ROMAJI_PINKY_LEFT_THUMB_SHIFT_SECTION,
+    ROMAJI_PINKY_RIGHT_THUMB_SHIFT_SECTION,
+];
 const DEFERRED_ENTER_RECOVERY_TIMEOUT_MS: u64 = 1000;
 
 thread_local! {
@@ -222,9 +231,11 @@ impl Engine {
     }
 
     fn has_romaji_pinky_shift_section_in_layout(&self) -> bool {
-        self.layout
-            .as_ref()
-            .is_some_and(|layout| layout.sections.contains_key(ROMAJI_PINKY_SHIFT_SECTION))
+        self.layout.as_ref().is_some_and(|layout| {
+            ROMAJI_PINKY_SHIFT_SECTION_NAMES
+                .iter()
+                .any(|section_name| layout.sections.contains_key(*section_name))
+        })
     }
 
     pub fn capture_left_shift_for_romaji_pinky_shift(&self) -> bool {
@@ -250,8 +261,12 @@ impl Engine {
             let targets = [
                 "ローマ字左親指シフト",
                 "ローマ字右親指シフト",
+                "ローマ字小指左親指シフト",
+                "ローマ字小指右親指シフト",
                 "英数左親指シフト",
                 "英数右親指シフト",
+                "英数小指左親指シフト",
+                "英数小指右親指シフト",
             ];
             for t in &targets {
                 if layout.sections.keys().any(|k| k.starts_with(t)) {
@@ -1588,7 +1603,7 @@ impl Engine {
         crate::jis_map::key_to_rc(key)
     }
 
-    fn is_plain_romaji_pinky_shift_active(&self, shift_held: bool, is_japanese: bool) -> bool {
+    fn is_romaji_pinky_shift_section_active(&self, shift_held: bool, is_japanese: bool) -> bool {
         if !shift_held || !is_japanese {
             return false;
         }
@@ -1596,30 +1611,51 @@ impl Engine {
         let Some(layout) = self.layout.as_ref() else {
             return false;
         };
-        if !layout.sections.contains_key(ROMAJI_PINKY_SHIFT_SECTION) {
-            return false;
-        }
 
         let Some(tk) = self.chord_engine.profile.thumb_keys.as_ref() else {
-            return true;
+            return layout.sections.contains_key(ROMAJI_PINKY_SHIFT_SECTION);
         };
 
-        let mut has_thumb = self.chord_engine.state.pressed.iter().any(|k| {
-            tk.left.contains(k)
-                || tk.right.contains(k)
-                || tk.ext1.contains(k)
-                || tk.ext2.contains(k)
-        });
-        if !has_thumb {
+        let mut has_left_thumb = false;
+        let mut has_right_thumb = false;
+        let mut has_ext1_thumb = false;
+        let mut has_ext2_thumb = false;
+        for k in &self.chord_engine.state.pressed {
+            if tk.left.contains(k) {
+                has_left_thumb = true;
+            }
+            if tk.right.contains(k) {
+                has_right_thumb = true;
+            }
+            if tk.ext1.contains(k) {
+                has_ext1_thumb = true;
+            }
+            if tk.ext2.contains(k) {
+                has_ext2_thumb = true;
+            }
+        }
+        if !has_left_thumb && !has_right_thumb && !has_ext1_thumb && !has_ext2_thumb {
             if let Some(prefix_thumb) = self.chord_engine.state.prefix_pending {
-                has_thumb = tk.left.contains(&prefix_thumb)
-                    || tk.right.contains(&prefix_thumb)
-                    || tk.ext1.contains(&prefix_thumb)
-                    || tk.ext2.contains(&prefix_thumb);
+                has_left_thumb = tk.left.contains(&prefix_thumb);
+                has_right_thumb = tk.right.contains(&prefix_thumb);
+                has_ext1_thumb = tk.ext1.contains(&prefix_thumb);
+                has_ext2_thumb = tk.ext2.contains(&prefix_thumb);
             }
         }
 
-        !has_thumb
+        if !has_left_thumb && !has_right_thumb && (has_ext1_thumb || has_ext2_thumb) {
+            return false;
+        }
+
+        let section_name = if has_left_thumb {
+            ROMAJI_PINKY_LEFT_THUMB_SHIFT_SECTION
+        } else if has_right_thumb {
+            ROMAJI_PINKY_RIGHT_THUMB_SHIFT_SECTION
+        } else {
+            ROMAJI_PINKY_SHIFT_SECTION
+        };
+
+        layout.sections.contains_key(section_name)
     }
 
     fn token_to_events_with_ime(
@@ -1633,7 +1669,7 @@ impl Engine {
             Token::KeySequence(seq) => {
                 let mut events = Vec::new();
                 let effective_shift_held =
-                    if self.is_plain_romaji_pinky_shift_active(shift_held, is_japanese) {
+                    if self.is_romaji_pinky_shift_section_active(shift_held, is_japanese) {
                         false
                     } else {
                         shift_held
@@ -4650,6 +4686,163 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             engine.capture_right_shift_for_romaji_pinky_shift(),
             "Right Shift should be capturable for romaji pinky shift when not otherwise assigned"
         );
+    }
+
+    #[test]
+    fn test_capture_shift_for_romaji_pinky_thumb_shift_sections() {
+        let config = "
+[ローマ字小指左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,b,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指右親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,c,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        assert!(
+            engine.capture_left_shift_for_romaji_pinky_shift(),
+            "Left Shift should be capturable when romaji pinky+left-thumb section exists"
+        );
+        assert!(
+            engine.capture_right_shift_for_romaji_pinky_shift(),
+            "Right Shift should be capturable when romaji pinky+right-thumb section exists"
+        );
+    }
+
+    #[test]
+    fn test_romaji_pinky_thumb_shift_sections_are_treated_as_thumb_shift_sections() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,b,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指右親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,c,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let profile = engine.get_profile();
+        assert!(
+            profile.thumb_keys.is_some(),
+            "Thumb keys should remain enabled when romaji pinky+thumb sections exist"
+        );
+
+        assert_eq!(
+            engine.process_key(0x7B, false, false, true),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x20, false, false, true),
+            KeyAction::Block
+        );
+        match engine.process_key(0x20, false, true, true) {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x30, _, _))),
+                    "Expected 'b' output from [ローマ字小指左親指シフト]"
+                );
+            }
+            other => panic!("Expected Inject for left pinky+thumb shifted output, got {other:?}"),
+        }
+        assert_eq!(engine.process_key(0x7B, false, true, true), KeyAction::Block);
+
+        assert_eq!(
+            engine.process_key(0x79, false, false, true),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x20, false, false, true),
+            KeyAction::Block
+        );
+        match engine.process_key(0x20, false, true, true) {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x2E, _, _))),
+                    "Expected 'c' output from [ローマ字小指右親指シフト]"
+                );
+            }
+            other => panic!("Expected Inject for right pinky+thumb shifted output, got {other:?}"),
+        }
+        assert_eq!(engine.process_key(0x79, false, true, true), KeyAction::Block);
+    }
+
+    #[test]
+    fn test_romaji_pinky_left_thumb_shift_fullwidth_uppercase_emits_uppercase_keystroke() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字小指左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,Ａ,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert_eq!(
+            engine.process_key(0x7B, false, false, true),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x20, false, false, true),
+            KeyAction::Block
+        );
+        let res_up = engine.process_key(0x20, false, true, true);
+        match res_up {
+            KeyAction::Inject(evs) => {
+                let has_a = evs
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Scancode(0x1E, _, _)));
+                let has_shift = evs.iter().any(|e| {
+                    matches!(
+                        e,
+                        InputEvent::Scancode(0x2A, _, _) | InputEvent::Scancode(0x36, _, _)
+                    )
+                });
+                assert!(has_a, "Expected 'A' scancode output");
+                assert!(
+                    has_shift,
+                    "Uppercase token should inject Shift modifier for pinky+thumb shifted output"
+                );
+            }
+            _ => panic!(
+                "Expected Inject for pinky+thumb shifted fullwidth uppercase mapping, got {:?}",
+                res_up
+            ),
+        }
+        assert_eq!(engine.process_key(0x7B, false, true, true), KeyAction::Block);
     }
 
     #[test]
