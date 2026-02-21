@@ -1,4 +1,4 @@
-﻿use crate::types::{KeySpec, KeyStroke, Layout, Modifiers, Plane, Rc, Section, Token};
+use crate::types::{KeySpec, KeyStroke, Layout, Modifiers, Plane, Rc, Section, Token};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -44,13 +44,17 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
 
     let mut current_section_name: Option<String> = None;
     let mut current_section = Section::default();
+    let mut current_parse_mode = TokenParseMode::Romaji;
 
     // State within a section
     let mut current_plane_tag: Option<String> = None; // None means base plane
     let mut current_rows: Vec<Vec<String>> = Vec::new();
 
     // Helper to flush current plane
-    let flush_plane = |sec: &mut Section, tag: Option<String>, rows: &[Vec<String>]| {
+    let flush_plane = |sec: &mut Section,
+                       tag: Option<String>,
+                       rows: &[Vec<String>],
+                       parse_mode: TokenParseMode| {
         if rows.is_empty() {
             return;
         }
@@ -65,7 +69,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
                 if c_idx > 255 {
                     continue;
                 }
-                let token = parse_token(token_str);
+                let token = parse_token_with_mode(token_str, parse_mode);
                 if token != Token::None {
                     map.insert(Rc::new(r_idx as u8, c_idx as u8), token);
                 }
@@ -103,6 +107,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
                     &mut current_section,
                     current_plane_tag.take(),
                     &current_rows,
+                    current_parse_mode,
                 );
                 current_rows.clear();
 
@@ -113,6 +118,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
 
             // Start new
             let name = line[1..line.len() - 1].to_string();
+            current_parse_mode = parse_mode_for_section_name(&name);
             current_section_name = Some(name);
             current_plane_tag = None; // Reset to base plane
             continue;
@@ -126,6 +132,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
                     &mut current_section,
                     current_plane_tag.take(),
                     &current_rows,
+                    current_parse_mode,
                 );
                 current_rows.clear();
 
@@ -151,7 +158,12 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
 
     // Flush final
     if let Some(name) = current_section_name {
-        flush_plane(&mut current_section, current_plane_tag, &current_rows);
+        flush_plane(
+            &mut current_section,
+            current_plane_tag,
+            &current_rows,
+            current_parse_mode,
+        );
         current_section.name = name.clone();
         layout.sections.insert(name, current_section);
     }
@@ -197,7 +209,38 @@ fn count_valid_chord_keys(tag: &str) -> usize {
     count
 }
 
+#[cfg(test)]
 fn parse_token(raw: &str) -> Token {
+    parse_token_with_mode(raw, TokenParseMode::Romaji)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenParseMode {
+    Romaji,
+    Kana,
+}
+
+fn parse_mode_for_section_name(name: &str) -> TokenParseMode {
+    if is_kana_array_section_name(name) {
+        TokenParseMode::Kana
+    } else {
+        TokenParseMode::Romaji
+    }
+}
+
+fn is_kana_array_section_name(name: &str) -> bool {
+    matches!(
+        compact_section_name(name).as_str(),
+        "かなシフト無し"
+            | "かな左親指シフト"
+            | "かな右親指シフト"
+            | "かな小指シフト"
+            | "かな小指左親指シフト"
+            | "かな小指右親指シフト"
+    )
+}
+
+fn parse_token_with_mode(raw: &str, mode: TokenParseMode) -> Token {
     if raw.is_empty() || raw == "無" || raw.eq_ignore_ascii_case("xx") {
         return Token::None;
     }
@@ -248,7 +291,7 @@ fn parse_token(raw: &str) -> Token {
                     });
                 } else {
                     // Single quote -> Expand as before
-                    let sub_seq = parse_key_sequence_expanded(&unquoted);
+                    let sub_seq = parse_key_sequence_expanded_with_mode(&unquoted, mode);
                     seq.extend(sub_seq);
                 }
                 i = j + 1;
@@ -275,7 +318,7 @@ fn parse_token(raw: &str) -> Token {
         if j > i {
             let chunk: String = chars[i..j].iter().collect();
             // This chunk might contain modifiers and keys.
-            let sub_seq = parse_key_sequence_expanded(&chunk);
+            let sub_seq = parse_key_sequence_expanded_with_mode(&chunk, mode);
             seq.extend(sub_seq);
             i = j;
         } else {
@@ -285,7 +328,7 @@ fn parse_token(raw: &str) -> Token {
             // We can treat the quote as a literal char or just skip it.
             // Let's treat it as a part of the sequence (literal quote).
             let chunk: String = chars[i..i + 1].iter().collect();
-            let sub_seq = parse_key_sequence_expanded(&chunk);
+            let sub_seq = parse_key_sequence_expanded_with_mode(&chunk, mode);
             seq.extend(sub_seq);
             i += 1;
         }
@@ -299,6 +342,10 @@ fn parse_token(raw: &str) -> Token {
 }
 
 pub fn parse_key_sequence_expanded(raw: &str) -> Vec<KeyStroke> {
+    parse_key_sequence_expanded_with_mode(raw, TokenParseMode::Romaji)
+}
+
+fn parse_key_sequence_expanded_with_mode(raw: &str, mode: TokenParseMode) -> Vec<KeyStroke> {
     let mut seq = Vec::new();
     let chars: Vec<char> = raw.chars().collect();
     let mut i = 0;
@@ -333,7 +380,7 @@ pub fn parse_key_sequence_expanded(raw: &str) -> Vec<KeyStroke> {
             _ => {}
         }
 
-        let (mut strokes, consumed) = parse_unit(&chars[i..]);
+        let (mut strokes, consumed) = parse_unit(&chars[i..], mode);
 
         // Apply accumulated modifiers to the first stroke of the sequence
         if let Some(first) = strokes.first_mut() {
@@ -352,11 +399,299 @@ pub fn parse_key_sequence_expanded(raw: &str) -> Vec<KeyStroke> {
     seq
 }
 
-fn parse_unit(chars: &[char]) -> (Vec<KeyStroke>, usize) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KanaLayoutKey {
+    Char(char),
+    ShiftedChar(char),
+    Scancode(u16, bool),
+}
+
+fn kana_layout_key_to_stroke(key: KanaLayoutKey) -> KeyStroke {
+    match key {
+        KanaLayoutKey::Char(c) => KeyStroke {
+            key: KeySpec::Char(c),
+            mods: Modifiers::none(),
+        },
+        KanaLayoutKey::ShiftedChar(c) => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            KeyStroke {
+                key: KeySpec::Char(c),
+                mods,
+            }
+        }
+        KanaLayoutKey::Scancode(sc, ext) => KeyStroke {
+            key: KeySpec::Scancode(sc, ext),
+            mods: Modifiers::none(),
+        },
+    }
+}
+
+fn normalize_kana_for_layout(c: char) -> char {
+    let code = c as u32;
+    if (0x30A1..=0x30F6).contains(&code) {
+        char::from_u32(code - 0x60).unwrap_or(c)
+    } else {
+        c
+    }
+}
+
+fn split_dakuten_kana(c: char) -> Option<(char, char)> {
+    match c {
+        'が' => Some(('か', '゛')),
+        'ぎ' => Some(('き', '゛')),
+        'ぐ' => Some(('く', '゛')),
+        'げ' => Some(('け', '゛')),
+        'ご' => Some(('こ', '゛')),
+        'ざ' => Some(('さ', '゛')),
+        'じ' => Some(('し', '゛')),
+        'ず' => Some(('す', '゛')),
+        'ぜ' => Some(('せ', '゛')),
+        'ぞ' => Some(('そ', '゛')),
+        'だ' => Some(('た', '゛')),
+        'ぢ' => Some(('ち', '゛')),
+        'づ' => Some(('つ', '゛')),
+        'で' => Some(('て', '゛')),
+        'ど' => Some(('と', '゛')),
+        'ば' => Some(('は', '゛')),
+        'び' => Some(('ひ', '゛')),
+        'ぶ' => Some(('ふ', '゛')),
+        'べ' => Some(('へ', '゛')),
+        'ぼ' => Some(('ほ', '゛')),
+        'ぱ' => Some(('は', '゜')),
+        'ぴ' => Some(('ひ', '゜')),
+        'ぷ' => Some(('ふ', '゜')),
+        'ぺ' => Some(('へ', '゜')),
+        'ぽ' => Some(('ほ', '゜')),
+        'ゔ' => Some(('う', '゛')),
+        _ => None,
+    }
+}
+
+fn kana_layout_key(c: char) -> Option<KanaLayoutKey> {
+    match c {
+        'ぬ' => Some(KanaLayoutKey::Char('1')),
+        'ふ' => Some(KanaLayoutKey::Char('2')),
+        'あ' => Some(KanaLayoutKey::Char('3')),
+        'う' => Some(KanaLayoutKey::Char('4')),
+        'え' => Some(KanaLayoutKey::Char('5')),
+        'お' => Some(KanaLayoutKey::Char('6')),
+        'や' => Some(KanaLayoutKey::Char('7')),
+        'ゆ' => Some(KanaLayoutKey::Char('8')),
+        'よ' => Some(KanaLayoutKey::Char('9')),
+        'わ' => Some(KanaLayoutKey::Char('0')),
+        'を' => Some(KanaLayoutKey::ShiftedChar('0')),
+        'ほ' => Some(KanaLayoutKey::Char('-')),
+        'へ' => Some(KanaLayoutKey::Char('^')),
+        'ー' => Some(KanaLayoutKey::Char('\\')),
+        'た' => Some(KanaLayoutKey::Char('q')),
+        'て' => Some(KanaLayoutKey::Char('w')),
+        'い' => Some(KanaLayoutKey::Char('e')),
+        'す' => Some(KanaLayoutKey::Char('r')),
+        'か' => Some(KanaLayoutKey::Char('t')),
+        'ん' => Some(KanaLayoutKey::Char('y')),
+        'な' => Some(KanaLayoutKey::Char('u')),
+        'に' => Some(KanaLayoutKey::Char('i')),
+        'ら' => Some(KanaLayoutKey::Char('o')),
+        'せ' => Some(KanaLayoutKey::Char('p')),
+        '゛' | '゙' => Some(KanaLayoutKey::Char('@')),
+        '゜' | '゚' => Some(KanaLayoutKey::Char('[')),
+        'ち' => Some(KanaLayoutKey::Char('a')),
+        'と' => Some(KanaLayoutKey::Char('s')),
+        'し' => Some(KanaLayoutKey::Char('d')),
+        'は' => Some(KanaLayoutKey::Char('f')),
+        'き' => Some(KanaLayoutKey::Char('g')),
+        'く' => Some(KanaLayoutKey::Char('h')),
+        'ま' => Some(KanaLayoutKey::Char('j')),
+        'の' => Some(KanaLayoutKey::Char('k')),
+        'り' => Some(KanaLayoutKey::Char('l')),
+        'れ' => Some(KanaLayoutKey::Char(';')),
+        'け' => Some(KanaLayoutKey::Char(':')),
+        'む' => Some(KanaLayoutKey::Char(']')),
+        'つ' => Some(KanaLayoutKey::Char('z')),
+        'さ' => Some(KanaLayoutKey::Char('x')),
+        'そ' => Some(KanaLayoutKey::Char('c')),
+        'ひ' => Some(KanaLayoutKey::Char('v')),
+        'こ' => Some(KanaLayoutKey::Char('b')),
+        'み' => Some(KanaLayoutKey::Char('n')),
+        'も' => Some(KanaLayoutKey::Char('m')),
+        'ね' => Some(KanaLayoutKey::Char(',')),
+        'る' => Some(KanaLayoutKey::Char('.')),
+        'め' => Some(KanaLayoutKey::Char('/')),
+        'ろ' => Some(KanaLayoutKey::Scancode(0x73, false)),
+        'ぁ' => Some(KanaLayoutKey::ShiftedChar('3')),
+        'ぃ' => Some(KanaLayoutKey::ShiftedChar('e')),
+        'ぅ' => Some(KanaLayoutKey::ShiftedChar('4')),
+        'ぇ' => Some(KanaLayoutKey::ShiftedChar('5')),
+        'ぉ' => Some(KanaLayoutKey::ShiftedChar('6')),
+        'ゃ' => Some(KanaLayoutKey::ShiftedChar('7')),
+        'ゅ' => Some(KanaLayoutKey::ShiftedChar('8')),
+        'ょ' => Some(KanaLayoutKey::ShiftedChar('9')),
+        'っ' => Some(KanaLayoutKey::ShiftedChar('z')),
+        'ゎ' => Some(KanaLayoutKey::ShiftedChar('0')),
+        _ => None,
+    }
+}
+
+fn kana_char_to_key_sequence(c: char) -> Option<Vec<KeyStroke>> {
+    let kana = normalize_kana_for_layout(c);
+    if let Some((base, mark)) = split_dakuten_kana(kana) {
+        let mut seq = kana_char_to_key_sequence(base)?;
+        seq.extend(kana_char_to_key_sequence(mark)?);
+        return Some(seq);
+    }
+    let key = kana_layout_key(kana)?;
+    Some(vec![kana_layout_key_to_stroke(key)])
+}
+
+fn kana_symbol_fallback_stroke(c: char) -> Option<KeyStroke> {
+    match c {
+        '。' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(KeyStroke {
+                key: KeySpec::Char('.'),
+                mods,
+            })
+        }
+        '、' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(KeyStroke {
+                key: KeySpec::Char(','),
+                mods,
+            })
+        }
+        '［' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(KeyStroke {
+                key: KeySpec::Char('['),
+                mods,
+            })
+        }
+        '］' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(KeyStroke {
+                key: KeySpec::Char(']'),
+                mods,
+            })
+        }
+        '／' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(KeyStroke {
+                key: KeySpec::Char('/'),
+                mods,
+            })
+        }
+        '・' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(KeyStroke {
+                key: KeySpec::Char('/'),
+                mods,
+            })
+        }
+        'ー' => Some(KeyStroke {
+            key: KeySpec::Char('\\'),
+            mods: Modifiers::none(),
+        }),
+        _ => None,
+    }
+}
+
+fn kana_special_with_f9(c: char) -> Option<Vec<KeyStroke>> {
+    match c {
+        '｀' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(vec![
+                KeyStroke {
+                    key: KeySpec::Char('@'),
+                    mods,
+                },
+                KeyStroke {
+                    key: KeySpec::Scancode(0x43, false), // F9
+                    mods: Modifiers::none(),
+                },
+            ])
+        }
+        _ => None,
+    }
+}
+
+fn kana_fullwidth_alnum_with_f9(c: char) -> Option<Vec<KeyStroke>> {
+    let ascii = match c {
+        '１' => '1',
+        '２' => '2',
+        '３' => '3',
+        '４' => '4',
+        '５' => '5',
+        '６' => '6',
+        '７' => '7',
+        '８' => '8',
+        '９' => '9',
+        '０' => '0',
+        '－' => '-',
+        '＾' => '^',
+        '￥' | '＼' => '\\',
+        '：' => ':',
+        '；' => ';',
+        '＠' => '@',
+        '＊' => '*',
+        '（' => '(',
+        '）' => ')',
+        '！' => '!',
+        '”' | '＂' => '"',
+        '＃' => '#',
+        '＄' => '$',
+        '％' => '%',
+        '＆' => '&',
+        '’' | '＇' => '\'',
+        '＝' => '=',
+        '～' => '~',
+        '｜' => '|',
+        '＜' => '<',
+        '＞' => '>',
+        '？' => '?',
+        '＿' => '_',
+        _ => return None,
+    };
+
+    Some(vec![
+        KeyStroke {
+            key: KeySpec::Char(ascii),
+            mods: Modifiers::none(),
+        },
+        KeyStroke {
+            key: KeySpec::Scancode(0x43, false), // F9
+            mods: Modifiers::none(),
+        },
+    ])
+}
+
+fn parse_unit(chars: &[char], mode: TokenParseMode) -> (Vec<KeyStroke>, usize) {
     if chars.is_empty() {
         return (Vec::new(), 0);
     }
     let c = chars[0];
+
+    if matches!(mode, TokenParseMode::Kana) {
+        if let Some(kana_keys) = kana_char_to_key_sequence(c) {
+            return (kana_keys, 1);
+        }
+        if let Some(stroke) = kana_symbol_fallback_stroke(c) {
+            return (vec![stroke], 1);
+        }
+        if let Some(seq) = kana_special_with_f9(c) {
+            return (seq, 1);
+        }
+        if let Some(seq) = kana_fullwidth_alnum_with_f9(c) {
+            return (seq, 1);
+        }
+    }
 
     // 1. Try Kana -> Romaji
     if let Some(romaji) = crate::romaji_map::kana_to_romaji(c) {
@@ -482,10 +817,14 @@ fn is_function_key_section_name(name: &str) -> bool {
     compact_function_key_name(name) == "機能キー"
 }
 
-fn compact_function_key_name(raw: &str) -> String {
+fn compact_section_name(raw: &str) -> String {
     raw.chars()
         .filter(|c| !c.is_whitespace() && *c != '\u{3000}')
         .collect()
+}
+
+fn compact_function_key_name(raw: &str) -> String {
+    compact_section_name(raw)
 }
 
 fn parse_function_key_swap_line(line: &str) -> Option<(String, String)> {
@@ -604,6 +943,15 @@ mod tests {
         KeyStroke {
             key: KeySpec::Char(c),
             mods: Modifiers::none(),
+        }
+    }
+
+    fn stroke_shift_char(c: char) -> KeyStroke {
+        let mut mods = Modifiers::none();
+        mods.shift = true;
+        KeyStroke {
+            key: KeySpec::Char(c),
+            mods,
         }
     }
 
@@ -861,6 +1209,179 @@ mod tests {
 
         // "S" -> Empty (No key following)
         assert_eq!(parse_token("S"), Token::None);
+    }
+
+    #[test]
+    fn test_parse_token_kana_mode_maps_to_kana_keycodes() {
+        assert_eq!(
+            parse_token_with_mode("の", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('k')])
+        );
+        assert_eq!(
+            parse_token_with_mode("と", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('s')])
+        );
+        assert_eq!(
+            parse_token_with_mode("ど", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('s'), stroke_char('@')])
+        );
+        assert_eq!(
+            parse_token_with_mode("゛", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('@')])
+        );
+        assert_eq!(
+            parse_token_with_mode("゜", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('[')])
+        );
+        assert_eq!(
+            parse_token_with_mode("ろ", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_scancode(0x73, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("。", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char('.')])
+        );
+        assert_eq!(
+            parse_token_with_mode("、", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char(',')])
+        );
+        assert_eq!(
+            parse_token_with_mode("ー", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('\\')])
+        );
+        assert_eq!(
+            parse_token_with_mode("１", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('1'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("２", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('2'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("３", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('3'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("４", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('4'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("５", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('5'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("６", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('6'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("７", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('7'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("８", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('8'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("９", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('9'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("０", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('0'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("－", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('-'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("＾", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('^'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("￥", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_char('\\'), stroke_scancode(0x43, false)])
+        );
+
+        assert_eq!(
+            parse_token_with_mode("［", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char('[')])
+        );
+        assert_eq!(
+            parse_token_with_mode("］", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char(']')])
+        );
+        assert_eq!(
+            parse_token_with_mode("／", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char('/')])
+        );
+        assert_eq!(
+            parse_token_with_mode("・", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char('/')])
+        );
+        assert_eq!(
+            parse_token_with_mode("｀", TokenParseMode::Kana),
+            Token::KeySequence(vec![stroke_shift_char('@'), stroke_scancode(0x43, false)])
+        );
+
+        let expect_f9 = |src: &str, ascii: char| {
+            assert_eq!(
+                parse_token_with_mode(src, TokenParseMode::Kana),
+                Token::KeySequence(vec![stroke_char(ascii), stroke_scancode(0x43, false)])
+            );
+        };
+        expect_f9("：", ':');
+        expect_f9("；", ';');
+        expect_f9("＠", '@');
+        expect_f9("＊", '*');
+        expect_f9("（", '(');
+        expect_f9("）", ')');
+        expect_f9("！", '!');
+        expect_f9("”", '"');
+        expect_f9("＃", '#');
+        expect_f9("＄", '$');
+        expect_f9("％", '%');
+        expect_f9("＆", '&');
+        expect_f9("’", '\'');
+        expect_f9("＝", '=');
+        expect_f9("～", '~');
+        expect_f9("｜", '|');
+        expect_f9("＜", '<');
+        expect_f9("＞", '>');
+        expect_f9("？", '?');
+        expect_f9("＿", '_');
+    }
+
+    #[test]
+    fn test_parse_kana_section_uses_kana_mode() {
+        let content = "
+[かなシフト無し]
+の,ど,゛,゜
+";
+        let layout = parse_yab_content(content).expect("Failed to parse");
+        let sec = layout
+            .sections
+            .get("かなシフト無し")
+            .expect("Missing kana section");
+
+        assert_eq!(
+            sec.base_plane.map.get(&Rc::new(0, 0)),
+            Some(&Token::KeySequence(vec![stroke_char('k')]))
+        );
+        assert_eq!(
+            sec.base_plane.map.get(&Rc::new(0, 1)),
+            Some(&Token::KeySequence(vec![
+                stroke_char('s'),
+                stroke_char('@')
+            ]))
+        );
+        assert_eq!(
+            sec.base_plane.map.get(&Rc::new(0, 2)),
+            Some(&Token::KeySequence(vec![stroke_char('@')]))
+        );
+        assert_eq!(
+            sec.base_plane.map.get(&Rc::new(0, 3)),
+            Some(&Token::KeySequence(vec![stroke_char('[')]))
+        );
     }
 
     #[test]

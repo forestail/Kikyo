@@ -51,16 +51,21 @@ const EXTENDED_THUMB_SHIFT_1_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}1";
 const EXTENDED_THUMB_SHIFT_2_SECTION: &str =
     "\u{62e1}\u{5f35}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}2";
-const ROMAJI_PINKY_SHIFT_SECTION: &str =
-    "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
-const ROMAJI_PINKY_LEFT_THUMB_SHIFT_SECTION: &str =
-    "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{5de6}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
-const ROMAJI_PINKY_RIGHT_THUMB_SHIFT_SECTION: &str =
-    "\u{30ed}\u{30fc}\u{30de}\u{5b57}\u{5c0f}\u{6307}\u{53f3}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
-const ROMAJI_PINKY_SHIFT_SECTION_NAMES: [&str; 3] = [
-    ROMAJI_PINKY_SHIFT_SECTION,
-    ROMAJI_PINKY_LEFT_THUMB_SHIFT_SECTION,
-    ROMAJI_PINKY_RIGHT_THUMB_SHIFT_SECTION,
+const ROMAJI_SECTION_PREFIX: &str = "\u{30ed}\u{30fc}\u{30de}\u{5b57}";
+const KANA_SECTION_PREFIX: &str = "\u{304b}\u{306a}";
+const ALPHA_SECTION_PREFIX: &str = "\u{82f1}\u{6570}";
+const NO_SHIFT_SUFFIX: &str = "\u{30b7}\u{30d5}\u{30c8}\u{7121}\u{3057}";
+const LEFT_THUMB_SHIFT_SUFFIX: &str = "\u{5de6}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const RIGHT_THUMB_SHIFT_SUFFIX: &str = "\u{53f3}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const PINKY_SHIFT_SUFFIX: &str = "\u{5c0f}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const PINKY_LEFT_THUMB_SHIFT_SUFFIX: &str =
+    "\u{5c0f}\u{6307}\u{5de6}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const PINKY_RIGHT_THUMB_SHIFT_SUFFIX: &str =
+    "\u{5c0f}\u{6307}\u{53f3}\u{89aa}\u{6307}\u{30b7}\u{30d5}\u{30c8}";
+const JAPANESE_PINKY_SHIFT_SUFFIXES: [&str; 3] = [
+    PINKY_SHIFT_SUFFIX,
+    PINKY_LEFT_THUMB_SHIFT_SUFFIX,
+    PINKY_RIGHT_THUMB_SHIFT_SUFFIX,
 ];
 const DEFERRED_ENTER_RECOVERY_TIMEOUT_MS: u64 = 1000;
 
@@ -191,6 +196,10 @@ impl Engine {
     }
 
     fn needs_sc_key_handling(&self, key: ScKey) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
         if self.function_key_swaps.contains_key(&key) {
             return true;
         }
@@ -230,20 +239,63 @@ impl Engine {
         self.needs_sc_key_handling(ScKey::new(0x36, false))
     }
 
+    fn has_japanese_section_with_suffix(layout: &Layout, suffix: &str) -> bool {
+        with_section_name(ROMAJI_SECTION_PREFIX, suffix, |section_name| {
+            layout.sections.contains_key(section_name)
+        }) || with_section_name(KANA_SECTION_PREFIX, suffix, |section_name| {
+            layout.sections.contains_key(section_name)
+        })
+    }
+
+    fn active_section_by_suffix<'a>(
+        &self,
+        layout: &'a Layout,
+        suffix: &str,
+        is_japanese: bool,
+        forced_section_name: Option<&str>,
+    ) -> Option<&'a crate::types::Section> {
+        if let Some(section_name) = forced_section_name {
+            return layout.sections.get(section_name);
+        }
+
+        if is_japanese {
+            if let Some(section) =
+                with_section_name(ROMAJI_SECTION_PREFIX, suffix, |section_name| {
+                    layout.sections.get(section_name)
+                })
+            {
+                return Some(section);
+            }
+            return with_section_name(KANA_SECTION_PREFIX, suffix, |section_name| {
+                layout.sections.get(section_name)
+            });
+        }
+
+        with_section_name(ALPHA_SECTION_PREFIX, suffix, |section_name| {
+            layout.sections.get(section_name)
+        })
+    }
+
     fn has_romaji_pinky_shift_section_in_layout(&self) -> bool {
         self.layout.as_ref().is_some_and(|layout| {
-            ROMAJI_PINKY_SHIFT_SECTION_NAMES
+            JAPANESE_PINKY_SHIFT_SUFFIXES
                 .iter()
-                .any(|section_name| layout.sections.contains_key(*section_name))
+                .any(|suffix| Self::has_japanese_section_with_suffix(layout, suffix))
         })
     }
 
     pub fn capture_left_shift_for_romaji_pinky_shift(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
         self.has_romaji_pinky_shift_section_in_layout()
             && !self.needs_sc_key_handling(ScKey::new(0x2A, false))
     }
 
     pub fn capture_right_shift_for_romaji_pinky_shift(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
         self.has_romaji_pinky_shift_section_in_layout()
             && !self.needs_sc_key_handling(ScKey::new(0x36, false))
     }
@@ -263,6 +315,10 @@ impl Engine {
                 "ローマ字右親指シフト",
                 "ローマ字小指左親指シフト",
                 "ローマ字小指右親指シフト",
+                "かな左親指シフト",
+                "かな右親指シフト",
+                "かな小指左親指シフト",
+                "かな小指右親指シフト",
                 "英数左親指シフト",
                 "英数右親指シフト",
                 "英数小指左親指シフト",
@@ -497,27 +553,22 @@ impl Engine {
                 }
             }
 
-            // 2. Select PREFIX & SUFFIX
-            let prefix = if is_japanese {
-                "ローマ字"
-            } else {
-                "英数"
-            };
+            // 2. Select active section suffix
             let suffix = if shift {
                 if has_left_thumb {
-                    "小指左親指シフト"
+                    PINKY_LEFT_THUMB_SHIFT_SUFFIX
                 } else if has_right_thumb {
-                    "小指右親指シフト"
+                    PINKY_RIGHT_THUMB_SHIFT_SUFFIX
                 } else {
-                    "小指シフト"
+                    PINKY_SHIFT_SUFFIX
                 }
             } else {
                 if has_left_thumb {
-                    "左親指シフト"
+                    LEFT_THUMB_SHIFT_SUFFIX
                 } else if has_right_thumb {
-                    "右親指シフト"
+                    RIGHT_THUMB_SHIFT_SUFFIX
                 } else {
-                    "シフト無し"
+                    NO_SHIFT_SUFFIX
                 }
             };
 
@@ -548,13 +599,8 @@ impl Engine {
                     }
                 }
 
-                let section = if let Some(section_name) = forced_section_name {
-                    layout.sections.get(section_name)
-                } else {
-                    with_section_name(prefix, suffix, |section_name| {
-                        layout.sections.get(section_name)
-                    })
-                };
+                let section =
+                    self.active_section_by_suffix(layout, suffix, is_japanese, forced_section_name);
 
                 if let Some(section) = section {
                     // Section exists. Check if key is defined.
@@ -1107,29 +1153,22 @@ impl Engine {
             }
         }
 
-        // 2. Select PREFIX (Eng vs Roma)
-        let prefix = if is_japanese {
-            "ローマ字"
-        } else {
-            "英数"
-        };
-
-        // 3. Select SUFFIX
+        // 2. Select SUFFIX
         let suffix = if shift {
             if has_left_thumb {
-                "小指左親指シフト"
+                PINKY_LEFT_THUMB_SHIFT_SUFFIX
             } else if has_right_thumb {
-                "小指右親指シフト"
+                PINKY_RIGHT_THUMB_SHIFT_SUFFIX
             } else {
-                "小指シフト"
+                PINKY_SHIFT_SUFFIX
             }
         } else {
             if has_left_thumb {
-                "左親指シフト"
+                LEFT_THUMB_SHIFT_SUFFIX
             } else if has_right_thumb {
-                "右親指シフト"
+                RIGHT_THUMB_SHIFT_SUFFIX
             } else {
-                "シフト無し"
+                NO_SHIFT_SUFFIX
             }
         };
 
@@ -1143,16 +1182,11 @@ impl Engine {
             };
         // eprintln!("DEBUG: Resolve: section={} keys={:?} japanese={}", section_name, keys, is_japanese);
 
-        let section = match if let Some(section_name) = forced_section_name {
-            layout.sections.get(section_name)
-        } else {
-            with_section_name(prefix, suffix, |section_name| {
-                layout.sections.get(section_name)
-            })
-        } {
-            Some(section) => section,
-            None => return (None, None),
-        };
+        let section =
+            match self.active_section_by_suffix(layout, suffix, is_japanese, forced_section_name) {
+                Some(section) => section,
+                None => return (None, None),
+            };
 
         // 4. Update keys for lookup (Remove Thumb Modifiers)
         let lookup_keys: Vec<ScKey> =
@@ -1531,25 +1565,20 @@ impl Engine {
                 }
             }
 
-            let prefix = if is_japanese {
-                "ローマ字"
-            } else {
-                "英数"
-            };
             let suffix = if shift {
                 if has_left_thumb {
-                    "小指左親指シフト"
+                    PINKY_LEFT_THUMB_SHIFT_SUFFIX
                 } else if has_right_thumb {
-                    "小指右親指シフト"
+                    PINKY_RIGHT_THUMB_SHIFT_SUFFIX
                 } else {
-                    "小指シフト"
+                    PINKY_SHIFT_SUFFIX
                 }
             } else if has_left_thumb {
-                "左親指シフト"
+                LEFT_THUMB_SHIFT_SUFFIX
             } else if has_right_thumb {
-                "右親指シフト"
+                RIGHT_THUMB_SHIFT_SUFFIX
             } else {
-                "シフト無し"
+                NO_SHIFT_SUFFIX
             };
 
             let forced_section_name =
@@ -1561,13 +1590,8 @@ impl Engine {
                     None
                 };
 
-            let section = if let Some(section_name) = forced_section_name {
-                layout.sections.get(section_name)
-            } else {
-                with_section_name(prefix, suffix, |section_name| {
-                    layout.sections.get(section_name)
-                })
-            };
+            let section =
+                self.active_section_by_suffix(layout, suffix, is_japanese, forced_section_name);
 
             let mut active = HashMap::new();
             if let Some(section) = section {
@@ -1613,7 +1637,7 @@ impl Engine {
         };
 
         let Some(tk) = self.chord_engine.profile.thumb_keys.as_ref() else {
-            return layout.sections.contains_key(ROMAJI_PINKY_SHIFT_SECTION);
+            return Self::has_japanese_section_with_suffix(layout, PINKY_SHIFT_SUFFIX);
         };
 
         let mut has_left_thumb = false;
@@ -1647,15 +1671,15 @@ impl Engine {
             return false;
         }
 
-        let section_name = if has_left_thumb {
-            ROMAJI_PINKY_LEFT_THUMB_SHIFT_SECTION
+        let suffix = if has_left_thumb {
+            PINKY_LEFT_THUMB_SHIFT_SUFFIX
         } else if has_right_thumb {
-            ROMAJI_PINKY_RIGHT_THUMB_SHIFT_SECTION
+            PINKY_RIGHT_THUMB_SHIFT_SUFFIX
         } else {
-            ROMAJI_PINKY_SHIFT_SECTION
+            PINKY_SHIFT_SUFFIX
         };
 
-        layout.sections.contains_key(section_name)
+        Self::has_japanese_section_with_suffix(layout, suffix)
     }
 
     fn token_to_events_with_ime(
@@ -3567,6 +3591,120 @@ roma_a
     }
 
     #[test]
+    fn test_kana_section_is_used_when_romaji_section_is_missing() {
+        let config = "
+[かなシフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ime_mode(ImeMode::Ignore);
+        engine.load_layout(layout);
+
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        );
+        match engine.process_key(0x20, false, true, false) {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x25, _, _))),
+                    "Expected kana keycode 'k' from [かなシフト無し]"
+                );
+            }
+            other => panic!("Expected Inject from [かなシフト無し], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_romaji_section_has_priority_over_kana_section() {
+        let config = "
+[ローマ字シフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[かなシフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ime_mode(ImeMode::Ignore);
+        engine.load_layout(layout);
+
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        );
+        match engine.process_key(0x20, false, true, false) {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x1E, _, _))),
+                    "Expected romaji section output to be selected"
+                );
+                assert!(
+                    !evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x25, _, _))),
+                    "Kana section output should be ignored when romaji section exists"
+                );
+            }
+            other => panic!("Expected Inject for mixed romaji/kana sections, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_kana_section_dakuten_definition_emits_two_kana_keycodes() {
+        let config = "
+[かなシフト無し]
+; R0
+dummy
+; R1
+dummy
+; R2
+xx,xx,ど,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.set_ime_mode(ImeMode::Ignore);
+        engine.load_layout(layout);
+
+        assert_eq!(
+            engine.process_key(0x20, false, false, false),
+            KeyAction::Block
+        );
+        match engine.process_key(0x20, false, true, false) {
+            KeyAction::Inject(evs) => {
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x1F, _, _))),
+                    "Expected base kana keycode 's' for 'ど'"
+                );
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x1A, _, _))),
+                    "Expected dakuten keycode '@' for 'ど'"
+                );
+            }
+            other => panic!("Expected Inject for kana dakuten definition, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_missing_section_fallback() {
         // Layout: [ローマ字] defined. [英数] MISSING.
         let config = "
@@ -4634,6 +4772,25 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
     }
 
     #[test]
+    fn test_needs_modifier_handling_is_disabled_when_engine_disabled() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::LeftShift;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::RightCtrl;
+        engine.set_profile(profile);
+        engine.set_enabled(false);
+
+        assert!(
+            !engine.needs_left_shift_handling(),
+            "Modifier handling should be off when engine is disabled"
+        );
+        assert!(
+            !engine.needs_right_ctrl_handling(),
+            "Modifier handling should be off when engine is disabled"
+        );
+    }
+
+    #[test]
     fn test_needs_ctrl_handling_for_thumb_shift_assignment() {
         let mut engine = Engine::default();
         let mut profile = engine.get_profile();
@@ -4685,6 +4842,53 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         assert!(
             engine.capture_right_shift_for_romaji_pinky_shift(),
             "Right Shift should be capturable for romaji pinky shift when not otherwise assigned"
+        );
+    }
+
+    #[test]
+    fn test_capture_shift_for_kana_pinky_shift_section() {
+        let config = "
+[かな小指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+
+        assert!(
+            engine.capture_left_shift_for_romaji_pinky_shift(),
+            "Left Shift should be capturable for kana pinky shift as well"
+        );
+        assert!(
+            engine.capture_right_shift_for_romaji_pinky_shift(),
+            "Right Shift should be capturable for kana pinky shift as well"
+        );
+    }
+
+    #[test]
+    fn test_capture_shift_for_pinky_shift_is_disabled_when_engine_disabled() {
+        let config = "
+[ローマ字小指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+        let mut engine = Engine::default();
+        engine.load_layout(layout);
+        engine.set_enabled(false);
+
+        assert!(
+            !engine.capture_left_shift_for_romaji_pinky_shift(),
+            "Shift capture should be disabled when engine is disabled"
+        );
+        assert!(
+            !engine.capture_right_shift_for_romaji_pinky_shift(),
+            "Shift capture should be disabled when engine is disabled"
         );
     }
 
@@ -4768,7 +4972,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             other => panic!("Expected Inject for left pinky+thumb shifted output, got {other:?}"),
         }
-        assert_eq!(engine.process_key(0x7B, false, true, true), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x7B, false, true, true),
+            KeyAction::Block
+        );
 
         assert_eq!(
             engine.process_key(0x79, false, false, true),
@@ -4788,7 +4995,44 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             }
             other => panic!("Expected Inject for right pinky+thumb shifted output, got {other:?}"),
         }
-        assert_eq!(engine.process_key(0x79, false, true, true), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x79, false, true, true),
+            KeyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_kana_pinky_thumb_shift_sections_are_treated_as_thumb_shift_sections() {
+        let config = "
+[かなシフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[かな小指左親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,b,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[かな小指右親指シフト]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,c,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_yab_content(config).expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let profile = engine.get_profile();
+        assert!(
+            profile.thumb_keys.is_some(),
+            "Thumb keys should remain enabled when kana pinky+thumb sections exist"
+        );
     }
 
     #[test]
@@ -4842,7 +5086,10 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
                 res_up
             ),
         }
-        assert_eq!(engine.process_key(0x7B, false, true, true), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x7B, false, true, true),
+            KeyAction::Block
+        );
     }
 
     #[test]

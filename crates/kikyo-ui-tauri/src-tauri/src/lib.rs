@@ -369,8 +369,13 @@ fn write_settings_to_path(path: &Path, settings: &Settings) -> Result<(), String
     let content = serde_json::to_string(settings)
         .map_err(|err| format!("Failed to serialize settings json: {}", err))?;
 
-    fs::write(path, content)
-        .map_err(|err| format!("Failed to write settings file ({}): {}", path.display(), err))
+    fs::write(path, content).map_err(|err| {
+        format!(
+            "Failed to write settings file ({}): {}",
+            path.display(),
+            err
+        )
+    })
 }
 
 fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
@@ -623,6 +628,7 @@ fn load_yab(
 #[tauri::command]
 fn set_enabled(_app: tauri::AppHandle, enabled: bool) {
     ENGINE.lock().set_enabled(enabled);
+    keyboard_hook::refresh_runtime_flags_from_engine();
 }
 
 #[tauri::command]
@@ -943,6 +949,7 @@ pub fn run() {
                         "toggle" => {
                             let current = ENGINE.lock().is_enabled();
                             ENGINE.lock().set_enabled(!current);
+                            keyboard_hook::refresh_runtime_flags_from_engine();
                             let _ = update_tray_menu(app);
                             let _ = app.emit("enabled-state-changed", !current);
                         }
@@ -985,6 +992,7 @@ pub fn run() {
             // Load settings (profile first, then layout)
             let settings = load_settings_with_migration(app.handle());
             ENGINE.lock().set_enabled(settings.enabled);
+            keyboard_hook::refresh_runtime_flags_from_engine();
             if let Some(profile) = settings.profile.as_ref() {
                 ENGINE.lock().set_profile(profile.clone());
                 keyboard_hook::refresh_runtime_flags_from_engine();

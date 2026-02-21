@@ -15,6 +15,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState,
     GetLastInputInfo,
+    MapVirtualKeyW,
     SendInput,
     INPUT,
     INPUT_0,
@@ -25,6 +26,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_SCANCODE,
     KEYEVENTF_UNICODE,
     LASTINPUTINFO,
+    MAPVK_VK_TO_VSC_EX,
     VIRTUAL_KEY,
     VK_CONTROL,
     // VK_ESCAPE, // Emergency stop is currently disabled.
@@ -42,7 +44,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
-    LLKHF_ALTDOWN, MSG, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
+    LLKHF_ALTDOWN, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
 };
 /// Magic number to identify our own injected events.
 const INJECTED_EXTRA_INFO: usize = 0xFFC3C3C3;
@@ -60,6 +62,8 @@ static LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
 static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static ENGINE_ENABLED: AtomicBool = AtomicBool::new(true);
+static SUSPEND_KEY_VK: AtomicU32 = AtomicU32::new(0);
 static START_INSTANT: OnceLock<std::time::Instant> = OnceLock::new();
 
 const HOOK_QUEUE_SIZE: usize = 1024;
@@ -169,6 +173,11 @@ fn captured_shift_down_snapshot() -> (bool, bool) {
     (state.left.physical_down, state.right.physical_down)
 }
 
+fn clear_captured_shift_state() {
+    let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    *state = CapturedShiftState::default();
+}
+
 fn ensure_worker_thread() {
     if HOOK_WORKER_STARTED.swap(true, Ordering::AcqRel) {
         return;
@@ -194,6 +203,25 @@ fn ensure_watchdog_thread() {
 
 pub fn refresh_runtime_flags_from_engine() {
     let engine = ENGINE.lock();
+    let enabled = engine.is_enabled();
+    ENGINE_ENABLED.store(enabled, Ordering::Relaxed);
+    SUSPEND_KEY_VK.store(
+        suspend_key_vk(engine.get_suspend_key()).unwrap_or(0),
+        Ordering::Relaxed,
+    );
+
+    if !enabled {
+        ALT_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        LEFT_SHIFT_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        RIGHT_SHIFT_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(false, Ordering::Relaxed);
+        RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(false, Ordering::Relaxed);
+        LEFT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        RIGHT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        clear_captured_shift_state();
+        return;
+    }
+
     ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
     LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
     RIGHT_SHIFT_NEEDS_HANDLING.store(engine.needs_right_shift_handling(), Ordering::Relaxed);
@@ -288,15 +316,38 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         let kbd = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
-        // Check self-injection guard
-        if kbd.dwExtraInfo == INJECTED_EXTRA_INFO {
-            // Pass through our own events
+        // Ignore injected events to prevent self-recursion loops.
+        // - Own SendInput events: identified by dwExtraInfo marker.
+        // - Other injected events (including IME/tool generated): LLKHF_INJECTED.
+        if kbd.dwExtraInfo == INJECTED_EXTRA_INFO || (kbd.flags.0 & LLKHF_INJECTED.0) != 0 {
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
         // Log visible events
         let msg = wparam.0 as u32;
         let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+
+        // Some IME paths report scanCode=0. Recover from vkCode so engine mapping still works.
+        let mut scan_code = kbd.scanCode as u16;
+        if scan_code == 0 {
+            let mapped = MapVirtualKeyW(kbd.vkCode, MAPVK_VK_TO_VSC_EX);
+            if mapped != 0 {
+                scan_code = (mapped & 0x00FF) as u16;
+            } else {
+                // Keep original behavior for unmappable keys; do not block these events.
+                return CallNextHookEx(None, code, wparam, lparam);
+            }
+        }
+
+        let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
+        let suspend_vk = SUSPEND_KEY_VK.load(Ordering::Relaxed);
+        let is_suspend_key = suspend_vk != 0 && kbd.vkCode == suspend_vk;
+
+        // Fully bypass the hook while disabled so IME/OS receive original key events.
+        // Keep only the suspend key routed so users can re-enable from keyboard.
+        if !engine_enabled && !is_suspend_key {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
 
         // Emergency stop is intentionally disabled for now.
         // To restore Ctrl+Alt+Esc shutdown behavior, uncomment this block.
@@ -336,9 +387,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let right_ctrl_needs_handling = RIGHT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
         let shift_event_needs_handling = if !is_shift_vk {
             false
-        } else if kbd.vkCode == VK_LSHIFT.0 as u32 || kbd.scanCode as u16 == 0x2A {
+        } else if kbd.vkCode == VK_LSHIFT.0 as u32 || scan_code == 0x2A {
             left_shift_needs_handling || left_shift_capture_for_romaji
-        } else if kbd.vkCode == VK_RSHIFT.0 as u32 || kbd.scanCode as u16 == 0x36 {
+        } else if kbd.vkCode == VK_RSHIFT.0 as u32 || scan_code == 0x36 {
             right_shift_needs_handling || right_shift_capture_for_romaji
         } else {
             left_shift_needs_handling
@@ -350,12 +401,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             false
         } else if kbd.vkCode == VK_LCONTROL.0 as u32
             || ((kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) == 0
-                && kbd.scanCode as u16 == 0x1D)
+                && scan_code == 0x1D)
         {
             left_ctrl_needs_handling
         } else if kbd.vkCode == VK_RCONTROL.0 as u32
             || ((kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0
-                && kbd.scanCode as u16 == 0x1D)
+                && scan_code == 0x1D)
         {
             right_ctrl_needs_handling
         } else {
@@ -365,7 +416,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         // Keep captured Shift physical state in sync at hook time so the next key
         // can observe Shift even before worker-thread processing catches up.
         if is_shift_vk {
-            if let Some(side) = shift_side_for_event(kbd.scanCode as u16, kbd.vkCode) {
+            if let Some(side) = shift_side_for_event(scan_code, kbd.vkCode) {
                 if captured_shift_side_enabled(side) {
                     let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
                     let side_state = captured_shift_side_mut(&mut captured, side);
@@ -386,7 +437,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || is_win_vk
             || (is_alt_vk && !alt_needs_handling)
         {
-            return CallNextHookEx(None, code, wparam, lparam);
+            if is_suspend_key {
+                // Keep suspend key functional even when assigned to a modifier key.
+            } else {
+                return CallNextHookEx(None, code, wparam, lparam);
+            }
         }
 
         // Check modifier states only for non-modifier keys that can be handled.
@@ -418,7 +473,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let ext = if is_shift_vk { false } else { raw_ext };
 
         let event = HookEvent {
-            sc: kbd.scanCode as u16,
+            sc: scan_code,
             ext,
             up,
             shift: shift_pressed,
@@ -478,7 +533,7 @@ fn process_event(event: HookEvent) {
 
     let is_shift_event = shift_side_for_event(event.sc, event.vk).is_some();
 
-    let action = {
+    let (action, refresh_flags) = {
         let mut engine = ENGINE.lock();
         ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
         LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
@@ -494,6 +549,7 @@ fn process_event(event: HookEvent) {
         LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
         RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
 
+        let mut refresh_flags = false;
         if let Some(vk) = suspend_key_vk(engine.get_suspend_key()) {
             if event.vk == vk && !event.up {
                 let current = engine.is_enabled();
@@ -502,11 +558,27 @@ fn process_event(event: HookEvent) {
                     "Suspend Key triggered. Toggled enabled state to: {}",
                     !current
                 );
+                refresh_flags = true;
             }
+            if event.vk == vk {
+                (KeyAction::Block, refresh_flags)
+            } else {
+                (
+                    engine.process_key(event.sc, event.ext, event.up, event.shift),
+                    refresh_flags,
+                )
+            }
+        } else {
+            (
+                engine.process_key(event.sc, event.ext, event.up, event.shift),
+                refresh_flags,
+            )
         }
-
-        engine.process_key(event.sc, event.ext, event.up, event.shift)
     };
+
+    if refresh_flags {
+        refresh_runtime_flags_from_engine();
+    }
 
     match action {
         KeyAction::Pass => {

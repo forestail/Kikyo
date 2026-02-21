@@ -66,29 +66,43 @@ pub fn is_japanese_input_active(mode: ImeMode) -> bool {
 }
 
 fn query_tsf() -> Option<bool> {
-    let hwnd = focused_window()?;
-    unsafe {
-        let himc = ImmGetContext(hwnd);
-        if himc.0 == 0 {
-            // tracing::warn!(
-            //     "query_tsf: ImmGetContext failed for HWND {:?}. Trying fallback...",
-            //     hwnd
-            // );
-            return query_ime_msg(hwnd);
+    let candidates = window_candidates();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut saw_false = false;
+    for hwnd in candidates {
+        unsafe {
+            let himc = ImmGetContext(hwnd);
+            if himc.0 != 0 {
+                let open = ImmGetOpenStatus(himc).as_bool();
+                let _ = ImmReleaseContext(hwnd, himc);
+                if open {
+                    return Some(true);
+                }
+                saw_false = true;
+                continue;
+            }
         }
-        let open = ImmGetOpenStatus(himc).as_bool();
-        let _ = ImmReleaseContext(hwnd, himc);
-        Some(open)
+        if let Some(open) = query_ime_msg(hwnd) {
+            if open {
+                return Some(true);
+            }
+            saw_false = true;
+        }
+    }
+
+    if saw_false {
+        Some(false)
+    } else {
+        None
     }
 }
 
 fn query_imm() -> Option<bool> {
     unsafe {
-        let hwnd_fg = GetForegroundWindow();
-        if hwnd_fg.0 == 0 {
-            tracing::warn!("query_imm: No Foreground Window");
-            return None;
-        }
+        let hwnd_fg = foreground_window()?;
 
         let himc = ImmGetContext(hwnd_fg);
         if himc.0 == 0 {
@@ -109,7 +123,7 @@ fn query_ime_msg(hwnd: HWND) -> Option<bool> {
     unsafe {
         let hwnd_ime = ImmGetDefaultIMEWnd(hwnd);
         if hwnd_ime.0 == 0 {
-            tracing::warn!(
+            tracing::debug!(
                 "query_ime_msg: ImmGetDefaultIMEWnd returned 0 for HWND {:?}",
                 hwnd
             );
@@ -123,33 +137,53 @@ fn query_ime_msg(hwnd: HWND) -> Option<bool> {
 }
 
 fn query_conversion_mode_msg() -> Option<IME_CONVERSION_MODE> {
+    let candidates = window_candidates();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut saw_zero = false;
     unsafe {
-        let hwnd_fg = GetForegroundWindow();
-        if hwnd_fg.0 == 0 {
-            return None;
-        }
-        // Try focused window first? Or just foreground.
-        // Usually DefaultIMEWnd is per thread/window.
-        let hwnd_ime = ImmGetDefaultIMEWnd(hwnd_fg);
-        if hwnd_ime.0 == 0 {
-            return None;
-        }
+        for hwnd in candidates {
+            let hwnd_ime = ImmGetDefaultIMEWnd(hwnd);
+            if hwnd_ime.0 == 0 {
+                continue;
+            }
 
-        let res = SendMessageW(hwnd_ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, LPARAM(0));
+            let res = SendMessageW(hwnd_ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, LPARAM(0));
+            let mode = IME_CONVERSION_MODE(res.0 as u32);
+            if mode != IME_CONVERSION_MODE(0) {
+                return Some(mode);
+            }
+            saw_zero = true;
+        }
+    }
 
-        // res.0 is the conversion mode (u32/isize)
-        Some(IME_CONVERSION_MODE(res.0 as u32))
+    if saw_zero {
+        Some(IME_CONVERSION_MODE(0))
+    } else {
+        None
     }
 }
 
-fn focused_window() -> Option<HWND> {
+fn foreground_window() -> Option<HWND> {
     unsafe {
         let hwnd_fg = GetForegroundWindow();
         if hwnd_fg.0 == 0 {
-            tracing::warn!("focused_window: No Foreground Window");
+            tracing::warn!("foreground_window: No Foreground Window");
             return None;
         }
+        Some(hwnd_fg)
+    }
+}
 
+fn window_candidates() -> Vec<HWND> {
+    let mut out = Vec::with_capacity(2);
+    let Some(hwnd_fg) = foreground_window() else {
+        return out;
+    };
+
+    unsafe {
         let tid = GetWindowThreadProcessId(hwnd_fg, None);
         let mut info = GUITHREADINFO {
             cbSize: size_of::<GUITHREADINFO>() as u32,
@@ -158,45 +192,63 @@ fn focused_window() -> Option<HWND> {
 
         if GetGUIThreadInfo(tid, &mut info).is_ok() {
             if info.hwndFocus.0 != 0 {
-                return Some(info.hwndFocus);
+                out.push(info.hwndFocus);
             }
         } else {
-            tracing::warn!("focused_window: GetGUIThreadInfo failed");
+            tracing::warn!("window_candidates: GetGUIThreadInfo failed");
         }
 
-        Some(hwnd_fg)
+        if !out.iter().any(|hwnd| hwnd.0 == hwnd_fg.0) {
+            out.push(hwnd_fg);
+        }
     }
+
+    out
+}
+
+fn focused_window() -> Option<HWND> {
+    window_candidates().into_iter().next()
 }
 
 fn query_conversion_mode() -> Option<IME_CONVERSION_MODE> {
+    let candidates = window_candidates();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut saw_zero = false;
     unsafe {
-        let hwnd_fg = GetForegroundWindow();
-        if hwnd_fg.0 == 0 {
-            tracing::warn!("query_conversion_mode: No Foreground Window");
-            return None;
-        }
+        for hwnd in candidates {
+            let himc = ImmGetContext(hwnd);
+            if himc.0 == 0 {
+                continue;
+            }
 
-        let himc = ImmGetContext(hwnd_fg);
-        if himc.0 == 0 {
-            // tracing::warn!("query_conversion_mode: ImmGetContext failed");
-            return None;
-        }
+            let mut conversion = IME_CONVERSION_MODE::default();
+            let mut sentence = IME_SENTENCE_MODE::default();
+            let res = ImmGetConversionStatus(
+                himc,
+                Some(&mut conversion as *mut _),
+                Some(&mut sentence as *mut _),
+            );
+            let _ = ImmReleaseContext(hwnd, himc);
 
-        let mut conversion = IME_CONVERSION_MODE::default();
-        let mut sentence = IME_SENTENCE_MODE::default();
-        let res = ImmGetConversionStatus(
-            himc,
-            Some(&mut conversion as *mut _),
-            Some(&mut sentence as *mut _),
-        );
-        let _ = ImmReleaseContext(hwnd_fg, himc);
+            if !res.as_bool() {
+                continue;
+            }
 
-        if res.as_bool() {
-            Some(conversion)
-        } else {
-            tracing::warn!("query_conversion_mode: ImmGetConversionStatus failed");
-            None
+            if conversion != IME_CONVERSION_MODE(0) {
+                return Some(conversion);
+            }
+
+            saw_zero = true;
         }
+    }
+
+    if saw_zero {
+        Some(IME_CONVERSION_MODE(0))
+    } else {
+        None
     }
 }
 
