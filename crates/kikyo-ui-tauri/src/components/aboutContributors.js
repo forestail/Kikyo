@@ -5,6 +5,7 @@ const DEFAULT_INLINE_VISIBLE_COUNT = 12;
 // Keep all contributor handles in one place.
 // Add names here when available.
 export const ABOUT_ARRAY_VALIDATION_CONTRIBUTORS = [
+  "小川謙三",
   //"〇〇〇",
   //"□□□",
 ];
