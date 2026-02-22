@@ -490,7 +490,9 @@ impl Engine {
         }
 
         // Check IME state
-        let is_japanese = crate::ime::is_japanese_input_active(self.chord_engine.profile.ime_mode);
+        let ime_mode = self.chord_engine.profile.ime_mode;
+        let is_japanese = crate::ime::is_japanese_input_active(ime_mode);
+        let is_kana_input = crate::ime::is_kana_input_active(ime_mode);
         // ...
 
         if self.layout.is_none() {
@@ -512,7 +514,7 @@ impl Engine {
         }
 
         if !up && self.is_repeat_event(key) {
-            return self.handle_repeat_event(key, shift, is_japanese);
+            return self.handle_repeat_event(key, shift, is_japanese, is_kana_input);
         }
 
         self.refresh_active_char_shift_keys(shift, is_japanese);
@@ -711,7 +713,8 @@ impl Engine {
                         continue;
                     }
                     if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                        if let Some(ops) = self.token_to_events_with_ime(&token, shift, is_japanese)
+                        if let Some(ops) =
+                            self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
                         {
                             inject_ops.extend(ops);
                         }
@@ -725,7 +728,8 @@ impl Engine {
                 Decision::Chord(keys) => {
                     let (token, modifier) = self.resolve_with_modifier(&keys, shift, is_japanese);
                     if let Some(token) = token {
-                        if let Some(ops) = self.token_to_events_with_ime(&token, shift, is_japanese)
+                        if let Some(ops) =
+                            self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
                         {
                             inject_ops.extend(ops);
                         }
@@ -755,9 +759,12 @@ impl Engine {
                             self.chord_engine.state.used_modifiers.remove(&k);
                             let mut resolved = false;
                             if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                if let Some(ops) =
-                                    self.token_to_events_with_ime(&token, shift, is_japanese)
-                                {
+                                if let Some(ops) = self.token_to_events_with_ime(
+                                    &token,
+                                    shift,
+                                    is_japanese,
+                                    is_kana_input,
+                                ) {
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -784,9 +791,12 @@ impl Engine {
                             let k = keys[1];
                             let mut resolved = false;
                             if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                if let Some(ops) =
-                                    self.token_to_events_with_ime(&token, shift, is_japanese)
-                                {
+                                if let Some(ops) = self.token_to_events_with_ime(
+                                    &token,
+                                    shift,
+                                    is_japanese,
+                                    is_kana_input,
+                                ) {
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -801,9 +811,12 @@ impl Engine {
                                 // Try to resolve as single key (unshifted)
                                 let mut resolved = false;
                                 if let Some(token) = self.resolve(&[k], shift, is_japanese) {
-                                    if let Some(ops) =
-                                        self.token_to_events_with_ime(&token, shift, is_japanese)
-                                    {
+                                    if let Some(ops) = self.token_to_events_with_ime(
+                                        &token,
+                                        shift,
+                                        is_japanese,
+                                        is_kana_input,
+                                    ) {
                                         inject_ops.extend(ops);
                                         resolved = true;
                                     }
@@ -1687,11 +1700,13 @@ impl Engine {
         token: &Token,
         shift_held: bool,
         is_japanese: bool,
+        is_kana_input: bool,
     ) -> Option<Vec<InputEvent>> {
         match token {
             Token::None => None,
             Token::KeySequence(seq) => {
                 let mut events = Vec::new();
+                let mut committed_for_uppercase = false;
                 let effective_shift_held =
                     if self.is_romaji_pinky_shift_section_active(shift_held, is_japanese) {
                         false
@@ -1699,6 +1714,14 @@ impl Engine {
                         shift_held
                     };
                 for stroke in seq {
+                    if is_kana_input
+                        && !committed_for_uppercase
+                        && stroke.mods.is_empty()
+                        && matches!(stroke.key, KeySpec::Char(c) if c.is_ascii_uppercase())
+                    {
+                        events.push(InputEvent::CommitImeComposition);
+                        committed_for_uppercase = true;
+                    }
                     // Strict scancode only for KeySequence (which now comes from single-quote/bare tokens)
                     append_keystroke_events(
                         &mut events,
@@ -1706,6 +1729,7 @@ impl Engine {
                         effective_shift_held,
                         false,
                         is_japanese,
+                        is_kana_input,
                     );
                 }
                 if events.is_empty() {
@@ -1763,11 +1787,14 @@ impl Engine {
         keys: &[ScKey],
         shift: bool,
         is_japanese: bool,
+        is_kana_input: bool,
     ) -> Vec<InputEvent> {
         let mut events = Vec::new();
         for k in keys {
             if let Some(token) = self.resolve(&[*k], shift, is_japanese) {
-                if let Some(ops) = self.token_to_events_with_ime(&token, shift, is_japanese) {
+                if let Some(ops) =
+                    self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
+                {
                     events.extend(ops);
                     continue;
                 }
@@ -1784,7 +1811,13 @@ impl Engine {
         self.chord_engine.state.pressed.contains(&key)
     }
 
-    fn handle_repeat_event(&mut self, key: ScKey, shift: bool, is_japanese: bool) -> KeyAction {
+    fn handle_repeat_event(
+        &mut self,
+        key: ScKey,
+        shift: bool,
+        is_japanese: bool,
+        is_kana_input: bool,
+    ) -> KeyAction {
         let now = Instant::now();
         let (keys, consume_pending) = if let Some(keys) = self.repeat_plans.get(&key) {
             (keys.clone(), false)
@@ -1848,10 +1881,12 @@ impl Engine {
         }
 
         let events = if let Some(token) = token {
-            self.token_to_events_with_ime(&token, shift, is_japanese)
-                .unwrap_or_else(|| self.repeat_fallback_events(&keys, shift, is_japanese))
+            self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
+                .unwrap_or_else(|| {
+                    self.repeat_fallback_events(&keys, shift, is_japanese, is_kana_input)
+                })
         } else {
-            self.repeat_fallback_events(&keys, shift, is_japanese)
+            self.repeat_fallback_events(&keys, shift, is_japanese, is_kana_input)
         };
 
         if events.is_empty() {
@@ -2189,6 +2224,7 @@ fn append_keystroke_events(
     shift_held: bool,
     allow_unicode_fallback: bool,
     is_japanese: bool,
+    _is_kana_input: bool,
 ) {
     let key_events = match stroke.key {
         KeySpec::Scancode(sc, ext) => Some((sc, ext, false)),
@@ -2999,7 +3035,7 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
         let engine = Engine::default();
         let token = Token::DirectChar("漢".to_string());
         let events = engine
-            .token_to_events_with_ime(&token, false, false)
+            .token_to_events_with_ime(&token, false, false, false)
             .expect("Should return events");
 
         assert_eq!(events.len(), 2);
@@ -3017,6 +3053,29 @@ xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
             }
             _ => panic!("Expected Unicode up"),
         }
+    }
+
+    #[test]
+    fn test_kana_mode_uppercase_commits_then_emits_unconfirmed_scancode() {
+        let token = Token::KeySequence(vec![KeyStroke {
+            key: KeySpec::Char('A'),
+            mods: Modifiers::none(),
+        }]);
+        let engine = Engine::default();
+        let events = engine
+            .token_to_events_with_ime(&token, false, true, true)
+            .expect("Should return events");
+
+        assert_eq!(
+            events,
+            vec![
+                InputEvent::CommitImeComposition,
+                InputEvent::Scancode(0x2A, false, false),
+                InputEvent::Scancode(0x1E, false, false),
+                InputEvent::Scancode(0x1E, false, true),
+                InputEvent::Scancode(0x2A, false, true),
+            ]
+        );
     }
 
     #[test]

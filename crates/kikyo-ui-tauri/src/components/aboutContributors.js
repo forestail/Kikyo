@@ -6,8 +6,8 @@ const DEFAULT_INLINE_VISIBLE_COUNT = 12;
 // Add names here when available.
 export const ABOUT_ARRAY_VALIDATION_CONTRIBUTORS = [
   "小川謙三",
-  //"〇〇〇",
-  //"□□□",
+  "京橋 ひよわ",
+  "kouy（山原コウ）",
 ];
 
 function normalizeContributorNames(contributors) {

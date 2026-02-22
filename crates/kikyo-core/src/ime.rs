@@ -3,8 +3,9 @@ use std::mem::size_of;
 use tracing;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmGetOpenStatus,
-    ImmReleaseContext, ImmSetOpenStatus, IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd,
+    ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus, GCS_COMPSTR, IME_CMODE_NATIVE,
+    IME_CMODE_ROMAN, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, SendMessageW, GUITHREADINFO,
@@ -63,6 +64,50 @@ pub fn is_japanese_input_active(mode: ImeMode) -> bool {
         // tracing::info!("IME Check: ON, ConversionMode=Unknown -> Assume True");
         true
     }
+}
+
+pub fn is_kana_input_active(mode: ImeMode) -> bool {
+    // `Ignore` is primarily used by tests to force the Japanese section path.
+    // Treat it as "unknown/romaji-like" here to keep existing behavior stable.
+    if matches!(mode, ImeMode::Ignore | ImeMode::ForceAlpha) {
+        return false;
+    }
+
+    if !is_ime_on(mode) {
+        return false;
+    }
+
+    let Some(mode_bits) = query_conversion_mode().or_else(query_conversion_mode_msg) else {
+        return false;
+    };
+
+    let is_native = (mode_bits & IME_CMODE_NATIVE) != IME_CONVERSION_MODE(0);
+    let is_roman = (mode_bits & IME_CMODE_ROMAN) != IME_CONVERSION_MODE(0);
+    is_native && !is_roman
+}
+
+pub fn is_composition_active() -> bool {
+    let candidates = window_candidates();
+    if candidates.is_empty() {
+        return false;
+    }
+
+    unsafe {
+        for hwnd in candidates {
+            let himc = ImmGetContext(hwnd);
+            if himc.0 == 0 {
+                continue;
+            }
+
+            let len = ImmGetCompositionStringW(himc, GCS_COMPSTR, None, 0);
+            let _ = ImmReleaseContext(hwnd, himc);
+            if len > 0 {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn query_tsf() -> Option<bool> {

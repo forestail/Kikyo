@@ -600,6 +600,13 @@ fn process_event(event: HookEvent) {
                     InputEvent::Unicode(c, up) => {
                         let _ = inject_unicode(c, up);
                     }
+                    InputEvent::CommitImeComposition => {
+                        if crate::ime::is_composition_active() {
+                            let _ = inject_scancode(0x1C, false, false);
+                            let _ = inject_scancode(0x1C, false, true);
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                    }
                     InputEvent::ImeControl(open) => {
                         // IME Control is a state change, not a key press/release pair.
                         // Ideally we should execute it only once.

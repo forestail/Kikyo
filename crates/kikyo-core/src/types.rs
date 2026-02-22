@@ -20,6 +20,8 @@ pub enum InputEvent {
     Scancode(u16, bool, bool),
     /// Unicode character injection (char, up).
     Unicode(char, bool),
+    /// Commit current IME composition if any.
+    CommitImeComposition,
     /// IME Control (true=ON, false=OFF).
     ImeControl(bool),
     /// Wait until IME status matches the expected value (expected, timeout_ms).
