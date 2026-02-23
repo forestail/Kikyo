@@ -27,7 +27,7 @@ fn delayed_release_of_first_k_does_not_drop_second_f() {
     p.push("layout");
     p.push("sin-geta.yab");
 
-    let layout = parser::load_yab(&p, &Default::default()).expect("load sin-geta.yab");
+    let layout = parser::load_layout(&p, &Default::default()).expect("load sin-geta.yab");
 
     let mut engine = Engine::default();
     engine.set_ignore_ime(true);

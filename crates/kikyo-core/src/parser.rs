@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::path::Path;
 use tracing::{debug, warn};
 
-pub fn load_yab<P: AsRef<Path>>(path: P, kb_map: &KeyboardMap) -> Result<Layout> {
+pub fn load_layout<P: AsRef<Path>>(path: P, kb_map: &KeyboardMap) -> Result<Layout> {
     let raw = std::fs::read(path)?;
-    let text = decode_yab_bytes(&raw);
-    parse_yab_content(text.as_ref(), kb_map)
+    let text = decode_layout_bytes(&raw);
+    parse_layout_content(text.as_ref(), kb_map)
 }
 
-fn decode_yab_bytes<'a>(raw: &'a [u8]) -> std::borrow::Cow<'a, str> {
+fn decode_layout_bytes<'a>(raw: &'a [u8]) -> std::borrow::Cow<'a, str> {
     // 1. Check BOM
     if let Some((enc, bom_len)) = encoding_rs::Encoding::for_bom(raw) {
         debug!("Decoded using BOM: {}", enc.name());
@@ -40,7 +40,7 @@ fn decode_yab_bytes<'a>(raw: &'a [u8]) -> std::borrow::Cow<'a, str> {
     }
 }
 
-pub fn parse_yab_content(content: &str, kb_map: &KeyboardMap) -> Result<Layout> {
+pub fn parse_layout_content(content: &str, kb_map: &KeyboardMap) -> Result<Layout> {
     let mut layout = Layout::default();
 
     let mut current_section_name: Option<String> = None;
@@ -1366,7 +1366,7 @@ mod tests {
 [かなシフト無し]
 の,ど,゛,゜
 ";
-        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         let sec = layout
             .sections
             .get("かなシフト無し")
@@ -1462,7 +1462,7 @@ mod tests {
 a,b
 ";
         let layout =
-            parse_yab_content(content_with_name, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+            parse_layout_content(content_with_name, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         assert_eq!(layout.name, Some("新下駄配列".to_string()));
 
         // Case 2: Skip empty lines and empty comments
@@ -1475,7 +1475,7 @@ a,b
 a,b
 ";
         let layout_skip =
-            parse_yab_content(content_skip, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+            parse_layout_content(content_skip, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         assert_eq!(layout_skip.name, Some("Real Name".to_string()));
 
         // Case 3: No name found (starts with section)
@@ -1485,13 +1485,13 @@ a,b
 a,b
 ";
         let layout_no_name =
-            parse_yab_content(content_no_name, &crate::keyboard_map::new_jis_106()).expect("Failed");
+            parse_layout_content(content_no_name, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout_no_name.name, None);
 
         // Case 4: Name variation
         let content_name_variation = ";My Layout  ";
         let layout_var =
-            parse_yab_content(content_name_variation, &crate::keyboard_map::new_jis_106()).expect("Failed");
+            parse_layout_content(content_name_variation, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout_var.name, Some("My Layout".to_string()));
     }
 
@@ -1507,7 +1507,7 @@ Capsロック, 拡張2
 [Main]
 a,b
 ";
-        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
+        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(
             layout.function_key_swaps,
             vec![
@@ -1530,7 +1530,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 <q>
 xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
-        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
+        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout.max_chord_size, 2);
     }
 
@@ -1546,7 +1546,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 <q><w>
 xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
-        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
+        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout.max_chord_size, 3);
     }
 
@@ -1554,14 +1554,14 @@ xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
     fn test_decode_sjis() {
         // "テスト" in Shift_JIS
         let sjis_bytes = vec![0x83, 0x65, 0x83, 0x58, 0x83, 0x67];
-        let decoded = decode_yab_bytes(&sjis_bytes);
+        let decoded = decode_layout_bytes(&sjis_bytes);
         assert_eq!(decoded, "テスト");
     }
 
     #[test]
     fn test_decode_utf8() {
         let utf8_bytes = "テスト".as_bytes();
-        let decoded = decode_yab_bytes(utf8_bytes);
+        let decoded = decode_layout_bytes(utf8_bytes);
         assert_eq!(decoded, "テスト");
     }
 }

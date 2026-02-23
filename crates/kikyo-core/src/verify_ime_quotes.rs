@@ -1,5 +1,5 @@
 use crate::engine::Engine;
-use crate::parser::parse_yab_content;
+use crate::parser::parse_layout_content;
 use crate::types::{InputEvent, KeyAction};
 
 #[test]
@@ -13,7 +13,7 @@ dummy
 ; R2
 "漢字",xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
-    let layout = parse_yab_content(config, &crate::keyboard_map::new_jis_106())
+    let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
         .expect("Failed to parse config");
 
     let mut engine = Engine::default();
@@ -56,7 +56,7 @@ dummy
 ; R2
 'ka',xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
-    let layout = parse_yab_content(config, &crate::keyboard_map::new_jis_106())
+    let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
         .expect("Failed to parse config");
 
     let mut engine = Engine::default();

@@ -2474,7 +2474,7 @@ mod tests {
         assert_eq!(char_to_scancode('。', false), None); // Should fallback to unicode if not JP mode scancode mapping
     }
 
-    use crate::parser::parse_yab_content;
+    use crate::parser::parse_layout_content;
 
     #[test]
     fn test_chord_logic() {
@@ -2498,7 +2498,7 @@ z,x,c,v,b,n,m,,,.,/,\\
 無,無,d_chord,無,無,無,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -2542,7 +2542,7 @@ z,x,c,v,b,n,m,,,.,/,\\
 xx,xx,dc,無,無,無,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -2619,7 +2619,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -2694,7 +2694,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,x,y,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -2768,7 +2768,7 @@ dummy
 xx,xx,s_base,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -2841,7 +2841,7 @@ dummy
 xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -2895,7 +2895,7 @@ dummy
 xx,xx,Ａ,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -2949,7 +2949,7 @@ dummy
 xx,xx,b,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -2983,7 +2983,7 @@ dummy
 xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -3018,7 +3018,7 @@ dummy
 xx,xx,s,t,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -3119,7 +3119,7 @@ dummy
 xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -3158,7 +3158,7 @@ dummy
 xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -3209,7 +3209,7 @@ a,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,x,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -3258,7 +3258,7 @@ dummy
 無,無,無,無,無,無,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -3317,7 +3317,7 @@ dummy
 a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -3362,7 +3362,7 @@ dummy
 a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -3406,7 +3406,7 @@ dummy
 x,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -3446,7 +3446,7 @@ dummy
 a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -3477,7 +3477,7 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -3566,7 +3566,7 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -3605,7 +3605,7 @@ a
 xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -3622,7 +3622,7 @@ a
 xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -3648,7 +3648,7 @@ dummy
 roma_a
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -3703,7 +3703,7 @@ dummy
 xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ime_mode(ImeMode::Ignore);
         engine.load_layout(layout);
@@ -3744,7 +3744,7 @@ dummy
 xx,xx,の,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ime_mode(ImeMode::Ignore);
         engine.load_layout(layout);
@@ -3782,7 +3782,7 @@ dummy
 xx,xx,ど,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ime_mode(ImeMode::Ignore);
         engine.load_layout(layout);
@@ -3821,7 +3821,7 @@ dummy
 a,roma_a
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -3862,7 +3862,7 @@ dummy
 ; R2
 thumb_a
 ";
-        let layout = parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         let mut engine = Engine::default();
 
         let mut profile = Profile::default();
@@ -3940,7 +3940,7 @@ xx,xx,d_right,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4063,7 +4063,7 @@ y,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4174,7 +4174,7 @@ xx,xx,xx,z,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4275,7 +4275,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 無,無,無,無,無,無,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4369,7 +4369,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 無,無,無,無,無,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4465,7 +4465,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 無,無,無,無,無,無,無,無,無,無,無
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4551,7 +4551,7 @@ ryo,xx,xx,xx,xx,無,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4638,7 +4638,7 @@ ryo,xx,xx,xx,xx,無,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4716,7 +4716,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "
         );
         let layout =
-            parse_yab_content(&config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(&config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ime_mode(ImeMode::ForceAlpha);
@@ -4774,7 +4774,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "
         );
         let layout =
-            parse_yab_content(&config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(&config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ime_mode(ImeMode::ForceAlpha);
@@ -4828,7 +4828,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 左Ctrl, 右Ctrl
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4858,7 +4858,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 左Alt, 拡張1
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -4949,7 +4949,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -4973,7 +4973,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -4997,7 +4997,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
         engine.set_enabled(false);
@@ -5028,7 +5028,7 @@ xx,xx,c,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -5064,7 +5064,7 @@ xx,xx,c,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5145,7 +5145,7 @@ xx,xx,c,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5174,7 +5174,7 @@ xx,xx,Ａ,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
@@ -5238,7 +5238,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
         let mut engine = Engine::default();
         engine.load_layout(layout);
 
@@ -5273,7 +5273,7 @@ b,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5391,7 +5391,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 左Alt, 拡張1
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5426,7 +5426,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 左Alt, 拡張1
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5480,7 +5480,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 左Alt, 拡張1
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5541,7 +5541,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "
         );
         let layout =
-            parse_yab_content(&config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(&config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5597,7 +5597,7 @@ z,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5652,7 +5652,7 @@ y,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5719,7 +5719,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5808,7 +5808,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true); // Force consistent behavior if possible, but sections cover both.
@@ -5903,7 +5903,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -5988,7 +5988,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 xx,xx,xx,xx,xx,4,xx,xx,xx,xx,xx
 ";
         let layout =
-            parse_yab_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
+            parse_layout_content(config, &crate::keyboard_map::new_jis_106()).expect("Failed to parse config");
 
         let mut engine = Engine::default();
         engine.set_ignore_ime(true);
@@ -6048,7 +6048,7 @@ xx
 xx
 \"test\"b
 ";
-        let layout = crate::parser::parse_yab_content(config, &crate::keyboard_map::new_jis_106())
+        let layout = crate::parser::parse_layout_content(config, &crate::keyboard_map::new_jis_106())
             .expect("Failed to parse config");
 
         if let Some(sec) = layout.sections.get("ローマ字シフト無し") {

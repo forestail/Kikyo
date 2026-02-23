@@ -29,7 +29,7 @@ fn tray_layout_id_from_menu_id(menu_id: &str) -> Option<&str> {
 }
 
 struct AppState {
-    current_yab_path: Mutex<Option<String>>,
+    current_layout_path: Mutex<Option<String>>,
     layout_name: Mutex<Option<String>>,
 }
 
@@ -55,7 +55,7 @@ struct LayoutEntriesResponse {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Settings {
-    #[serde(default, alias = "last_yab_path")]
+    #[serde(default)]
     last_layout_path: Option<String>,
     #[serde(default)]
     layout_entries: Vec<LayoutEntry>,
@@ -164,7 +164,7 @@ fn resolve_keyboard_map(type_name: &str) -> std::sync::Arc<kikyo_core::keyboard_
 }
 
 fn detect_layout_name_from_file(path: &str) -> Result<String, String> {
-    let layout = parser::load_yab(path, &kikyo_core::keyboard_map::new_jis_106())
+    let layout = parser::load_layout(path, &kikyo_core::keyboard_map::new_jis_106())
         .map_err(|e| e.to_string())?;
     let name = layout
         .name
@@ -614,7 +614,7 @@ fn apply_layout_from_path(
     let settings = load_settings_with_migration(app);
     let kb_map_arc = resolve_keyboard_map(&settings.keyboard_type);
 
-    let layout = parser::load_yab(path, &kb_map_arc).map_err(|e| e.to_string())?;
+    let layout = parser::load_layout(path, &kb_map_arc).map_err(|e| e.to_string())?;
     let stats = format!("Loaded {} sections", layout.sections.len());
     let parser_name = layout
         .name
@@ -631,7 +631,7 @@ fn apply_layout_from_path(
         .filter(|v| !v.is_empty())
         .unwrap_or(parser_name);
 
-    *state.current_yab_path.lock().unwrap() = Some(path.to_string());
+    *state.current_layout_path.lock().unwrap() = Some(path.to_string());
     *state.layout_name.lock().unwrap() = Some(resolved_display_name.clone());
     let enabled = ENGINE.lock().is_enabled();
     let _ = update_tray_menu_with_state(app, Some(resolved_display_name.clone()), enabled);
@@ -662,7 +662,7 @@ fn activate_layout_entry_by_id(
 }
 
 #[tauri::command]
-fn load_yab(
+fn load_layout(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
     path: String,
@@ -924,14 +924,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_deserialize_legacy_last_yab_path_into_last_layout_path() {
+    fn settings_deserialize_last_yab_path_is_ignored() {
         let parsed: Settings =
             serde_json::from_str(r#"{"last_yab_path":"C:\\layouts\\legacy.yab"}"#)
-                .expect("legacy settings json");
-        assert_eq!(
-            parsed.last_layout_path.as_deref(),
-            Some(r"C:\layouts\legacy.yab")
-        );
+                .expect("settings json with deprecated key");
+        assert_eq!(parsed.last_layout_path, None);
     }
 
     #[test]
@@ -981,11 +978,11 @@ pub fn run() {
             Some(vec![]),
         ))
         .manage(AppState {
-            current_yab_path: Mutex::new(None),
+            current_layout_path: Mutex::new(None),
             layout_name: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
-            load_yab,
+            load_layout,
             get_layout_entries,
             create_layout_entry_from_path,
             update_layout_entry,
@@ -1022,7 +1019,7 @@ pub fn run() {
                         }
                         "reload" => {
                             let state = app.state::<AppState>();
-                            let path_opt = state.current_yab_path.lock().unwrap().clone();
+                            let path_opt = state.current_layout_path.lock().unwrap().clone();
                             if let Some(path) = path_opt {
                                 let settings = load_settings_with_migration(app);
                                 let display_name =

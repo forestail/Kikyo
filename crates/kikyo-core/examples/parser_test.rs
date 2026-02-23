@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     let path = Path::new("D:/Study/Kikyo/test_data/新下駄.yab");
     println!("Loading {:?}", path);
 
-    let layout = parser::load_yab(path, &Default::default())?;
+    let layout = parser::load_layout(path, &Default::default())?;
     println!("Loaded Layout successfully.");
     println!("Sections: {}", layout.sections.len());
 

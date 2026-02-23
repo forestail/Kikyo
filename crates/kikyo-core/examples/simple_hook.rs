@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     let path = Path::new("D:/Study/Kikyo/test_data/新下駄.yab");
     if path.exists() {
         println!("Loading layout from {:?}", path);
-        let layout = parser::load_yab(path, &Default::default())?;
+        let layout = parser::load_layout(path, &Default::default())?;
         engine::ENGINE.lock().load_layout(layout);
         engine::ENGINE.lock().set_enabled(true);
         println!("Engine enabled with layout.");

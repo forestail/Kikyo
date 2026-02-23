@@ -67,7 +67,7 @@ cargo test -p kikyo-core
   - 現在のアクティブレイアウト（`active_layout_id`）
   - プロファイル（`profile`）
   - 有効/無効状態（`enabled`）
-- 旧キー `last_yab_path` は起動時に `last_layout_path` へ移行されます。
+- 旧キー `last_yab_path` は読み込み時に無視されます。
 
 ## レイアウト仕様（要点）
 
