@@ -18,6 +18,7 @@ let navItems, sections;
 // Profile Inputs
 // Array
 let charRepeatAssignedCb, charRepeatUnassignedCb;
+let keyboardTypeSel;
 let currentProfile = null;
 let thumbLeftRepeatSetting = null;
 let thumbRightRepeatSetting = null;
@@ -848,6 +849,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // Arr
   charRepeatAssignedCb = document.querySelector("#char-repeat-assigned");
   charRepeatUnassignedCb = document.querySelector("#char-repeat-unassigned");
+  keyboardTypeSel = document.querySelector("#keyboard-type-sel");
 
   // Thumb Left
   thumbLeftKeySel = document.querySelector("#thumb-left-key");
@@ -930,6 +932,7 @@ window.addEventListener("DOMContentLoaded", () => {
   initAutoLaunch();
   initAboutContributors();
   initVersion();
+  initKeyboardTypes();
 });
 
 function initAboutContributors() {
@@ -985,4 +988,33 @@ async function initAutoLaunch() {
       autoLaunchCb.checked = !autoLaunchCb.checked;
     }
   });
+}
+
+async function initKeyboardTypes() {
+  if (!keyboardTypeSel) return;
+  try {
+    const types = await invoke("get_keyboard_types");
+    keyboardTypeSel.innerHTML = "";
+    for (const t of types) {
+      const option = document.createElement("option");
+      option.value = t;
+      option.textContent = t;
+      keyboardTypeSel.appendChild(option);
+    }
+
+    const current = await invoke("get_keyboard_type");
+    keyboardTypeSel.value = current;
+
+    keyboardTypeSel.addEventListener("change", async (e) => {
+      try {
+        await invoke("set_keyboard_type", { keyboardType: e.target.value });
+        statusMsg.innerText = "キーボード種類を変更しました";
+        await refreshLayoutEntries();
+      } catch (err) {
+        statusMsg.innerText = "キーボード種類の変更に失敗しました: " + err;
+      }
+    });
+  } catch (e) {
+    console.error("Failed to initialize keyboard types:", e);
+  }
 }

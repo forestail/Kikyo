@@ -99,7 +99,9 @@ fn sweep_asdf_rollover_orders_on_naginata_layout() {
         env!("CARGO_MANIFEST_DIR")
     );
     let content = std::fs::read_to_string(&layout_path).expect("layout read failed");
-    let layout = kikyo_core::parser::parse_yab_content(&content).expect("layout parse failed");
+    let layout =
+        kikyo_core::parser::parse_yab_content(&content, &kikyo_core::keyboard_map::new_jis_106())
+            .expect("layout parse failed");
 
     let orders = generate_all_asdf_orders();
     let mut failures = Vec::new();

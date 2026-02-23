@@ -13,7 +13,8 @@ dummy
 ; R2
 "漢字",xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
-    let layout = parse_yab_content(config).expect("Failed to parse config");
+    let layout = parse_yab_content(config, &crate::keyboard_map::new_jis_106())
+        .expect("Failed to parse config");
 
     let mut engine = Engine::default();
     engine.set_ignore_ime(true);
@@ -32,35 +33,12 @@ dummy
     let res = engine.process_key(0x1E, false, true, false);
     match res {
         KeyAction::Inject(evs) => {
-            // "漢字" -> 2 chars. Each char has down/up unicode event. Total 4 events.
-            assert_eq!(evs.len(), 4);
-            match evs[0] {
-                InputEvent::Unicode(c, up) => {
-                    assert_eq!(c, '漢');
-                    assert_eq!(up, false);
+            assert_eq!(evs.len(), 1);
+            match &evs[0] {
+                InputEvent::DirectString(s) => {
+                    assert_eq!(s, "漢字");
                 }
-                _ => panic!("Expected Unicode('漢', down)"),
-            }
-            match evs[1] {
-                InputEvent::Unicode(c, up) => {
-                    assert_eq!(c, '漢');
-                    assert_eq!(up, true);
-                }
-                _ => panic!("Expected Unicode('漢', up)"),
-            }
-            match evs[2] {
-                InputEvent::Unicode(c, up) => {
-                    assert_eq!(c, '字');
-                    assert_eq!(up, false);
-                }
-                _ => panic!("Expected Unicode('字', down)"),
-            }
-            match evs[3] {
-                InputEvent::Unicode(c, up) => {
-                    assert_eq!(c, '字');
-                    assert_eq!(up, true);
-                }
-                _ => panic!("Expected Unicode('字', up)"),
+                _ => panic!("Expected DirectString(\"漢字\"), got {:?}", evs[0]),
             }
         }
         _ => panic!("Expected Inject for double-quoted string, got {:?}", res),
@@ -78,7 +56,8 @@ dummy
 ; R2
 'ka',xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
-    let layout = parse_yab_content(config).expect("Failed to parse config");
+    let layout = parse_yab_content(config, &crate::keyboard_map::new_jis_106())
+        .expect("Failed to parse config");
 
     let mut engine = Engine::default();
     engine.set_ignore_ime(true);

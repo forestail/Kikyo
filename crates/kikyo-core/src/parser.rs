@@ -1,13 +1,14 @@
+use crate::keyboard_map::KeyboardMap;
 use crate::types::{KeySpec, KeyStroke, Layout, Modifiers, Plane, Rc, Section, Token};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::{debug, warn};
 
-pub fn load_yab<P: AsRef<Path>>(path: P) -> Result<Layout> {
+pub fn load_yab<P: AsRef<Path>>(path: P, kb_map: &KeyboardMap) -> Result<Layout> {
     let raw = std::fs::read(path)?;
     let text = decode_yab_bytes(&raw);
-    parse_yab_content(text.as_ref())
+    parse_yab_content(text.as_ref(), kb_map)
 }
 
 fn decode_yab_bytes<'a>(raw: &'a [u8]) -> std::borrow::Cow<'a, str> {
@@ -39,7 +40,7 @@ fn decode_yab_bytes<'a>(raw: &'a [u8]) -> std::borrow::Cow<'a, str> {
     }
 }
 
-pub fn parse_yab_content(content: &str) -> Result<Layout> {
+pub fn parse_yab_content(content: &str, kb_map: &KeyboardMap) -> Result<Layout> {
     let mut layout = Layout::default();
 
     let mut current_section_name: Option<String> = None;
@@ -69,7 +70,7 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
                 if c_idx > 255 {
                     continue;
                 }
-                let token = parse_token_with_mode(token_str, parse_mode);
+                let token = parse_token_with_mode(token_str, parse_mode, kb_map);
                 if token != Token::None {
                     map.insert(Rc::new(r_idx as u8, c_idx as u8), token);
                 }
@@ -168,20 +169,20 @@ pub fn parse_yab_content(content: &str) -> Result<Layout> {
         layout.sections.insert(name, current_section);
     }
 
-    layout.max_chord_size = detect_max_chord_size(&layout);
+    layout.max_chord_size = detect_max_chord_size(&layout, kb_map);
 
     Ok(layout)
 }
 
-fn detect_max_chord_size(layout: &Layout) -> usize {
+fn detect_max_chord_size(layout: &Layout, kb_map: &KeyboardMap) -> usize {
     for (section_name, section) in &layout.sections {
-        if count_valid_chord_keys(section_name) >= 2 {
+        if count_valid_chord_keys(section_name, kb_map) >= 2 {
             return 3;
         }
         if section
             .sub_planes
             .keys()
-            .any(|tag| count_valid_chord_keys(tag) >= 2)
+            .any(|tag| count_valid_chord_keys(tag, kb_map) >= 2)
         {
             return 3;
         }
@@ -189,7 +190,7 @@ fn detect_max_chord_size(layout: &Layout) -> usize {
     2
 }
 
-fn count_valid_chord_keys(tag: &str) -> usize {
+fn count_valid_chord_keys(tag: &str, kb_map: &KeyboardMap) -> usize {
     let mut count = 0;
     let mut start = 0;
     while let Some(open_rel) = tag[start..].find('<') {
@@ -200,7 +201,7 @@ fn count_valid_chord_keys(tag: &str) -> usize {
         let close = open + close_rel;
         if close > open + 1 {
             let key_name = &tag[open + 1..close];
-            if crate::jis_map::key_name_to_sc(key_name).is_some() {
+            if kb_map.key_name_to_sc(key_name).is_some() {
                 count += 1;
             }
         }
@@ -210,8 +211,8 @@ fn count_valid_chord_keys(tag: &str) -> usize {
 }
 
 #[cfg(test)]
-fn parse_token(raw: &str) -> Token {
-    parse_token_with_mode(raw, TokenParseMode::Romaji)
+fn parse_token(raw: &str, kb_map: &KeyboardMap) -> Token {
+    parse_token_with_mode(raw, TokenParseMode::Romaji, kb_map)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +241,7 @@ fn is_kana_array_section_name(name: &str) -> bool {
     )
 }
 
-fn parse_token_with_mode(raw: &str, mode: TokenParseMode) -> Token {
+fn parse_token_with_mode(raw: &str, mode: TokenParseMode, kb_map: &KeyboardMap) -> Token {
     if raw.is_empty() || raw == "無" || raw.eq_ignore_ascii_case("xx") {
         return Token::None;
     }
@@ -291,7 +292,7 @@ fn parse_token_with_mode(raw: &str, mode: TokenParseMode) -> Token {
                     });
                 } else {
                     // Single quote -> Expand as before
-                    let sub_seq = parse_key_sequence_expanded_with_mode(&unquoted, mode);
+                    let sub_seq = parse_key_sequence_expanded_with_mode(&unquoted, mode, kb_map);
                     seq.extend(sub_seq);
                 }
                 i = j + 1;
@@ -318,7 +319,7 @@ fn parse_token_with_mode(raw: &str, mode: TokenParseMode) -> Token {
         if j > i {
             let chunk: String = chars[i..j].iter().collect();
             // This chunk might contain modifiers and keys.
-            let sub_seq = parse_key_sequence_expanded_with_mode(&chunk, mode);
+            let sub_seq = parse_key_sequence_expanded_with_mode(&chunk, mode, kb_map);
             seq.extend(sub_seq);
             i = j;
         } else {
@@ -328,7 +329,7 @@ fn parse_token_with_mode(raw: &str, mode: TokenParseMode) -> Token {
             // We can treat the quote as a literal char or just skip it.
             // Let's treat it as a part of the sequence (literal quote).
             let chunk: String = chars[i..i + 1].iter().collect();
-            let sub_seq = parse_key_sequence_expanded_with_mode(&chunk, mode);
+            let sub_seq = parse_key_sequence_expanded_with_mode(&chunk, mode, kb_map);
             seq.extend(sub_seq);
             i += 1;
         }
@@ -341,11 +342,15 @@ fn parse_token_with_mode(raw: &str, mode: TokenParseMode) -> Token {
     }
 }
 
-pub fn parse_key_sequence_expanded(raw: &str) -> Vec<KeyStroke> {
-    parse_key_sequence_expanded_with_mode(raw, TokenParseMode::Romaji)
+pub fn parse_key_sequence_expanded(raw: &str, kb_map: &KeyboardMap) -> Vec<KeyStroke> {
+    parse_key_sequence_expanded_with_mode(raw, TokenParseMode::Romaji, kb_map)
 }
 
-fn parse_key_sequence_expanded_with_mode(raw: &str, mode: TokenParseMode) -> Vec<KeyStroke> {
+fn parse_key_sequence_expanded_with_mode(
+    raw: &str,
+    mode: TokenParseMode,
+    kb_map: &KeyboardMap,
+) -> Vec<KeyStroke> {
     let mut seq = Vec::new();
     let chars: Vec<char> = raw.chars().collect();
     let mut i = 0;
@@ -380,7 +385,7 @@ fn parse_key_sequence_expanded_with_mode(raw: &str, mode: TokenParseMode) -> Vec
             _ => {}
         }
 
-        let (mut strokes, consumed) = parse_unit(&chars[i..], mode);
+        let (mut strokes, consumed) = parse_unit(&chars[i..], mode, kb_map);
 
         // Apply accumulated modifiers to the first stroke of the sequence
         if let Some(first) = strokes.first_mut() {
@@ -468,7 +473,7 @@ fn split_dakuten_kana(c: char) -> Option<(char, char)> {
     }
 }
 
-fn kana_layout_key(c: char) -> Option<KanaLayoutKey> {
+fn kana_layout_key(c: char, _kb_map: &KeyboardMap) -> Option<KanaLayoutKey> {
     match c {
         'ぬ' => Some(KanaLayoutKey::Char('1')),
         'ふ' => Some(KanaLayoutKey::Char('2')),
@@ -533,14 +538,14 @@ fn kana_layout_key(c: char) -> Option<KanaLayoutKey> {
     }
 }
 
-fn kana_char_to_key_sequence(c: char) -> Option<Vec<KeyStroke>> {
+fn kana_char_to_key_sequence(c: char, kb_map: &KeyboardMap) -> Option<Vec<KeyStroke>> {
     let kana = normalize_kana_for_layout(c);
     if let Some((base, mark)) = split_dakuten_kana(kana) {
-        let mut seq = kana_char_to_key_sequence(base)?;
-        seq.extend(kana_char_to_key_sequence(mark)?);
+        let mut seq = kana_char_to_key_sequence(base, kb_map)?;
+        seq.extend(kana_char_to_key_sequence(mark, kb_map)?);
         return Some(seq);
     }
-    let key = kana_layout_key(kana)?;
+    let key = kana_layout_key(kana, kb_map)?;
     Some(vec![kana_layout_key_to_stroke(key)])
 }
 
@@ -672,14 +677,18 @@ fn kana_fullwidth_alnum_with_f9(c: char) -> Option<Vec<KeyStroke>> {
     ])
 }
 
-fn parse_unit(chars: &[char], mode: TokenParseMode) -> (Vec<KeyStroke>, usize) {
+fn parse_unit(
+    chars: &[char],
+    mode: TokenParseMode,
+    kb_map: &KeyboardMap,
+) -> (Vec<KeyStroke>, usize) {
     if chars.is_empty() {
         return (Vec::new(), 0);
     }
     let c = chars[0];
 
     if matches!(mode, TokenParseMode::Kana) {
-        if let Some(kana_keys) = kana_char_to_key_sequence(c) {
+        if let Some(kana_keys) = kana_char_to_key_sequence(c, kb_map) {
             return (kana_keys, 1);
         }
         if let Some(stroke) = kana_symbol_fallback_stroke(c) {
@@ -972,25 +981,25 @@ mod tests {
     #[test]
     fn test_parse_token() {
         assert_eq!(
-            parse_token("ni"),
+            parse_token("ni", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('n'), stroke_char('i')])
         );
         assert_eq!(
-            parse_token("'あ'"),
+            parse_token("'あ'", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('a')])
         );
         assert_eq!(
-            parse_token("'ゔ'"),
+            parse_token("'ゔ'", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('v'), stroke_char('u')])
         );
         assert_eq!(
-            parse_token("ゔ"),
+            parse_token("ゔ", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('v'), stroke_char('u')])
         );
 
         // "です" -> DirectString (Unicode)
         assert_eq!(
-            parse_token("\"です\""),
+            parse_token("\"です\"", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::DirectString("です".to_string()),
                 mods: Modifiers::none(),
@@ -999,7 +1008,7 @@ mod tests {
 
         // 'です' -> Expanded to d,e,s,u
         assert_eq!(
-            parse_token("'です'"),
+            parse_token("'です'", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![
                 stroke_char('d'),
                 stroke_char('e'),
@@ -1008,8 +1017,8 @@ mod tests {
             ])
         );
 
-        assert_eq!(parse_token("無"), Token::None);
-        assert_eq!(parse_token(""), Token::None);
+        assert_eq!(parse_token("無", &crate::keyboard_map::new_jis_106()), Token::None);
+        assert_eq!(parse_token("", &crate::keyboard_map::new_jis_106()), Token::None);
 
         // 'a\n' -> a, Enter (0x1C) because \n is likely normalized?
         // Wait, parse_quoted handles escapes. 'a\n' -> string "a\n".
@@ -1023,11 +1032,11 @@ mod tests {
         // char_to_scancode('\n' aka CR 0x0D) -> 0x1C.
         // So it becomes Scancode(0x1C).
         assert_eq!(
-            parse_token("'a\\n'"),
+            parse_token("'a\\n'", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('a'), stroke_scancode(0x1C, false)])
         );
         assert_eq!(
-            parse_token("\"\\u0041\""),
+            parse_token("\"\\u0041\"", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::DirectString("A".to_string()),
                 mods: Modifiers::none(),
@@ -1036,43 +1045,43 @@ mod tests {
 
         // Full-width conversion
         assert_eq!(
-            parse_token("ｎｏ"),
+            parse_token("ｎｏ", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('n'), stroke_char('o')])
         );
         assert_eq!(
-            parse_token("ａｂｃ"),
+            parse_token("ａｂｃ", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('a'), stroke_char('b'), stroke_char('c')])
         );
 
         // Case sensitivity check
         // "A" is now treated as Alt modifier, so it produces no keystroke locally if not followed by a key.
-        assert_eq!(parse_token("A"), Token::None);
+        assert_eq!(parse_token("A", &crate::keyboard_map::new_jis_106()), Token::None);
         assert_eq!(
-            parse_token("Ａ"), // Fullwidth A
+            parse_token("Ａ", &crate::keyboard_map::new_jis_106()), // Fullwidth A
             Token::KeySequence(vec![stroke_char('A')])
         );
 
         // Special tokens
         assert_eq!(
-            parse_token("後"),
+            parse_token("後", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x0E, false)])
         );
         assert_eq!(
-            parse_token("入"),
+            parse_token("入", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x1C, false)])
         );
         assert_eq!(
-            parse_token("左"),
+            parse_token("左", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x4B, true)])
         );
         assert_eq!(
-            parse_token("右"),
+            parse_token("右", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x4D, true)])
         );
 
         // Mixed
         assert_eq!(
-            parse_token("a後b"),
+            parse_token("a後b", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![
                 stroke_char('a'),
                 stroke_scancode(0x0E, false),
@@ -1082,25 +1091,25 @@ mod tests {
 
         // Punctuation
         assert_eq!(
-            parse_token("，．"),
+            parse_token("，．", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char(','), stroke_char('.')])
         );
         assert_eq!(
-            parse_token("（）"),
+            parse_token("（）", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('('), stroke_char(')')])
         );
         assert_eq!(
-            parse_token("＋＊"),
+            parse_token("＋＊", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('+'), stroke_char('*')])
         );
 
         // Function key / VK
         assert_eq!(
-            parse_token("機10"),
+            parse_token("機10", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x44, false)])
         );
         assert_eq!(
-            parse_token("V1B"),
+            parse_token("V1B", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_vk(0x1B)])
         );
 
@@ -1108,11 +1117,11 @@ mod tests {
 
         // Modifiers (single-stroke)
         // "CA" -> Ctrl + Alt (accumulated modifiers, no key)
-        assert_eq!(parse_token("CA"), Token::None);
+        assert_eq!(parse_token("CA", &crate::keyboard_map::new_jis_106()), Token::None);
 
         // "Cａ" -> Ctrl + a
         assert_eq!(
-            parse_token("Cａ"),
+            parse_token("Cａ", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::Char('a'),
                 mods: Modifiers {
@@ -1126,14 +1135,14 @@ mod tests {
 
         // IME Control
         assert_eq!(
-            parse_token("日"),
+            parse_token("日", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::ImeOn,
                 mods: Modifiers::none(),
             }])
         );
         assert_eq!(
-            parse_token("英"),
+            parse_token("英", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::ImeOff,
                 mods: Modifiers::none(),
@@ -1145,13 +1154,13 @@ mod tests {
     fn test_parse_token_extended() {
         // "変" -> Scancode 0x79
         assert_eq!(
-            parse_token("変"),
+            parse_token("変", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x79, false)])
         );
 
         // "S左" -> Shift + Left
         assert_eq!(
-            parse_token("S左"),
+            parse_token("S左", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::Scancode(0x4B, true),
                 mods: Modifiers {
@@ -1163,7 +1172,7 @@ mod tests {
 
         // "S左S左" -> Shift+Left, Shift+Left
         assert_eq!(
-            parse_token("S左S左"),
+            parse_token("S左S左", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![
                 KeyStroke {
                     key: KeySpec::Scancode(0x4B, true),
@@ -1184,7 +1193,7 @@ mod tests {
 
         // "SCS左" -> Shift+Ctrl+Left
         assert_eq!(
-            parse_token("SCS左"),
+            parse_token("SCS左", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::Scancode(0x4B, true),
                 mods: Modifiers {
@@ -1197,7 +1206,7 @@ mod tests {
 
         // "Sａ" -> Shift + a
         assert_eq!(
-            parse_token("Sａ"), // Fullwidth a -> stroke_char('a')
+            parse_token("Sａ", &crate::keyboard_map::new_jis_106()), // Fullwidth a -> stroke_char('a')
             Token::KeySequence(vec![KeyStroke {
                 key: KeySpec::Char('a'),
                 mods: Modifiers {
@@ -1208,124 +1217,124 @@ mod tests {
         );
 
         // "S" -> Empty (No key following)
-        assert_eq!(parse_token("S"), Token::None);
+        assert_eq!(parse_token("S", &crate::keyboard_map::new_jis_106()), Token::None);
     }
 
     #[test]
     fn test_parse_token_kana_mode_maps_to_kana_keycodes() {
         assert_eq!(
-            parse_token_with_mode("の", TokenParseMode::Kana),
+            parse_token_with_mode("の", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('k')])
         );
         assert_eq!(
-            parse_token_with_mode("と", TokenParseMode::Kana),
+            parse_token_with_mode("と", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('s')])
         );
         assert_eq!(
-            parse_token_with_mode("ど", TokenParseMode::Kana),
+            parse_token_with_mode("ど", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('s'), stroke_char('@')])
         );
         assert_eq!(
-            parse_token_with_mode("゛", TokenParseMode::Kana),
+            parse_token_with_mode("゛", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('@')])
         );
         assert_eq!(
-            parse_token_with_mode("゜", TokenParseMode::Kana),
+            parse_token_with_mode("゜", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('[')])
         );
         assert_eq!(
-            parse_token_with_mode("ろ", TokenParseMode::Kana),
+            parse_token_with_mode("ろ", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x73, false)])
         );
         assert_eq!(
-            parse_token_with_mode("。", TokenParseMode::Kana),
+            parse_token_with_mode("。", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char('.')])
         );
         assert_eq!(
-            parse_token_with_mode("、", TokenParseMode::Kana),
+            parse_token_with_mode("、", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char(',')])
         );
         assert_eq!(
-            parse_token_with_mode("ー", TokenParseMode::Kana),
+            parse_token_with_mode("ー", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('\\')])
         );
         assert_eq!(
-            parse_token_with_mode("１", TokenParseMode::Kana),
+            parse_token_with_mode("１", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('1'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("２", TokenParseMode::Kana),
+            parse_token_with_mode("２", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('2'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("３", TokenParseMode::Kana),
+            parse_token_with_mode("３", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('3'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("４", TokenParseMode::Kana),
+            parse_token_with_mode("４", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('4'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("５", TokenParseMode::Kana),
+            parse_token_with_mode("５", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('5'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("６", TokenParseMode::Kana),
+            parse_token_with_mode("６", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('6'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("７", TokenParseMode::Kana),
+            parse_token_with_mode("７", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('7'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("８", TokenParseMode::Kana),
+            parse_token_with_mode("８", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('8'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("９", TokenParseMode::Kana),
+            parse_token_with_mode("９", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('9'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("０", TokenParseMode::Kana),
+            parse_token_with_mode("０", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('0'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("－", TokenParseMode::Kana),
+            parse_token_with_mode("－", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('-'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("＾", TokenParseMode::Kana),
+            parse_token_with_mode("＾", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('^'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("￥", TokenParseMode::Kana),
+            parse_token_with_mode("￥", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_char('\\'), stroke_scancode(0x43, false)])
         );
 
         assert_eq!(
-            parse_token_with_mode("［", TokenParseMode::Kana),
+            parse_token_with_mode("［", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char('[')])
         );
         assert_eq!(
-            parse_token_with_mode("］", TokenParseMode::Kana),
+            parse_token_with_mode("］", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char(']')])
         );
         assert_eq!(
-            parse_token_with_mode("／", TokenParseMode::Kana),
+            parse_token_with_mode("／", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char('/')])
         );
         assert_eq!(
-            parse_token_with_mode("・", TokenParseMode::Kana),
+            parse_token_with_mode("・", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char('/')])
         );
         assert_eq!(
-            parse_token_with_mode("｀", TokenParseMode::Kana),
+            parse_token_with_mode("｀", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_shift_char('@'), stroke_scancode(0x43, false)])
         );
 
         let expect_f9 = |src: &str, ascii: char| {
             assert_eq!(
-                parse_token_with_mode(src, TokenParseMode::Kana),
+                parse_token_with_mode(src, TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
                 Token::KeySequence(vec![stroke_char(ascii), stroke_scancode(0x43, false)])
             );
         };
@@ -1357,7 +1366,7 @@ mod tests {
 [かなシフト無し]
 の,ど,゛,゜
 ";
-        let layout = parse_yab_content(content).expect("Failed to parse");
+        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         let sec = layout
             .sections
             .get("かなシフト無し")
@@ -1388,7 +1397,7 @@ mod tests {
     fn test_parse_mixed_string_and_keys() {
         // "【】"左 -> DirectString("【】") + Left
         assert_eq!(
-            parse_token("\"【】\"左"),
+            parse_token("\"【】\"左", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![
                 KeyStroke {
                     key: KeySpec::DirectString("【】".to_string()),
@@ -1404,7 +1413,7 @@ mod tests {
         // Mixed with modifiers: S"【】" -> Shift + "【】" (Shift ignored for string?)
         // In current logic: 'S' is parsed in a bare chunk.
         // If "S" is before quote, it's parsed as bare.
-        // parse_key_sequence_expanded("S") -> Empty (modifiers reset).
+        // parse_key_sequence_expanded("S", &crate::keyboard_map::new_jis_106()) -> Empty (modifiers reset).
         // Then quote parsed.
         // So S is effectively ignored if not followed by a key in the same chunk.
         // This is acceptable or maybe we want "S" to apply to next key AFTER string?
@@ -1415,7 +1424,7 @@ mod tests {
 
         // Let's verify "Left" "Right" -> sequence
         assert_eq!(
-            parse_token("左右"),
+            parse_token("左右", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![
                 KeyStroke {
                     key: KeySpec::Scancode(0x4B, true),
@@ -1431,7 +1440,7 @@ mod tests {
         // "Left""Right" (quoted?) -> No, Left and Right are special keys, not strings.
         // "a" "b" -> a, b.
         assert_eq!(
-            parse_token("'a''b'"),
+            parse_token("'a''b'", &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![
                 KeyStroke {
                     key: KeySpec::Char('a'),
@@ -1452,7 +1461,8 @@ mod tests {
 [Main]
 a,b
 ";
-        let layout = parse_yab_content(content_with_name).expect("Failed to parse");
+        let layout =
+            parse_yab_content(content_with_name, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         assert_eq!(layout.name, Some("新下駄配列".to_string()));
 
         // Case 2: Skip empty lines and empty comments
@@ -1464,7 +1474,8 @@ a,b
 [Main]
 a,b
 ";
-        let layout_skip = parse_yab_content(content_skip).expect("Failed to parse");
+        let layout_skip =
+            parse_yab_content(content_skip, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         assert_eq!(layout_skip.name, Some("Real Name".to_string()));
 
         // Case 3: No name found (starts with section)
@@ -1473,12 +1484,14 @@ a,b
 [Main]
 a,b
 ";
-        let layout_no_name = parse_yab_content(content_no_name).expect("Failed");
+        let layout_no_name =
+            parse_yab_content(content_no_name, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout_no_name.name, None);
 
         // Case 4: Name variation
         let content_name_variation = ";My Layout  ";
-        let layout_var = parse_yab_content(content_name_variation).expect("Failed");
+        let layout_var =
+            parse_yab_content(content_name_variation, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout_var.name, Some("My Layout".to_string()));
     }
 
@@ -1494,7 +1507,7 @@ Capsロック, 拡張2
 [Main]
 a,b
 ";
-        let layout = parse_yab_content(content).expect("Failed");
+        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(
             layout.function_key_swaps,
             vec![
@@ -1517,7 +1530,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 <q>
 xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
-        let layout = parse_yab_content(content).expect("Failed");
+        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout.max_chord_size, 2);
     }
 
@@ -1533,7 +1546,7 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 <q><w>
 xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
-        let layout = parse_yab_content(content).expect("Failed");
+        let layout = parse_yab_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout.max_chord_size, 3);
     }
 

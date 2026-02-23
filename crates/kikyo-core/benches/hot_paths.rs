@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use kikyo_core::engine::Engine;
+use kikyo_core::keyboard_map::KeyboardMap;
 use kikyo_core::parser::parse_yab_content;
 
 const BENCH_LAYOUT: &str = r#"
@@ -21,7 +22,8 @@ xx,xx,a,xx,xx,xx,xx,xx,xx,xx,xx,xx
 "#;
 
 fn make_engine(char_overlap_ratio: f64) -> Engine {
-    let layout = parse_yab_content(BENCH_LAYOUT).expect("failed to parse benchmark layout");
+    let layout = parse_yab_content(BENCH_LAYOUT, &KeyboardMap::default())
+        .expect("failed to parse benchmark layout");
     let mut engine = Engine::default();
     engine.set_ignore_ime(true);
     engine.load_layout(layout);

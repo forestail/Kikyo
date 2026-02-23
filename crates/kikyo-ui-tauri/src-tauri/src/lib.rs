@@ -65,6 +65,12 @@ struct Settings {
     profile: Option<Profile>,
     #[serde(default = "default_enabled")]
     enabled: bool,
+    #[serde(default = "default_keyboard_type")]
+    pub keyboard_type: String,
+}
+
+fn default_keyboard_type() -> String {
+    "JIS106".to_string()
 }
 
 fn default_enabled() -> bool {
@@ -79,6 +85,7 @@ impl Default for Settings {
             active_layout_id: None,
             profile: None,
             enabled: true,
+            keyboard_type: "JIS106".to_string(),
         }
     }
 }
@@ -112,8 +119,53 @@ fn normalize_layout_path_for_compare(path: &str) -> String {
     }
 }
 
+#[tauri::command]
+fn get_keyboard_types() -> Vec<String> {
+    let mut types = vec!["JIS106".to_string(), "US101".to_string(), "AX".to_string()];
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            let map_dir = dir.join("map");
+            if map_dir.exists() && map_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(map_dir) {
+                    for entry in entries.filter_map(Result::ok) {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if name.ends_with(".txt") {
+                                types.push(name.trim_end_matches(".txt").to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    types
+}
+
+fn resolve_keyboard_map(type_name: &str) -> std::sync::Arc<kikyo_core::keyboard_map::KeyboardMap> {
+    use kikyo_core::keyboard_map::{new_ax, new_jis_106, new_us_101, KeyboardMap};
+    match type_name {
+        "JIS106" => std::sync::Arc::new(new_jis_106()),
+        "US101" => std::sync::Arc::new(new_us_101()),
+        "AX" => std::sync::Arc::new(new_ax()),
+        custom => {
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(dir) = exe_path.parent() {
+                    let map_path = dir.join("map").join(format!("{}.txt", custom));
+                    if map_path.exists() {
+                        if let Ok(map) = KeyboardMap::load_from_file(map_path) {
+                            return std::sync::Arc::new(map);
+                        }
+                    }
+                }
+            }
+            std::sync::Arc::new(new_jis_106())
+        }
+    }
+}
+
 fn detect_layout_name_from_file(path: &str) -> Result<String, String> {
-    let layout = parser::load_yab(path).map_err(|e| e.to_string())?;
+    let layout = parser::load_yab(path, &kikyo_core::keyboard_map::new_jis_106())
+        .map_err(|e| e.to_string())?;
     let name = layout
         .name
         .map(|v| v.trim().to_string())
@@ -559,7 +611,10 @@ fn apply_layout_from_path(
     path: &str,
     display_name: Option<String>,
 ) -> Result<String, String> {
-    let layout = parser::load_yab(path).map_err(|e| e.to_string())?;
+    let settings = load_settings_with_migration(app);
+    let kb_map_arc = resolve_keyboard_map(&settings.keyboard_type);
+
+    let layout = parser::load_yab(path, &kb_map_arc).map_err(|e| e.to_string())?;
     let stats = format!("Loaded {} sections", layout.sections.len());
     let parser_name = layout
         .name
@@ -567,6 +622,7 @@ fn apply_layout_from_path(
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| fallback_alias_from_path(path));
+    ENGINE.lock().set_keyboard_map(kb_map_arc);
     ENGINE.lock().load_layout(layout);
     keyboard_hook::refresh_runtime_flags_from_engine();
 
@@ -702,6 +758,34 @@ fn create_layout_entry_from_path(
     save_settings(&app, &settings);
     let _ = update_tray_menu(&app);
     Ok(entry)
+}
+
+#[tauri::command]
+fn get_keyboard_type(app: tauri::AppHandle) -> String {
+    let settings = load_settings_with_migration(&app);
+    settings.keyboard_type
+}
+
+#[tauri::command]
+fn set_keyboard_type(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    keyboard_type: String,
+) -> Result<(), String> {
+    let mut settings = load_settings_with_migration(&app);
+    if settings.keyboard_type != keyboard_type {
+        settings.keyboard_type = keyboard_type.clone();
+        save_settings(&app, &settings);
+
+        let kb_map_arc = resolve_keyboard_map(&keyboard_type);
+        ENGINE.lock().set_keyboard_map(kb_map_arc);
+
+        if let Some(path) = settings.last_layout_path.clone() {
+            let display_name = preferred_display_name_for_path(&settings, &path);
+            let _ = apply_layout_from_path(&app, &state, &path, display_name);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -912,7 +996,10 @@ pub fn run() {
             get_enabled,
             get_profile,
             set_profile,
-            get_app_version
+            get_app_version,
+            get_keyboard_types,
+            get_keyboard_type,
+            set_keyboard_type
         ])
         .setup(|app| {
             // Setup Tray with initial menu
