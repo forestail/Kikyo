@@ -77,7 +77,7 @@ impl KeyboardMap {
                 continue;
             }
 
-            let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+            let parts: Vec<&str> = line.splitn(4, ',').map(|s| s.trim()).collect();
             if parts.len() < 4 {
                 // Ignore lines that don't match the row,col,scancode,name format
                 continue;
