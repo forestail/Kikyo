@@ -1,9 +1,8 @@
 use crate::keyboard_map::KeyboardMap;
-use crate::types::{KeySpec, KeyStroke, Layout, Modifiers, Plane, Rc, ScKey, Section, Token};
+use crate::types::{KeySpec, KeyStroke, Layout, Modifiers, Plane, Rc, Section, Token};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 use tracing::{debug, warn};
 
 pub fn load_layout<P: AsRef<Path>>(path: P, kb_map: &KeyboardMap) -> Result<Layout> {
@@ -412,114 +411,24 @@ enum KanaLayoutKey {
     Scancode(u16, bool),
 }
 
-fn jis_keyboard_map() -> &'static KeyboardMap {
-    static JIS_MAP: OnceLock<KeyboardMap> = OnceLock::new();
-    JIS_MAP.get_or_init(crate::keyboard_map::new_jis_106)
-}
-
-fn resolve_scancode_from_jis_scancode(jis_sc: u16, kb_map: &KeyboardMap) -> Option<u16> {
-    let rc = jis_keyboard_map()
-        .sc_to_rc
-        .get(&ScKey::new(jis_sc, false))
-        .copied()?;
-    kb_map
-        .rc_to_sc
-        .get(&rc)
-        .map(|mapped| mapped.sc)
-        .or(Some(jis_sc))
-}
-
-fn resolve_scancode_from_jis_key_name(key_name: &str, kb_map: &KeyboardMap) -> Option<u16> {
-    if let Some(jis_sc) = jis_keyboard_map().key_name_to_sc(key_name) {
-        return resolve_scancode_from_jis_scancode(jis_sc, kb_map).or(Some(jis_sc));
-    }
-    kb_map.key_name_to_sc(key_name)
-}
-
-fn jis_char_to_key_name_and_shift(c: char) -> Option<(String, bool)> {
-    if c.is_ascii_lowercase() || c.is_ascii_digit() {
-        return Some((c.to_string(), false));
-    }
-    if c.is_ascii_uppercase() {
-        return Some((c.to_ascii_lowercase().to_string(), true));
-    }
-
-    match c {
-        '-' => Some(("-".to_string(), false)),
-        '^' => Some(("^".to_string(), false)),
-        '\\' => Some(("\\".to_string(), false)),
-        '@' => Some(("@".to_string(), false)),
-        '[' => Some(("[".to_string(), false)),
-        ';' => Some((";".to_string(), false)),
-        ':' => Some((":".to_string(), false)),
-        ']' => Some(("]".to_string(), false)),
-        ',' => Some((",".to_string(), false)),
-        '.' => Some((".".to_string(), false)),
-        '/' => Some(("/".to_string(), false)),
-        '_' => Some(("_".to_string(), true)),
-        '!' => Some(("1".to_string(), true)),
-        '"' => Some(("2".to_string(), true)),
-        '#' => Some(("3".to_string(), true)),
-        '$' => Some(("4".to_string(), true)),
-        '%' => Some(("5".to_string(), true)),
-        '&' => Some(("6".to_string(), true)),
-        '\'' => Some(("7".to_string(), true)),
-        '(' => Some(("8".to_string(), true)),
-        ')' => Some(("9".to_string(), true)),
-        '=' => Some(("-".to_string(), true)),
-        '~' => Some(("^".to_string(), true)),
-        '|' => Some(("\\".to_string(), true)),
-        '`' => Some(("@".to_string(), true)),
-        '{' => Some(("[".to_string(), true)),
-        '+' => Some((";".to_string(), true)),
-        '*' => Some((":".to_string(), true)),
-        '}' => Some(("]".to_string(), true)),
-        '<' => Some((",".to_string(), true)),
-        '>' => Some((".".to_string(), true)),
-        '?' => Some(("/".to_string(), true)),
-        ' ' => Some(("space".to_string(), false)),
-        _ => None,
-    }
-}
-
-fn kana_char_to_layout_stroke(c: char, explicit_shift: bool, kb_map: &KeyboardMap) -> Option<KeyStroke> {
-    let (key_name, implicit_shift) = jis_char_to_key_name_and_shift(c)?;
-    let sc = resolve_scancode_from_jis_key_name(&key_name, kb_map)?;
-    let mut mods = Modifiers::none();
-    mods.shift = explicit_shift || implicit_shift;
-    Some(KeyStroke {
-        key: KeySpec::Scancode(sc, false),
-        mods,
-    })
-}
-
-fn kana_layout_key_to_stroke(key: KanaLayoutKey, kb_map: &KeyboardMap) -> KeyStroke {
+fn kana_layout_key_to_stroke(key: KanaLayoutKey) -> KeyStroke {
     match key {
-        KanaLayoutKey::Char(c) => kana_char_to_layout_stroke(c, false, kb_map).unwrap_or(KeyStroke {
+        KanaLayoutKey::Char(c) => KeyStroke {
             key: KeySpec::Char(c),
             mods: Modifiers::none(),
-        }),
+        },
         KanaLayoutKey::ShiftedChar(c) => {
-            kana_char_to_layout_stroke(c, true, kb_map).unwrap_or_else(|| {
-                let mut mods = Modifiers::none();
-                mods.shift = true;
-                KeyStroke {
-                    key: KeySpec::Char(c),
-                    mods,
-                }
-            })
-        }
-        KanaLayoutKey::Scancode(sc, ext) => {
-            let mapped_sc = if ext {
-                sc
-            } else {
-                resolve_scancode_from_jis_scancode(sc, kb_map).unwrap_or(sc)
-            };
+            let mut mods = Modifiers::none();
+            mods.shift = true;
             KeyStroke {
-                key: KeySpec::Scancode(mapped_sc, ext),
-                mods: Modifiers::none(),
+                key: KeySpec::Char(c),
+                mods,
             }
         }
+        KanaLayoutKey::Scancode(sc, ext) => KeyStroke {
+            key: KeySpec::Scancode(sc, ext),
+            mods: Modifiers::none(),
+        },
     }
 }
 
@@ -637,79 +546,77 @@ fn kana_char_to_key_sequence(c: char, kb_map: &KeyboardMap) -> Option<Vec<KeyStr
         return Some(seq);
     }
     let key = kana_layout_key(kana, kb_map)?;
-    Some(vec![kana_layout_key_to_stroke(key, kb_map)])
+    Some(vec![kana_layout_key_to_stroke(key)])
 }
 
-fn kana_symbol_fallback_stroke(c: char, kb_map: &KeyboardMap) -> Option<KeyStroke> {
+fn kana_symbol_fallback_stroke(c: char) -> Option<KeyStroke> {
     match c {
-        '\u{3002}' => kana_char_to_layout_stroke('.', true, kb_map).or_else(|| {
+        '。' => {
             let mut mods = Modifiers::none();
             mods.shift = true;
             Some(KeyStroke {
                 key: KeySpec::Char('.'),
                 mods,
             })
-        }),
-        '\u{3001}' => kana_char_to_layout_stroke(',', true, kb_map).or_else(|| {
+        }
+        '、' => {
             let mut mods = Modifiers::none();
             mods.shift = true;
             Some(KeyStroke {
                 key: KeySpec::Char(','),
                 mods,
             })
-        }),
-        '\u{FF3B}' => kana_char_to_layout_stroke('[', true, kb_map).or_else(|| {
+        }
+        '［' => {
             let mut mods = Modifiers::none();
             mods.shift = true;
             Some(KeyStroke {
                 key: KeySpec::Char('['),
                 mods,
             })
-        }),
-        '\u{FF3D}' => kana_char_to_layout_stroke(']', true, kb_map).or_else(|| {
+        }
+        '］' => {
             let mut mods = Modifiers::none();
             mods.shift = true;
             Some(KeyStroke {
                 key: KeySpec::Char(']'),
                 mods,
             })
-        }),
-        '\u{FF0F}' => kana_char_to_layout_stroke('/', true, kb_map).or_else(|| {
+        }
+        '／' => {
             let mut mods = Modifiers::none();
             mods.shift = true;
             Some(KeyStroke {
                 key: KeySpec::Char('/'),
                 mods,
             })
-        }),
-        '\u{30FB}' => kana_char_to_layout_stroke('/', true, kb_map).or_else(|| {
+        }
+        '・' => {
             let mut mods = Modifiers::none();
             mods.shift = true;
             Some(KeyStroke {
                 key: KeySpec::Char('/'),
                 mods,
             })
-        }),
-        '\u{30FC}' => kana_char_to_layout_stroke('\\', false, kb_map).or(Some(KeyStroke {
+        }
+        'ー' => Some(KeyStroke {
             key: KeySpec::Char('\\'),
             mods: Modifiers::none(),
-        })),
+        }),
         _ => None,
     }
 }
-fn kana_special_with_f9(c: char, kb_map: &KeyboardMap) -> Option<Vec<KeyStroke>> {
+
+fn kana_special_with_f9(c: char) -> Option<Vec<KeyStroke>> {
     match c {
-        '\u{FF40}' => {
-            let shifted_at = kana_char_to_layout_stroke('@', true, kb_map).unwrap_or_else(|| {
-                let mut mods = Modifiers::none();
-                mods.shift = true;
+        '｀' => {
+            let mut mods = Modifiers::none();
+            mods.shift = true;
+            Some(vec![
                 KeyStroke {
                     key: KeySpec::Char('@'),
                     mods,
-                }
-            });
-            Some(vec![
-                shifted_at,
+                },
                 KeyStroke {
                     key: KeySpec::Scancode(0x43, false), // F9
                     mods: Modifiers::none(),
@@ -719,7 +626,8 @@ fn kana_special_with_f9(c: char, kb_map: &KeyboardMap) -> Option<Vec<KeyStroke>>
         _ => None,
     }
 }
-fn kana_fullwidth_alnum_with_f9(c: char, kb_map: &KeyboardMap) -> Option<Vec<KeyStroke>> {
+
+fn kana_fullwidth_alnum_with_f9(c: char) -> Option<Vec<KeyStroke>> {
     let ascii = match c {
         '１' => '1',
         '２' => '2',
@@ -757,13 +665,11 @@ fn kana_fullwidth_alnum_with_f9(c: char, kb_map: &KeyboardMap) -> Option<Vec<Key
         _ => return None,
     };
 
-    let first_stroke = kana_char_to_layout_stroke(ascii, false, kb_map).unwrap_or(KeyStroke {
-        key: KeySpec::Char(ascii),
-        mods: Modifiers::none(),
-    });
-
     Some(vec![
-        first_stroke,
+        KeyStroke {
+            key: KeySpec::Char(ascii),
+            mods: Modifiers::none(),
+        },
         KeyStroke {
             key: KeySpec::Scancode(0x43, false), // F9
             mods: Modifiers::none(),
@@ -785,13 +691,13 @@ fn parse_unit(
         if let Some(kana_keys) = kana_char_to_key_sequence(c, kb_map) {
             return (kana_keys, 1);
         }
-        if let Some(stroke) = kana_symbol_fallback_stroke(c, kb_map) {
+        if let Some(stroke) = kana_symbol_fallback_stroke(c) {
             return (vec![stroke], 1);
         }
-        if let Some(seq) = kana_special_with_f9(c, kb_map) {
+        if let Some(seq) = kana_special_with_f9(c) {
             return (seq, 1);
         }
-        if let Some(seq) = kana_fullwidth_alnum_with_f9(c, kb_map) {
+        if let Some(seq) = kana_fullwidth_alnum_with_f9(c) {
             return (seq, 1);
         }
     }
@@ -1049,21 +955,20 @@ mod tests {
         }
     }
 
+    fn stroke_shift_char(c: char) -> KeyStroke {
+        let mut mods = Modifiers::none();
+        mods.shift = true;
+        KeyStroke {
+            key: KeySpec::Char(c),
+            mods,
+        }
+    }
+
     fn stroke_scancode(sc: u16, ext: bool) -> KeyStroke {
         KeyStroke {
             key: KeySpec::Scancode(sc, ext),
             mods: Modifiers::none(),
         }
-    }
-
-    fn stroke_kana_jis_char(c: char) -> KeyStroke {
-        kana_char_to_layout_stroke(c, false, &crate::keyboard_map::new_jis_106())
-            .unwrap_or_else(|| panic!("Failed to map kana JIS char: {c}"))
-    }
-
-    fn stroke_kana_jis_shift_char(c: char) -> KeyStroke {
-        kana_char_to_layout_stroke(c, true, &crate::keyboard_map::new_jis_106())
-            .unwrap_or_else(|| panic!("Failed to map kana JIS shifted char: {c}"))
     }
 
     fn stroke_vk(vk: u16) -> KeyStroke {
@@ -1318,76 +1223,176 @@ mod tests {
     #[test]
     fn test_parse_token_kana_mode_maps_to_kana_keycodes() {
         assert_eq!(
-            parse_token_with_mode("\u{306e}", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
-            Token::KeySequence(vec![stroke_kana_jis_char('k')])
+            parse_token_with_mode("の", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('k')])
         );
         assert_eq!(
-            parse_token_with_mode("\u{3069}", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
-            Token::KeySequence(vec![stroke_kana_jis_char('s'), stroke_kana_jis_char('@')])
+            parse_token_with_mode("と", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('s')])
         );
         assert_eq!(
-            parse_token_with_mode("\u{308d}", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode("ど", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('s'), stroke_char('@')])
+        );
+        assert_eq!(
+            parse_token_with_mode("゛", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('@')])
+        );
+        assert_eq!(
+            parse_token_with_mode("゜", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('[')])
+        );
+        assert_eq!(
+            parse_token_with_mode("ろ", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
             Token::KeySequence(vec![stroke_scancode(0x73, false)])
         );
         assert_eq!(
-            parse_token_with_mode("\u{3002}", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
-            Token::KeySequence(vec![stroke_kana_jis_shift_char('.')])
+            parse_token_with_mode("。", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char('.')])
         );
         assert_eq!(
-            parse_token_with_mode("\u{FF40}", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
-            Token::KeySequence(vec![stroke_kana_jis_shift_char('@'), stroke_scancode(0x43, false)])
+            parse_token_with_mode("、", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char(',')])
         );
         assert_eq!(
-            parse_token_with_mode("\u{FF11}", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
-            Token::KeySequence(vec![stroke_kana_jis_char('1'), stroke_scancode(0x43, false)])
+            parse_token_with_mode("ー", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('\\')])
         );
+        assert_eq!(
+            parse_token_with_mode("１", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('1'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("２", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('2'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("３", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('3'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("４", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('4'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("５", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('5'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("６", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('6'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("７", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('7'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("８", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('8'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("９", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('9'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("０", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('0'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("－", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('-'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("＾", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('^'), stroke_scancode(0x43, false)])
+        );
+        assert_eq!(
+            parse_token_with_mode("￥", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_char('\\'), stroke_scancode(0x43, false)])
+        );
+
+        assert_eq!(
+            parse_token_with_mode("［", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char('[')])
+        );
+        assert_eq!(
+            parse_token_with_mode("］", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char(']')])
+        );
+        assert_eq!(
+            parse_token_with_mode("／", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char('/')])
+        );
+        assert_eq!(
+            parse_token_with_mode("・", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char('/')])
+        );
+        assert_eq!(
+            parse_token_with_mode("｀", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![stroke_shift_char('@'), stroke_scancode(0x43, false)])
+        );
+
+        let expect_f9 = |src: &str, ascii: char| {
+            assert_eq!(
+                parse_token_with_mode(src, TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+                Token::KeySequence(vec![stroke_char(ascii), stroke_scancode(0x43, false)])
+            );
+        };
+        expect_f9("：", ':');
+        expect_f9("；", ';');
+        expect_f9("＠", '@');
+        expect_f9("＊", '*');
+        expect_f9("（", '(');
+        expect_f9("）", ')');
+        expect_f9("！", '!');
+        expect_f9("”", '"');
+        expect_f9("＃", '#');
+        expect_f9("＄", '$');
+        expect_f9("％", '%');
+        expect_f9("＆", '&');
+        expect_f9("’", '\'');
+        expect_f9("＝", '=');
+        expect_f9("～", '~');
+        expect_f9("｜", '|');
+        expect_f9("＜", '<');
+        expect_f9("＞", '>');
+        expect_f9("？", '?');
+        expect_f9("＿", '_');
     }
+
     #[test]
     fn test_parse_kana_section_uses_kana_mode() {
         let content = "
-[\u{304b}\u{306a}\u{30b7}\u{30d5}\u{30c8}\u{7121}\u{3057}]
-\u{306e},\u{3069},\u{309b},\u{309c}
+[かなシフト無し]
+の,ど,゛,゜
 ";
         let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
         let sec = layout
             .sections
-            .get("\u{304b}\u{306a}\u{30b7}\u{30d5}\u{30c8}\u{7121}\u{3057}")
+            .get("かなシフト無し")
             .expect("Missing kana section");
 
         assert_eq!(
             sec.base_plane.map.get(&Rc::new(0, 0)),
-            Some(&Token::KeySequence(vec![stroke_kana_jis_char('k')]))
+            Some(&Token::KeySequence(vec![stroke_char('k')]))
         );
         assert_eq!(
             sec.base_plane.map.get(&Rc::new(0, 1)),
             Some(&Token::KeySequence(vec![
-                stroke_kana_jis_char('s'),
-                stroke_kana_jis_char('@')
+                stroke_char('s'),
+                stroke_char('@')
             ]))
         );
         assert_eq!(
             sec.base_plane.map.get(&Rc::new(0, 2)),
-            Some(&Token::KeySequence(vec![stroke_kana_jis_char('@')]))
+            Some(&Token::KeySequence(vec![stroke_char('@')]))
         );
         assert_eq!(
             sec.base_plane.map.get(&Rc::new(0, 3)),
-            Some(&Token::KeySequence(vec![stroke_kana_jis_char('[')]))
+            Some(&Token::KeySequence(vec![stroke_char('[')]))
         );
     }
 
-    #[test]
-    fn test_kana_mode_uses_selected_keyboard_map_positions() {
-        let us = crate::keyboard_map::new_us_101();
-
-        assert_eq!(
-            parse_token_with_mode("\u{30FC}", TokenParseMode::Kana, &us),
-            Token::KeySequence(vec![stroke_scancode(0x0D, false)])
-        );
-        assert_eq!(
-            parse_token_with_mode("\u{3078}", TokenParseMode::Kana, &us),
-            Token::KeySequence(vec![stroke_scancode(0x0C, false)])
-        );
-    }
     #[test]
     fn test_parse_mixed_string_and_keys() {
         // "【】"左 -> DirectString("【】") + Left
