@@ -309,7 +309,12 @@ function buildLayoutEntryRow(entry) {
       const selected = await openLayoutFileDialog(pathInput.value);
       if (!selected) return;
       pathInput.value = selected;
-      await updateLayoutEntryState(entry.id, aliasInput.value, pathInput.value);
+      // エイリアスを空にして update_layout_entry を呼ぶことで、
+      // バックエンド側で新しいファイルから定義名を再取得させる
+      await updateLayoutEntryState(entry.id, "", pathInput.value);
+      // バックエンドで更新された定義名（および必要ならパスの正規化結果）を
+      // UI に反映させるため、リスト全体を再取得して再描画する
+      await refreshLayoutEntries();
     } catch (e) {
       statusMsg.innerText = "ファイル選択に失敗しました: " + e;
     }
