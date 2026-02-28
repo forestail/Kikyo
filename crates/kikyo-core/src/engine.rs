@@ -116,6 +116,8 @@ pub struct Engine {
     enabled: bool,
     layout: Option<Layout>,
     on_enabled_change: Option<Box<dyn Fn(bool) + Send + Sync>>,
+    on_settings_shortcut: Option<Box<dyn Fn() + Send + Sync>>,
+    on_switch_layout_shortcut: Option<Box<dyn Fn() + Send + Sync>>,
     repeat_plans: HashMap<ScKey, Vec<ScKey>>,
     pending_nonshift_for_shift: HashSet<ScKey>,
     passthrough_thumb_shift_modifiers: HashMap<ScKey, ScKey>,
@@ -133,6 +135,8 @@ impl Default for Engine {
             enabled: true,
             layout: None,
             on_enabled_change: None,
+            on_settings_shortcut: None,
+            on_switch_layout_shortcut: None,
             repeat_plans: HashMap::new(),
             pending_nonshift_for_shift: HashSet::new(),
             passthrough_thumb_shift_modifiers: HashMap::new(),
@@ -173,6 +177,26 @@ impl Engine {
         self.on_enabled_change = Some(Box::new(cb));
     }
 
+    pub fn set_on_settings_shortcut(&mut self, cb: impl Fn() + Send + Sync + 'static) {
+        self.on_settings_shortcut = Some(Box::new(cb));
+    }
+
+    pub fn set_on_switch_layout_shortcut(&mut self, cb: impl Fn() + Send + Sync + 'static) {
+        self.on_switch_layout_shortcut = Some(Box::new(cb));
+    }
+
+    pub fn trigger_settings_shortcut(&self) {
+        if let Some(ref cb) = self.on_settings_shortcut {
+            cb();
+        }
+    }
+
+    pub fn trigger_switch_layout_shortcut(&self) {
+        if let Some(ref cb) = self.on_switch_layout_shortcut {
+            cb();
+        }
+    }
+
     pub fn set_ignore_ime(&mut self, ignore: bool) {
         self.chord_engine.profile.ime_mode = if ignore {
             ImeMode::Ignore
@@ -201,8 +225,16 @@ impl Engine {
         self.chord_engine.profile.clone()
     }
 
-    pub fn get_suspend_key(&self) -> crate::chord_engine::SuspendKey {
-        self.chord_engine.profile.suspend_key
+    pub fn get_suspend_shortcut(&self) -> Option<crate::types::ShortcutKey> {
+        self.chord_engine.profile.suspend_shortcut.clone()
+    }
+
+    pub fn get_settings_shortcut(&self) -> Option<crate::types::ShortcutKey> {
+        self.chord_engine.profile.settings_shortcut.clone()
+    }
+
+    pub fn get_switch_layout_shortcut(&self) -> Option<crate::types::ShortcutKey> {
+        self.chord_engine.profile.switch_layout_shortcut.clone()
     }
 
     fn needs_sc_key_handling(&self, key: ScKey) -> bool {
@@ -5785,17 +5817,22 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
     }
 
     #[test]
-    fn test_suspend_key_persists_when_disabled() {
+    fn test_suspend_shortcut_persists_when_disabled() {
         let mut engine = Engine::default();
         let mut profile = engine.get_profile();
-        profile.suspend_key = crate::chord_engine::SuspendKey::Pause;
+        let test_shortcut = crate::types::ShortcutKey {
+            vkey: 0x13, // VK_PAUSE
+            code: "Pause".to_string(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            win: false,
+        };
+        profile.suspend_shortcut = Some(test_shortcut.clone());
         engine.set_profile(profile);
 
         engine.set_enabled(false);
-        assert_eq!(
-            engine.get_profile().suspend_key,
-            crate::chord_engine::SuspendKey::Pause
-        );
+        assert_eq!(engine.get_profile().suspend_shortcut, Some(test_shortcut));
     }
     #[test]
     fn test_3key_chord_resolution() {

@@ -337,6 +337,15 @@ select:focus {
   border-color: var(--input-focus-border);
 }
 
+.shortcut-input {
+  cursor: pointer;
+  text-align: center;
+}
+
+.shortcut-input:focus {
+  background-color: #2d2d30;
+}
+
 button {
   background-color: #3c3c3c;
   color: #cccccc;

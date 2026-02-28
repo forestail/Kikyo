@@ -44,7 +44,83 @@ let thumbOverlapRatioInput, thumbOverlapVal;
 let charContinuousCb, charOverlapRatioInput, charOverlapVal;
 
 // Operation
-let imeModeSel, suspendKeySel;
+let imeModeSel, suspendShortcutInput, settingsShortcutInput, switchLayoutShortcutInput;
+
+function formatShortcut(shortcut) {
+  if (!shortcut || !shortcut.vkey) return "なし";
+  let parts = [];
+  if (shortcut.ctrl) parts.push("Ctrl");
+  if (shortcut.shift) parts.push("Shift");
+  if (shortcut.alt) parts.push("Alt");
+  if (shortcut.win) parts.push("Win");
+
+  let rawCode = shortcut.code || "";
+  if (rawCode.startsWith("Key")) rawCode = rawCode.substring(3);
+  else if (rawCode.startsWith("Digit")) rawCode = rawCode.substring(5);
+
+  parts.push(rawCode);
+  return parts.join(" + ");
+}
+
+function bindShortcutInput(inputEl, profileKey) {
+  if (!inputEl) return;
+
+  inputEl.addEventListener("keydown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const isModifierOnly = [
+      "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
+      "AltLeft", "AltRight", "MetaLeft", "MetaRight"
+    ].includes(e.code);
+
+    if (e.code === "Backspace" || e.code === "Delete") {
+      if (currentProfile) currentProfile[profileKey] = null;
+      inputEl.value = "なし";
+      saveProfile();
+      inputEl.blur();
+      return;
+    }
+
+    if (e.code === "Escape") {
+      inputEl.blur();
+      return;
+    }
+
+    if (isModifierOnly) {
+      inputEl.value = "入力待ち...";
+      return;
+    }
+
+    const shortcut = {
+      vkey: e.keyCode,
+      code: e.code,
+      ctrl: e.ctrlKey,
+      shift: e.shiftKey,
+      alt: e.altKey,
+      win: e.metaKey
+    };
+
+    if (currentProfile) {
+      currentProfile[profileKey] = shortcut;
+    }
+    inputEl.value = formatShortcut(shortcut);
+    inputEl.blur();
+    saveProfile();
+  });
+
+  inputEl.addEventListener("focus", () => {
+    inputEl.value = "入力待ち...";
+  });
+
+  inputEl.addEventListener("blur", () => {
+    if (currentProfile) {
+      inputEl.value = formatShortcut(currentProfile[profileKey]);
+    } else {
+      inputEl.value = "なし";
+    }
+  });
+}
 
 async function openLayoutFileDialog(defaultPath = null) {
   const { open } = window.__TAURI_PLUGIN_DIALOG__;
@@ -524,7 +600,9 @@ function updateUI(profile) {
 
   // Common
   if (imeModeSel) imeModeSel.value = profile.ime_mode || "Auto";
-  if (suspendKeySel) suspendKeySel.value = profile.suspend_key || "None";
+  if (suspendShortcutInput) suspendShortcutInput.value = formatShortcut(profile.suspend_shortcut);
+  if (settingsShortcutInput) settingsShortcutInput.value = formatShortcut(profile.settings_shortcut);
+  if (switchLayoutShortcutInput) switchLayoutShortcutInput.value = formatShortcut(profile.switch_layout_shortcut);
 
   // Ranges
   if (thumbOverlapRatioInput) {
@@ -620,7 +698,6 @@ async function saveProfile() {
       parseInt(charOverlapRatioInput.value, 10) / 100.0;
   }
   if (imeModeSel) currentProfile.ime_mode = imeModeSel.value;
-  if (suspendKeySel) currentProfile.suspend_key = suspendKeySel.value;
 
   try {
     console.log("Saving profile:", currentProfile);
@@ -651,7 +728,7 @@ function setupAutoSave() {
     thumbRightKeySel,
     extThumb1KeySel,
     extThumb2KeySel,
-    imeModeSel, suspendKeySel
+    imeModeSel
   ];
   selectTargets.forEach((el) => {
     if (el) el.addEventListener("change", saveProfile);
@@ -897,7 +974,13 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Op
   imeModeSel = document.querySelector("#ime-mode");
-  suspendKeySel = document.querySelector("#suspend-key");
+  suspendShortcutInput = document.querySelector("#suspend-shortcut");
+  settingsShortcutInput = document.querySelector("#settings-shortcut");
+  switchLayoutShortcutInput = document.querySelector("#switch-layout-shortcut");
+
+  bindShortcutInput(suspendShortcutInput, "suspend_shortcut");
+  bindShortcutInput(settingsShortcutInput, "settings_shortcut");
+  bindShortcutInput(switchLayoutShortcutInput, "switch_layout_shortcut");
 
   // Sidebar
   navItems = document.querySelectorAll(".nav-item");
@@ -931,6 +1014,20 @@ window.addEventListener("DOMContentLoaded", () => {
     const enabled = event.payload;
     if (globalEnabledCb) globalEnabledCb.checked = enabled;
     statusMsg.innerText = enabled ? "\u6709\u52b9" : "\u7121\u52b9";
+  });
+
+  window.__TAURI__.event.listen("shortcut-settings", () => {
+    invoke("show_main_window").catch(console.error);
+  });
+
+  window.__TAURI__.event.listen("shortcut-switch-layout", () => {
+    if (!layoutEntries || layoutEntries.length === 0) return;
+    let currentIndex = layoutEntries.findIndex(e => e.id === activeLayoutEntryId);
+    let nextIndex = (currentIndex + 1) % layoutEntries.length;
+    let nextEntry = layoutEntries[nextIndex];
+    if (nextEntry) {
+      activateLayoutEntry(nextEntry.id);
+    }
   });
 
   // Autostart init

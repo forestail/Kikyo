@@ -120,6 +120,12 @@ fn normalize_layout_path_for_compare(path: &str) -> String {
 }
 
 #[tauri::command]
+fn show_main_window(window: tauri::Window) {
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+#[tauri::command]
 fn get_keyboard_types() -> Vec<String> {
     let mut types = vec!["JIS106".to_string(), "US101".to_string(), "AX".to_string()];
     if let Ok(exe_path) = std::env::current_exe() {
@@ -1025,7 +1031,8 @@ pub fn run() {
             get_app_version,
             get_keyboard_types,
             get_keyboard_type,
-            set_keyboard_type
+            set_keyboard_type,
+            show_main_window,
         ])
         .setup(|app| {
             // Setup Tray with initial menu
@@ -1176,6 +1183,16 @@ pub fn run() {
                     .unwrap()
                     .clone();
                 let _ = update_tray_menu_with_state(&handle_for_cb, layout_name, enabled);
+            });
+
+            let handle_for_settings = app.handle().clone();
+            ENGINE.lock().set_on_settings_shortcut(move || {
+                let _ = handle_for_settings.emit("shortcut-settings", ());
+            });
+
+            let handle_for_switch = app.handle().clone();
+            ENGINE.lock().set_on_switch_layout_shortcut(move || {
+                let _ = handle_for_switch.emit("shortcut-switch-layout", ());
             });
 
             Ok(())

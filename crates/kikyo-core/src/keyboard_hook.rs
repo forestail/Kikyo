@@ -63,7 +63,9 @@ static RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false)
 static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static ENGINE_ENABLED: AtomicBool = AtomicBool::new(true);
-static SUSPEND_KEY_VK: AtomicU32 = AtomicU32::new(0);
+static SUSPEND_SHORTCUT: AtomicU64 = AtomicU64::new(0);
+static SETTINGS_SHORTCUT: AtomicU64 = AtomicU64::new(0);
+static SWITCH_LAYOUT_SHORTCUT: AtomicU64 = AtomicU64::new(0);
 static START_INSTANT: OnceLock<std::time::Instant> = OnceLock::new();
 
 const HOOK_QUEUE_SIZE: usize = 1024;
@@ -80,6 +82,30 @@ struct HookEvent {
     up: bool,
     shift: bool,
     vk: u32,
+    is_suspend: bool,
+    is_settings: bool,
+    is_switch_layout: bool,
+}
+
+fn encode_shortcut(s: &Option<crate::types::ShortcutKey>) -> u64 {
+    if let Some(s) = s {
+        let mut val = s.vkey as u64;
+        if s.ctrl {
+            val |= 1 << 32;
+        }
+        if s.shift {
+            val |= 1 << 33;
+        }
+        if s.alt {
+            val |= 1 << 34;
+        }
+        if s.win {
+            val |= 1 << 35;
+        }
+        val | (1 << 63)
+    } else {
+        0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -205,8 +231,16 @@ pub fn refresh_runtime_flags_from_engine() {
     let engine = ENGINE.lock();
     let enabled = engine.is_enabled();
     ENGINE_ENABLED.store(enabled, Ordering::Relaxed);
-    SUSPEND_KEY_VK.store(
-        suspend_key_vk(engine.get_suspend_key()).unwrap_or(0),
+    SUSPEND_SHORTCUT.store(
+        encode_shortcut(&engine.get_suspend_shortcut()),
+        Ordering::Relaxed,
+    );
+    SETTINGS_SHORTCUT.store(
+        encode_shortcut(&engine.get_settings_shortcut()),
+        Ordering::Relaxed,
+    );
+    SWITCH_LAYOUT_SHORTCUT.store(
+        encode_shortcut(&engine.get_switch_layout_shortcut()),
         Ordering::Relaxed,
     );
 
@@ -340,29 +374,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
 
         let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
-        let suspend_vk = SUSPEND_KEY_VK.load(Ordering::Relaxed);
-        let is_suspend_key = suspend_vk != 0 && kbd.vkCode == suspend_vk;
 
-        // Fully bypass the hook while disabled so IME/OS receive original key events.
-        // Keep only the suspend key routed so users can re-enable from keyboard.
-        if !engine_enabled && !is_suspend_key {
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
+        let lctrl_pressed = GetAsyncKeyState(VK_LCONTROL.0 as i32) as u16 & 0x8000 != 0;
+        let rctrl_pressed = GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000 != 0;
+        let lshift_pressed = GetAsyncKeyState(VK_LSHIFT.0 as i32) as u16 & 0x8000 != 0;
+        let rshift_pressed = GetAsyncKeyState(VK_RSHIFT.0 as i32) as u16 & 0x8000 != 0;
+        let lalt_pressed = GetAsyncKeyState(VK_LMENU.0 as i32) as u16 & 0x8000 != 0;
+        let ralt_pressed = GetAsyncKeyState(VK_RMENU.0 as i32) as u16 & 0x8000 != 0;
+        let lwin_pressed = GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000 != 0;
+        let rwin_pressed = GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000 != 0;
 
-        // Emergency stop is intentionally disabled for now.
-        // To restore Ctrl+Alt+Esc shutdown behavior, uncomment this block.
-        /*
-        if kbd.vkCode == VK_ESCAPE.0 as u32 {
-            let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000 != 0;
-            let alt = GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000 != 0;
-            if ctrl && alt {
-                error!("EMERGENCY STOP TRIGGERED (Ctrl+Alt+Esc). Exiting process.");
-                std::process::exit(1);
-            }
-        }
-        */
-
-        // Check for modifiers to disable hook
         let is_shift_vk = kbd.vkCode == VK_SHIFT.0 as u32
             || kbd.vkCode == VK_LSHIFT.0 as u32
             || kbd.vkCode == VK_RSHIFT.0 as u32;
@@ -373,6 +394,44 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || kbd.vkCode == VK_LMENU.0 as u32
             || kbd.vkCode == VK_RMENU.0 as u32;
         let is_win_vk = kbd.vkCode == VK_LWIN.0 as u32 || kbd.vkCode == VK_RWIN.0 as u32;
+
+        let alt_pressed =
+            is_alt_vk || lalt_pressed || ralt_pressed || (kbd.flags.0 & LLKHF_ALTDOWN.0) != 0;
+        let real_ctrl_pressed = lctrl_pressed || rctrl_pressed;
+        let real_shift_pressed = lshift_pressed || rshift_pressed;
+        let real_win_pressed = lwin_pressed || rwin_pressed;
+
+        let current_shortcut = {
+            let mut val = kbd.vkCode as u64;
+            if real_ctrl_pressed {
+                val |= 1 << 32;
+            }
+            if real_shift_pressed {
+                val |= 1 << 33;
+            }
+            if alt_pressed {
+                val |= 1 << 34;
+            }
+            if real_win_pressed {
+                val |= 1 << 35;
+            }
+            val | (1 << 63)
+        };
+
+        let suspend_sc = SUSPEND_SHORTCUT.load(Ordering::Relaxed);
+        let settings_sc = SETTINGS_SHORTCUT.load(Ordering::Relaxed);
+        let switch_sc = SWITCH_LAYOUT_SHORTCUT.load(Ordering::Relaxed);
+
+        let is_suspend_key = current_shortcut == suspend_sc && suspend_sc != 0;
+        let is_settings_key = current_shortcut == settings_sc && settings_sc != 0;
+        let is_switch_layout_key = current_shortcut == switch_sc && switch_sc != 0;
+        let is_any_shortcut = is_suspend_key || is_settings_key || is_switch_layout_key;
+
+        // Fully bypass the hook while disabled so IME/OS receive original key events.
+        // Keep only the suspend key routed so users can re-enable from keyboard.
+        if !engine_enabled && !is_any_shortcut {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
 
         // Alt may be used as a logical key source via [機能キー] swap.
         // In that case we must feed Alt events into the engine.
@@ -437,20 +496,15 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || is_win_vk
             || (is_alt_vk && !alt_needs_handling)
         {
-            if is_suspend_key {
-                // Keep suspend key functional even when assigned to a modifier key.
-            } else {
-                return CallNextHookEx(None, code, wparam, lparam);
-            }
+            // Allow them through, but shortcuts might still combinations of them.
+            // Wait, if it's solely a modifier key press, we must CallNextHookEx.
+            // But if it's part of a shortcut, evaluating the shortcut might require waiting.
+            // For now modifiers pass through.
+            return CallNextHookEx(None, code, wparam, lparam);
         }
 
-        // Check modifier states only for non-modifier keys that can be handled.
-        let lctrl_pressed = GetAsyncKeyState(VK_LCONTROL.0 as i32) as u16 & 0x8000 != 0;
-        let rctrl_pressed = GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000 != 0;
         let ctrl_pressed = (lctrl_pressed && !left_ctrl_needs_handling)
             || (rctrl_pressed && !right_ctrl_needs_handling);
-        let lshift_pressed = GetAsyncKeyState(VK_LSHIFT.0 as i32) as u16 & 0x8000 != 0;
-        let rshift_pressed = GetAsyncKeyState(VK_RSHIFT.0 as i32) as u16 & 0x8000 != 0;
         let (captured_lshift_pressed, captured_rshift_pressed) = captured_shift_down_snapshot();
         let shift_pressed = (lshift_pressed && !left_shift_needs_handling)
             || (rshift_pressed && !right_shift_needs_handling)
@@ -458,11 +512,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || (rshift_pressed && right_shift_capture_for_romaji)
             || (captured_lshift_pressed && left_shift_capture_for_romaji)
             || (captured_rshift_pressed && right_shift_capture_for_romaji);
-        let lwin_pressed = GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000 != 0;
-        let rwin_pressed = GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000 != 0;
-        let alt_pressed = is_alt_vk || (kbd.flags.0 & LLKHF_ALTDOWN.0) != 0;
 
-        if ctrl_pressed || lwin_pressed || rwin_pressed || (alt_pressed && !alt_needs_handling) {
+        if (ctrl_pressed || real_win_pressed || (alt_pressed && !alt_needs_handling))
+            && !is_any_shortcut
+        {
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
@@ -476,8 +529,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             sc: scan_code,
             ext,
             up,
-            shift: shift_pressed,
+            shift: shift_pressed, // keep original shift truth for chord engine
             vk: kbd.vkCode,
+            is_suspend: is_suspend_key,
+            is_settings: is_settings_key,
+            is_switch_layout: is_switch_layout_key,
         };
 
         match HOOK_QUEUE.0.try_send(event) {
@@ -550,24 +606,27 @@ fn process_event(event: HookEvent) {
         RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
 
         let mut refresh_flags = false;
-        if let Some(vk) = suspend_key_vk(engine.get_suspend_key()) {
-            if event.vk == vk && !event.up {
-                let current = engine.is_enabled();
-                engine.set_enabled(!current);
-                info!(
-                    "Suspend Key triggered. Toggled enabled state to: {}",
-                    !current
-                );
-                refresh_flags = true;
-            }
-            if event.vk == vk {
-                (KeyAction::Block, refresh_flags)
-            } else {
-                (
-                    engine.process_key(event.sc, event.ext, event.up, event.shift),
-                    refresh_flags,
-                )
-            }
+
+        if event.is_suspend && !event.up {
+            let current = engine.is_enabled();
+            engine.set_enabled(!current);
+            info!(
+                "Suspend Key triggered. Toggled enabled state to: {}",
+                !current
+            );
+            refresh_flags = true;
+        }
+
+        if event.is_settings && !event.up {
+            engine.trigger_settings_shortcut();
+        }
+
+        if event.is_switch_layout && !event.up {
+            engine.trigger_switch_layout_shortcut();
+        }
+
+        if event.is_suspend || event.is_settings || event.is_switch_layout {
+            (KeyAction::Block, refresh_flags)
         } else {
             (
                 engine.process_key(event.sc, event.ext, event.up, event.shift),
@@ -699,18 +758,6 @@ fn process_event(event: HookEvent) {
                 }
             }
         }
-    }
-}
-
-fn suspend_key_vk(suspend_key: crate::chord_engine::SuspendKey) -> Option<u32> {
-    match suspend_key {
-        crate::chord_engine::SuspendKey::None => None,
-        crate::chord_engine::SuspendKey::ScrollLock => Some(0x91), // VK_SCROLL
-        crate::chord_engine::SuspendKey::Pause => Some(0x13),      // VK_PAUSE
-        crate::chord_engine::SuspendKey::Insert => Some(0x2D),     // VK_INSERT
-        crate::chord_engine::SuspendKey::RightShift => Some(0xA1), // VK_RSHIFT
-        crate::chord_engine::SuspendKey::RightControl => Some(0xA3), // VK_RCONTROL
-        crate::chord_engine::SuspendKey::RightAlt => Some(0xA5),   // VK_RMENU
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::types::ScKey;
+use crate::types::{ScKey, ShortcutKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -106,23 +106,6 @@ impl Default for ImeMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SuspendKey {
-    None,
-    ScrollLock,
-    Pause,
-    Insert,
-    RightShift,
-    RightControl,
-    RightAlt,
-}
-
-impl Default for SuspendKey {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SuccessiveCfg {
@@ -208,7 +191,11 @@ pub struct Profile {
     #[serde(default)]
     pub ime_mode: ImeMode,
     #[serde(default)]
-    pub suspend_key: SuspendKey,
+    pub suspend_shortcut: Option<ShortcutKey>,
+    #[serde(default)]
+    pub settings_shortcut: Option<ShortcutKey>,
+    #[serde(default)]
+    pub switch_layout_shortcut: Option<ShortcutKey>,
 
     // New separate configurations
     #[serde(default)]
@@ -266,7 +253,9 @@ impl Default for Profile {
             char_key_repeat_unassigned: true,
 
             ime_mode: ImeMode::Auto,
-            suspend_key: SuspendKey::None,
+            suspend_shortcut: None,
+            settings_shortcut: None,
+            switch_layout_shortcut: None,
 
             thumb_left: ThumbSideConfig {
                 key: ThumbKeySelect::Muhenkan,

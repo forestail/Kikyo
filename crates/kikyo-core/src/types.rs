@@ -13,6 +13,17 @@ impl ScKey {
     }
 }
 
+/// JS側と連携できる修飾キー付きショートカットの定義
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ShortcutKey {
+    pub vkey: u32,
+    pub code: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub win: bool,
+}
+
 /// Event to be injected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
