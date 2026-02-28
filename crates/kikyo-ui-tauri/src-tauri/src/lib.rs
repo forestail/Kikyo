@@ -313,6 +313,13 @@ fn migrate_settings(settings: &mut Settings) -> bool {
         }
     }
 
+    if settings.layout_entries.is_empty() {
+        if settings.enabled {
+            settings.enabled = false;
+            changed = true;
+        }
+    }
+
     if settings.active_layout_id.is_none() && !settings.layout_entries.is_empty() {
         settings.active_layout_id = Some(settings.layout_entries[0].id.clone());
         changed = true;
@@ -846,7 +853,11 @@ fn update_layout_entry(
 }
 
 #[tauri::command]
-fn delete_layout_entry(app: tauri::AppHandle, id: String) -> Result<(), String> {
+fn delete_layout_entry(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    id: String,
+) -> Result<(), String> {
     let mut settings = load_settings_with_migration(&app);
     let old_len = settings.layout_entries.len();
     settings.layout_entries.retain(|entry| entry.id != id);
@@ -859,6 +870,24 @@ fn delete_layout_entry(app: tauri::AppHandle, id: String) -> Result<(), String> 
             .layout_entries
             .first()
             .map(|entry| entry.id.clone());
+    }
+
+    if settings.layout_entries.is_empty() {
+        settings.active_layout_id = None;
+        settings.last_layout_path = None;
+        settings.enabled = false;
+
+        *state.current_layout_path.lock().unwrap() = None;
+        *state.layout_name.lock().unwrap() = None;
+
+        let mut engine = ENGINE.lock();
+        engine.clear_layout();
+        engine.set_enabled(false);
+        drop(engine);
+
+        keyboard_hook::refresh_runtime_flags_from_engine();
+        let _ = app.emit("enabled-state-changed", false);
+        update_window_title(&app, None);
     }
 
     let _ = refresh_layout_entry_order(&mut settings);

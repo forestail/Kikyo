@@ -495,6 +495,18 @@ impl Engine {
         self.set_profile(profile);
     }
 
+    pub fn clear_layout(&mut self) {
+        tracing::info!("Engine: Layout cleared.");
+        self.layout = None;
+        self.function_key_swaps.clear();
+
+        let mut profile = self.chord_engine.profile.clone();
+        profile.max_chord_size = 2; // Default back to 2
+        profile.trigger_keys.clear();
+        profile.target_keys = None;
+        self.set_profile(profile);
+    }
+
     pub fn process_key(&mut self, sc: u16, ext: bool, up: bool, shift: bool) -> KeyAction {
         if !self.enabled {
             return KeyAction::Pass;
