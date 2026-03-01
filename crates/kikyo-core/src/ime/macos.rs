@@ -19,6 +19,21 @@ extern "C" {
     fn CFArrayGetValueAtIndex(array: *mut c_void, idx: isize) -> *mut c_void;
 }
 
+#[link(name = "System", kind = "dylib")]
+extern "C" {
+    pub static _dispatch_main_q: c_void;
+    pub fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+    pub fn dispatch_sync_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+}
+
 fn cfstring_to_string(cf_str: *mut c_void) -> Option<String> {
     if cf_str.is_null() {
         return None;
@@ -66,10 +81,20 @@ pub fn get_ime_open_status() -> anyhow::Result<bool> {
 
 static IS_JAPANESE_INPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-pub fn update_ime_cache_on_main_thread() {
+extern "C" fn update_ime_cache_work(_ctx: *mut c_void) {
     if let Some(id) = get_current_input_source_id() {
         let is_jp = id.contains("Japanese") || id.contains("Kotoeri") || id.contains("ATOK");
         IS_JAPANESE_INPUT.store(is_jp, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub fn update_ime_cache_on_main_thread() {
+    unsafe {
+        dispatch_sync_f(
+            std::ptr::addr_of!(_dispatch_main_q) as *const c_void,
+            std::ptr::null_mut(),
+            update_ime_cache_work,
+        );
     }
 }
 
@@ -92,7 +117,8 @@ pub fn is_composition_active() -> bool {
     false
 }
 
-pub fn set_force_ime_status(open: bool) {
+extern "C" fn set_force_ime_work(ctx: *mut c_void) {
+    let open = ctx as usize != 0;
     unsafe {
         let id_key = kTISPropertyInputSourceID;
         if id_key.is_null() { return; }
@@ -120,6 +146,16 @@ pub fn set_force_ime_status(open: bool) {
         }
         
         CFRelease(list);
+    }
+}
+
+pub fn set_force_ime_status(open: bool) {
+    unsafe {
+        dispatch_async_f(
+            std::ptr::addr_of!(_dispatch_main_q) as *const c_void,
+            open as usize as *mut c_void,
+            set_force_ime_work,
+        );
     }
 }
 
