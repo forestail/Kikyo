@@ -37,3 +37,4 @@ crates/kikyo-ui-tauri/src-tauri/gen/
 test_*.txt
 stderr.txt
 stdout.txt
+test/

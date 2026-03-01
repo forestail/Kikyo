@@ -974,6 +974,17 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Op
   imeModeSel = document.querySelector("#ime-mode");
+
+  // Custom MacOS IME Options
+  const isMac = navigator.userAgent.includes("Mac OS X");
+  if (isMac && imeModeSel) {
+    imeModeSel.innerHTML = `
+      <option value="Auto">自動 (MacOS 標準)</option>
+      <option value="Ignore">無視 (常に有効)</option>
+    `;
+    // Omitting Windows-only TSF/IMM modes. "Auto" will safely poll active input sources to match Kikyo states.
+  }
+
   suspendShortcutInput = document.querySelector("#suspend-shortcut");
   settingsShortcutInput = document.querySelector("#settings-shortcut");
   switchLayoutShortcutInput = document.querySelector("#switch-layout-shortcut");
@@ -1035,7 +1046,40 @@ window.addEventListener("DOMContentLoaded", () => {
   initAboutContributors();
   initVersion();
   initKeyboardTypes();
+  initAccessibilityCheck();
 });
+
+async function initAccessibilityCheck() {
+  try {
+    const isTrusted = await invoke("check_accessibility_permission");
+    if (!isTrusted) {
+      const modal = document.getElementById("accessibility-modal");
+      if (modal) {
+        modal.style.display = "block";
+      }
+
+      const btnRequest = document.getElementById("btn-request-accessibility");
+      if (btnRequest) {
+        btnRequest.addEventListener("click", async () => {
+          await invoke("request_accessibility_permission");
+          // Optionally, disable button or change text to "Waiting..."
+          // because the app needs to be restarted after granting.
+        });
+      }
+
+      const btnClose = document.getElementById("btn-close-accessibility");
+      if (btnClose) {
+        btnClose.addEventListener("click", () => {
+          if (modal) {
+            modal.style.display = "none";
+          }
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to check accessibility permission:", e);
+  }
+}
 
 function initAboutContributors() {
   const root = document.getElementById("about-contributors-root");

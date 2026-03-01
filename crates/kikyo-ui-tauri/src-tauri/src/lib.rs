@@ -995,6 +995,16 @@ mod tests {
     }
 }
 
+#[tauri::command]
+fn check_accessibility_permission() -> bool {
+    kikyo_core::keyboard_hook::check_accessibility_permission()
+}
+
+#[tauri::command]
+fn request_accessibility_permission() -> bool {
+    kikyo_core::keyboard_hook::request_accessibility_permission()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -1033,6 +1043,8 @@ pub fn run() {
             get_keyboard_type,
             set_keyboard_type,
             show_main_window,
+            check_accessibility_permission,
+            request_accessibility_permission,
         ])
         .setup(|app| {
             // Setup Tray with initial menu

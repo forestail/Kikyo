@@ -10,9 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::debug;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX,
-};
 
 lazy_static::lazy_static! {
     pub static ref ENGINE: Mutex<Engine> = Mutex::new(Engine::default());
@@ -1039,16 +1036,7 @@ impl Engine {
     }
 
     fn is_sc_key_physically_down(key: ScKey) -> Option<bool> {
-        let mut scan = key.sc as u32;
-        if key.ext {
-            scan |= 0xE000;
-        }
-        let vk = unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) } as i32;
-        if vk == 0 {
-            return None;
-        }
-        let pressed = unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 };
-        Some(pressed)
+        crate::keyboard_hook::is_sc_key_physically_down(key)
     }
 
     fn purge_stale_key_from_state(&mut self, key: ScKey) {
@@ -2373,12 +2361,7 @@ fn modifier_scancodes(mods: Modifiers) -> Vec<(u16, bool)> {
 }
 
 fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
-    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
-    if scan == 0 {
-        return None;
-    }
-    let ext = (scan & 0xFF00) == 0xE000;
-    Some(((scan & 0x00FF) as u16, ext))
+    crate::keyboard_hook::vk_to_scancode(vk)
 }
 
 fn char_to_scancode(c: char, is_japanese: bool) -> Option<(u16, bool, bool)> {

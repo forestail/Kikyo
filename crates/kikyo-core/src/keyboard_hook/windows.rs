@@ -903,3 +903,33 @@ pub fn inject_unicode(c: char, up: bool) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+pub fn check_accessibility_permission() -> bool {
+    true // Not needed on Windows
+}
+
+pub fn request_accessibility_permission() -> bool {
+    true // Not needed on Windows
+}
+
+pub fn is_sc_key_physically_down(key: crate::types::ScKey) -> Option<bool> {
+    let mut scan = key.sc as u32;
+    if key.ext {
+        scan |= 0xE000;
+    }
+    let vk = unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) } as i32;
+    if vk == 0 {
+        return None;
+    }
+    let pressed = unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 };
+    Some(pressed)
+}
+
+pub fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
+    if scan == 0 {
+        return None;
+    }
+    let ext = (scan & 0xFF00) == 0xE000;
+    Some(((scan & 0x00FF) as u16, ext))
+}
