@@ -48,11 +48,17 @@ let imeModeSel, suspendShortcutInput, settingsShortcutInput, switchLayoutShortcu
 
 function formatShortcut(shortcut) {
   if (!shortcut || !shortcut.vkey) return "なし";
+
+  const isMac = navigator.userAgent.includes("Mac OS X") || navigator.userAgent.includes("Macintosh");
+  const ctrlName = isMac ? "Control" : "Ctrl";
+  const altName = isMac ? "Option" : "Alt";
+  const winName = isMac ? "Command" : "Win";
+
   let parts = [];
-  if (shortcut.ctrl) parts.push("Ctrl");
+  if (shortcut.ctrl) parts.push(ctrlName);
   if (shortcut.shift) parts.push("Shift");
-  if (shortcut.alt) parts.push("Alt");
-  if (shortcut.win) parts.push("Win");
+  if (shortcut.alt) parts.push(altName);
+  if (shortcut.win) parts.push(winName);
 
   let rawCode = shortcut.code || "";
   if (rawCode.startsWith("Key")) rawCode = rawCode.substring(3);

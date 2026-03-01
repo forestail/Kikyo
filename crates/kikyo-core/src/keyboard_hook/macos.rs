@@ -121,6 +121,8 @@ struct HookEvent {
     shift: bool,
     vk: u32,
     is_suspend: bool,
+    is_settings: bool,
+    is_switch_layout: bool,
     mac_kc: u16,
 }
 
@@ -143,9 +145,75 @@ lazy_static::lazy_static! {
 
 static ENGINE_ENABLED: AtomicBool = AtomicBool::new(true);
 
+static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LEFT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static RIGHT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LEFT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static RIGHT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+
+static SUSPEND_SHORTCUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SETTINGS_SHORTCUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SWITCH_LAYOUT_SHORTCUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn encode_shortcut(s: &Option<crate::types::ShortcutKey>) -> u64 {
+    match s {
+        Some(sc) => {
+            let mut val = sc.vkey as u64;
+            if sc.ctrl {
+                val |= 1 << 32;
+            }
+            if sc.shift {
+                val |= 1 << 33;
+            }
+            if sc.alt {
+                val |= 1 << 34;
+            }
+            if sc.win {
+                val |= 1 << 35;
+            }
+            val | (1 << 63)
+        }
+        None => 0,
+    }
+}
+
 pub fn refresh_runtime_flags_from_engine() {
     let engine = ENGINE.lock();
     ENGINE_ENABLED.store(engine.is_enabled(), Ordering::Relaxed);
+    SUSPEND_SHORTCUT.store(
+        encode_shortcut(&engine.get_suspend_shortcut()),
+        Ordering::Relaxed,
+    );
+    SETTINGS_SHORTCUT.store(
+        encode_shortcut(&engine.get_settings_shortcut()),
+        Ordering::Relaxed,
+    );
+    SWITCH_LAYOUT_SHORTCUT.store(
+        encode_shortcut(&engine.get_switch_layout_shortcut()),
+        Ordering::Relaxed,
+    );
+
+    let enabled = engine.is_enabled();
+    if !enabled {
+        ALT_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        LEFT_SHIFT_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        RIGHT_SHIFT_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        LEFT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        RIGHT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        LEFT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        RIGHT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    ALT_NEEDS_HANDLING.store(engine.needs_alt_handling(), Ordering::Relaxed);
+    LEFT_SHIFT_NEEDS_HANDLING.store(engine.needs_left_shift_handling(), Ordering::Relaxed);
+    RIGHT_SHIFT_NEEDS_HANDLING.store(engine.needs_right_shift_handling(), Ordering::Relaxed);
+    LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
+    RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
+    LEFT_WIN_NEEDS_HANDLING.store(engine.needs_left_win_handling(), Ordering::Relaxed);
+    RIGHT_WIN_NEEDS_HANDLING.store(engine.needs_right_win_handling(), Ordering::Relaxed);
 }
 
 fn mac_to_win(kc: u16) -> (u16, u32, bool) {
@@ -298,6 +366,10 @@ extern "C" fn tap_callback(
             return event;
         }
 
+        let mut is_shift_kc = false;
+        let mut is_ctrl_kc = false;
+        let mut is_alt_kc = false;
+        let mut is_win_kc = false;
         let up = match type_ {
             kCGEventKeyUp => true,
             kCGEventKeyDown => {
@@ -308,12 +380,16 @@ extern "C" fn tap_callback(
                 crate::ime::update_ime_cache_on_main_thread();
                 // If the key is shift, and shift flag is not present, it's an UP event
                 if kc == 0x38 || kc == 0x3C {
+                    is_shift_kc = true;
                     !shift
                 } else if kc == 0x3B || kc == 0x3E { // Control
+                    is_ctrl_kc = true;
                     (flags & kCGEventFlagMaskControl) == 0
                 } else if kc == 0x3A || kc == 0x3D { // Option
+                    is_alt_kc = true;
                     (flags & kCGEventFlagMaskAlternate) == 0
                 } else if kc == 0x37 || kc == 0x36 { // Command
+                    is_win_kc = true;
                     (flags & kCGEventFlagMaskCommand) == 0
                 } else {
                     false // Assume down for other modifier changes (cmd etc)
@@ -322,17 +398,147 @@ extern "C" fn tap_callback(
             _ => false,
         };
 
-        if !ENGINE_ENABLED.load(Ordering::Relaxed) {
+        let alt_needs_handling = ALT_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let left_shift_needs_handling = LEFT_SHIFT_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let right_shift_needs_handling = RIGHT_SHIFT_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let left_ctrl_needs_handling = LEFT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let right_ctrl_needs_handling = RIGHT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let left_win_needs_handling = LEFT_WIN_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let right_win_needs_handling = RIGHT_WIN_NEEDS_HANDLING.load(Ordering::Relaxed);
+
+        let shift_event_needs_handling = if !is_shift_kc {
+            false
+        } else if kc == 0x38 {
+            left_shift_needs_handling
+        } else if kc == 0x3C {
+            right_shift_needs_handling
+        } else {
+            left_shift_needs_handling || right_shift_needs_handling
+        };
+
+        let ctrl_event_needs_handling = if !is_ctrl_kc {
+            false
+        } else if kc == 0x3B {
+            left_ctrl_needs_handling
+        } else if kc == 0x3E {
+            right_ctrl_needs_handling
+        } else {
+            left_ctrl_needs_handling || right_ctrl_needs_handling
+        };
+
+        let win_event_needs_handling = if !is_win_kc {
+            false
+        } else if kc == 0x37 {
+            left_win_needs_handling
+        } else if kc == 0x36 {
+            right_win_needs_handling
+        } else {
+            left_win_needs_handling || right_win_needs_handling
+        };
+
+        // Pass through Modifier key events themselves to ensure OS state is updated
+        if (is_shift_kc && !shift_event_needs_handling)
+            || (is_ctrl_kc && !ctrl_event_needs_handling)
+            || (is_win_kc && !win_event_needs_handling)
+            || (is_alt_kc && !alt_needs_handling)
+        {
+            return event;
+        }
+
+        let ctrl_pressed = (flags & kCGEventFlagMaskControl) != 0;
+        let alt_pressed = (flags & kCGEventFlagMaskAlternate) != 0;
+        let win_pressed = (flags & kCGEventFlagMaskCommand) != 0;
+
+        // Ensure we bypass shortcuts like Cmd+A, if Cmd isn't needed by engine.
+        // We evaluate only the combined state of modifiers.
+        let combined_ctrl_needs_handling = left_ctrl_needs_handling || right_ctrl_needs_handling;
+        let combined_win_needs_handling = left_win_needs_handling || right_win_needs_handling;
+
+        if (ctrl_pressed && !combined_ctrl_needs_handling)
+            || (win_pressed && !combined_win_needs_handling)
+            || (alt_pressed && !alt_needs_handling)
+        {
+            // At least one pressed modifier is not needed by our engine,
+            // which usually means this is an OS shortcut like Cmd+A.
+            // But if it happens to be our explicit shortcut, let it through.
+            // We verify shortcuts explicitly next.
+        } else {
+            // Modifiers either are needed, or are not pressed. We can proceed.
+        }
+
+        let sc_mapped = sc;
+        
+        let current_shortcut = {
+            let mut val = vk as u64;
+            if (flags & kCGEventFlagMaskControl) != 0 {
+                val |= 1 << 32;
+            }
+            if shift {
+                val |= 1 << 33;
+            }
+            if (flags & kCGEventFlagMaskAlternate) != 0 {
+                val |= 1 << 34;
+            }
+            if (flags & kCGEventFlagMaskCommand) != 0 {
+                val |= 1 << 35;
+            }
+            val | (1 << 63)
+        };
+
+        let suspend_sc = SUSPEND_SHORTCUT.load(Ordering::Relaxed);
+        let settings_sc = SETTINGS_SHORTCUT.load(Ordering::Relaxed);
+        let switch_sc = SWITCH_LAYOUT_SHORTCUT.load(Ordering::Relaxed);
+
+        let is_suspend_key = current_shortcut == suspend_sc && suspend_sc != 0;
+        let is_settings_key = current_shortcut == settings_sc && settings_sc != 0;
+        let is_switch_layout_key = current_shortcut == switch_sc && switch_sc != 0;
+        let is_any_shortcut = is_suspend_key || is_settings_key || is_switch_layout_key;
+
+        // Perform the OS shortcut bypass we evaluated earlier, except if it is our exact shortcut
+        if !is_any_shortcut {
+            if (ctrl_pressed && !combined_ctrl_needs_handling)
+                || (win_pressed && !combined_win_needs_handling)
+                || (alt_pressed && !alt_needs_handling)
+            {
+                return event;
+            }
+        }
+
+        if !ENGINE_ENABLED.load(Ordering::Relaxed) && !is_any_shortcut {
+            return event;
+        }
+        
+        if is_any_shortcut {
+            let hook_event = HookEvent {
+                sc: sc_mapped,
+                ext,
+                up,
+                shift,
+                vk,
+                is_suspend: is_suspend_key,
+                is_settings: is_settings_key,
+                is_switch_layout: is_switch_layout_key,
+                mac_kc: kc,
+            };
+            if let Ok(()) = HOOK_QUEUE.0.try_send(hook_event) {
+                return std::ptr::null_mut(); // Block original event
+            }
+            return event;
+        }
+
+        if sc_mapped == 0 {
             return event;
         }
 
         let hook_event = HookEvent {
-            sc,
+            sc: sc_mapped,
             ext,
             up,
             shift,
             vk,
             is_suspend: false,
+            is_settings: false,
+            is_switch_layout: false,
             mac_kc: kc,
         };
 
@@ -367,8 +573,32 @@ pub fn install_hook() -> anyhow::Result<()> {
     thread::spawn(move || {
         for ev in rx.iter() {
             let mut engine = ENGINE.lock();
-            let action = engine.process_key(ev.sc, ev.ext, ev.up, ev.shift);
+            let mut refresh_flags = false;
+
+            if ev.is_suspend && !ev.up {
+                let current = engine.is_enabled();
+                engine.set_enabled(!current);
+                refresh_flags = true;
+            }
+
+            if ev.is_settings && !ev.up {
+                engine.trigger_settings_shortcut();
+            }
+
+            if ev.is_switch_layout && !ev.up {
+                engine.trigger_switch_layout_shortcut();
+            }
+
+            let action = if ev.is_suspend || ev.is_settings || ev.is_switch_layout {
+                KeyAction::Block
+            } else {
+                engine.process_key(ev.sc, ev.ext, ev.up, ev.shift)
+            };
             drop(engine);
+            
+            if refresh_flags {
+                refresh_runtime_flags_from_engine();
+            }
             
             match action {
                 KeyAction::Pass => {
