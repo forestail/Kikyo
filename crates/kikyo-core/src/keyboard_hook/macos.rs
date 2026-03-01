@@ -211,6 +211,8 @@ fn mac_to_win(kc: u16) -> (u16, u32, bool) {
         0x3E => (0x1D, 0x11, true),  // RCtrl
         0x3A => (0x38, 0x12, false), // LAlt
         0x3D => (0x38, 0x12, true),  // RAlt
+        0x37 => (0x5B, 0x5B, true),  // LCmd -> LWin
+        0x36 => (0x5C, 0x5C, true),  // RCmd -> RWin
         
         0x31 => (0x39, 0x20, false), // Space
         0x24 => (0x1C, 0x0D, false), // Return
@@ -248,9 +250,10 @@ fn win_to_mac(sc: u16, ext: bool) -> u16 {
         (0x1B, _) => 0x1E, (0x27, _) => 0x29, (0x28, _) => 0x27, (0x2B, _) => 0x2A,
         (0x33, _) => 0x2B, (0x34, _) => 0x2F, (0x35, _) => 0x2C, (0x73, _) => 0x5E,
         
-        (0x2A, false) => 0x38, (0x36, _) => 0x3C,
+        (0x2A, false) => 0x38, (0x36, false) => 0x3C,
         (0x1D, false) => 0x3B, (0x1D, true) => 0x3E,
         (0x38, false) => 0x3A, (0x38, true) => 0x3D,
+        (0x5B, true)  => 0x37, (0x5C, true) => 0x36,
         
         (0x39, _) => 0x31, (0x1C, false) => 0x24, (0x0E, _) => 0x33,
         (0x0F, _) => 0x30, (0x01, _) => 0x35,
@@ -310,6 +313,8 @@ extern "C" fn tap_callback(
                     (flags & kCGEventFlagMaskControl) == 0
                 } else if kc == 0x3A || kc == 0x3D { // Option
                     (flags & kCGEventFlagMaskAlternate) == 0
+                } else if kc == 0x37 || kc == 0x36 { // Command
+                    (flags & kCGEventFlagMaskCommand) == 0
                 } else {
                     false // Assume down for other modifier changes (cmd etc)
                 }

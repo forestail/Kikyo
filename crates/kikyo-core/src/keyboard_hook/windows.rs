@@ -62,6 +62,8 @@ static LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
 static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LEFT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static RIGHT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static ENGINE_ENABLED: AtomicBool = AtomicBool::new(true);
 static SUSPEND_SHORTCUT: AtomicU64 = AtomicU64::new(0);
 static SETTINGS_SHORTCUT: AtomicU64 = AtomicU64::new(0);
@@ -252,6 +254,8 @@ pub fn refresh_runtime_flags_from_engine() {
         RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.store(false, Ordering::Relaxed);
         LEFT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
         RIGHT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        LEFT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        RIGHT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
         clear_captured_shift_state();
         return;
     }
@@ -269,6 +273,8 @@ pub fn refresh_runtime_flags_from_engine() {
     );
     LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
     RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
+    LEFT_WIN_NEEDS_HANDLING.store(engine.needs_left_win_handling(), Ordering::Relaxed);
+    RIGHT_WIN_NEEDS_HANDLING.store(engine.needs_right_win_handling(), Ordering::Relaxed);
 }
 
 /// Starts the keyboard hook.
@@ -444,6 +450,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY.load(Ordering::Relaxed);
         let left_ctrl_needs_handling = LEFT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
         let right_ctrl_needs_handling = RIGHT_CTRL_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let left_win_needs_handling = LEFT_WIN_NEEDS_HANDLING.load(Ordering::Relaxed);
+        let right_win_needs_handling = RIGHT_WIN_NEEDS_HANDLING.load(Ordering::Relaxed);
         let shift_event_needs_handling = if !is_shift_vk {
             false
         } else if kbd.vkCode == VK_LSHIFT.0 as u32 || scan_code == 0x2A {
@@ -471,6 +479,15 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         } else {
             left_ctrl_needs_handling || right_ctrl_needs_handling
         };
+        let win_event_needs_handling = if !is_win_vk {
+            false
+        } else if kbd.vkCode == VK_LWIN.0 as u32 {
+            left_win_needs_handling
+        } else if kbd.vkCode == VK_RWIN.0 as u32 {
+            right_win_needs_handling
+        } else {
+            left_win_needs_handling || right_win_needs_handling
+        };
 
         // Keep captured Shift physical state in sync at hook time so the next key
         // can observe Shift even before worker-thread processing catches up.
@@ -493,7 +510,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         // Pass through Modifier key events themselves to ensure OS state is updated
         if (is_shift_vk && !shift_event_needs_handling)
             || (is_ctrl_vk && !ctrl_event_needs_handling)
-            || is_win_vk
+            || (is_win_vk && !win_event_needs_handling)
             || (is_alt_vk && !alt_needs_handling)
         {
             // Allow them through, but shortcuts might still combinations of them.
@@ -513,7 +530,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || (captured_lshift_pressed && left_shift_capture_for_romaji)
             || (captured_rshift_pressed && right_shift_capture_for_romaji);
 
-        if (ctrl_pressed || real_win_pressed || (alt_pressed && !alt_needs_handling))
+        let win_pressed = (lwin_pressed && !left_win_needs_handling)
+            || (rwin_pressed && !right_win_needs_handling);
+
+        if (ctrl_pressed || win_pressed || (alt_pressed && !alt_needs_handling))
             && !is_any_shortcut
         {
             return CallNextHookEx(None, code, wparam, lparam);
@@ -604,6 +624,8 @@ fn process_event(event: HookEvent) {
         );
         LEFT_CTRL_NEEDS_HANDLING.store(engine.needs_left_ctrl_handling(), Ordering::Relaxed);
         RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
+        LEFT_WIN_NEEDS_HANDLING.store(engine.needs_left_win_handling(), Ordering::Relaxed);
+        RIGHT_WIN_NEEDS_HANDLING.store(engine.needs_right_win_handling(), Ordering::Relaxed);
 
         let mut refresh_flags = false;
 

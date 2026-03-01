@@ -347,6 +347,14 @@ impl Engine {
         self.needs_sc_key_handling(ScKey::new(0x1D, true))
     }
 
+    pub fn needs_left_win_handling(&self) -> bool {
+        self.needs_sc_key_handling(ScKey::new(0x5B, true))
+    }
+
+    pub fn needs_right_win_handling(&self) -> bool {
+        self.needs_sc_key_handling(ScKey::new(0x5C, true))
+    }
+
     fn has_thumb_shift_sections_in_layout(&self) -> bool {
         if let Some(ref layout) = self.layout {
             let targets = [

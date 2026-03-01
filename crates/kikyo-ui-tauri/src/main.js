@@ -859,6 +859,38 @@ function ensureExtendedThumbSection() {
         </div>
       </div>`;
   chordSection.parentNode.insertBefore(section, chordSection);
+  localizeKeyNames();
+}
+
+function localizeKeyNames() {
+  const isMac = navigator.userAgent.includes("Mac OS X") || navigator.userAgent.includes("Macintosh");
+  const selects = [
+    document.querySelector("#thumb-left-key"),
+    document.querySelector("#thumb-right-key"),
+    document.querySelector("#ext-thumb-1-key"),
+    document.querySelector("#ext-thumb-2-key")
+  ];
+
+  const replaceMap = isMac ? {
+    "Muhenkan": "英数",
+    "Henkan": "かな",
+    "LeftWin": "左Command",
+    "RightWin": "右Command"
+  } : {
+    "Muhenkan": "無変換",
+    "Henkan": "変換",
+    "LeftWin": "左Win",
+    "RightWin": "右Win"
+  };
+
+  selects.forEach(sel => {
+    if (!sel) return;
+    Array.from(sel.options).forEach(opt => {
+      if (replaceMap[opt.value]) {
+        opt.textContent = replaceMap[opt.value];
+      }
+    });
+  });
 }
 
 // Sidebar logic
