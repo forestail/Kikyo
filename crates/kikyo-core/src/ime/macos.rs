@@ -80,10 +80,16 @@ pub fn get_ime_open_status() -> anyhow::Result<bool> {
 }
 
 static IS_JAPANESE_INPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static LAST_JAPANESE_INPUT_SOURCE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 extern "C" fn update_ime_cache_work(_ctx: *mut c_void) {
     if let Some(id) = get_current_input_source_id() {
         let is_jp = id.contains("Japanese") || id.contains("Kotoeri") || id.contains("ATOK");
+        if is_jp {
+            if let Ok(mut lock) = LAST_JAPANESE_INPUT_SOURCE.lock() {
+                *lock = Some(id.clone());
+            }
+        }
         IS_JAPANESE_INPUT.store(is_jp, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -123,6 +129,16 @@ extern "C" fn set_force_ime_work(ctx: *mut c_void) {
         let id_key = kTISPropertyInputSourceID;
         if id_key.is_null() { return; }
         
+        let target_id = if open {
+            if let Ok(lock) = LAST_JAPANESE_INPUT_SOURCE.lock() {
+                lock.clone()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let target_substring = if open {
             "Japanese"
         } else {
@@ -134,15 +150,30 @@ extern "C" fn set_force_ime_work(ctx: *mut c_void) {
         
         let count = CFArrayGetCount(list);
 
+        let mut exact_source = None;
+        let mut fallback_source = None;
+
         for i in 0..count {
             let source = CFArrayGetValueAtIndex(list, i);
             let val = TISGetInputSourceProperty(source, id_key);
             if let Some(id) = cfstring_to_string(val) {
-                if id.contains(target_substring) {
-                    TISSelectInputSource(source);
-                    break;
+                if let Some(ref target) = target_id {
+                    if id == *target {
+                        exact_source = Some(source);
+                        break;
+                    }
+                }
+                
+                if open && fallback_source.is_none() && (id.contains("Japanese") || id.contains("Kotoeri") || id.contains("ATOK")) {
+                    fallback_source = Some(source);
+                } else if !open && fallback_source.is_none() && id.contains(target_substring) {
+                    fallback_source = Some(source);
                 }
             }
+        }
+
+        if let Some(source) = exact_source.or(fallback_source) {
+            TISSelectInputSource(source);
         }
         
         CFRelease(list);

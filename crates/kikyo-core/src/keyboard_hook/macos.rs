@@ -614,10 +614,40 @@ pub fn install_hook() -> anyhow::Result<()> {
                             InputEvent::Unicode(c, up) => {
                                 let _ = inject_unicode(c, up);
                             },
+                            InputEvent::CommitImeComposition => {
+                                if crate::ime::is_composition_active() {
+                                    let _ = inject_scancode(0x1C, false, false);
+                                    let _ = inject_scancode(0x1C, false, true);
+                                    thread::sleep(Duration::from_millis(1));
+                                }
+                            }
+                            InputEvent::ImeControl(open) => {
+                                crate::ime::set_force_ime_status(open);
+                            }
+                            InputEvent::WaitUntilImeStatus(expected, timeout_ms) => {
+                                let start = monotonic_ms();
+                                loop {
+                                    let current = crate::ime::is_japanese_input_active(
+                                        crate::chord_engine::ImeMode::Auto,
+                                    );
+                                    if current == expected {
+                                        break;
+                                    }
+                                    if monotonic_ms() - start >= timeout_ms {
+                                        break;
+                                    }
+                                    thread::sleep(Duration::from_millis(1));
+                                }
+                            }
                             InputEvent::Delay(ms) => {
                                 thread::sleep(Duration::from_millis(ms));
                             }
-                            _ => {}
+                            InputEvent::DirectString(s) => {
+                                for c in s.chars() {
+                                    let _ = inject_unicode(c, false);
+                                    let _ = inject_unicode(c, true);
+                                }
+                            }
                         }
                     }
                 }
@@ -626,6 +656,12 @@ pub fn install_hook() -> anyhow::Result<()> {
     });
 
     Ok(())
+}
+
+fn monotonic_ms() -> u64 {
+    static START_INSTANT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START_INSTANT.get_or_init(std::time::Instant::now);
+    start.elapsed().as_millis() as u64
 }
 
 pub fn uninstall_hook() {
