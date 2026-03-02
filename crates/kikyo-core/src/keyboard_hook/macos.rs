@@ -54,6 +54,7 @@ pub const kCGEventFlagMaskCommand: u64 = 0x00100000;
 
 const INJECTED_EXTRA_INFO: u32 = 0xDEADBEEF;
 
+pub const kCGEventSourceStatePrivate: i32 = -1;
 pub const kCGEventSourceStateHIDSystemState: i32 = 1;
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -68,6 +69,8 @@ extern "C" {
     ) -> CFMachPortRef;
 
     pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+
+    pub fn CGEventSourceCreate(stateID: i32) -> *mut c_void;
 
     pub fn CGEventCreateKeyboardEvent(
         source: *mut c_void,
@@ -723,11 +726,15 @@ fn inject_mac_keycode(kc: u16, up: bool) -> anyhow::Result<()> {
     unsafe {
         // Fallback: If kc is 0xFFFF passed by error, rewrite it as 0 to be safe
         let safe_kc = if kc == 0xFFFF { 0 } else { kc };
-        let event = CGEventCreateKeyboardEvent(std::ptr::null_mut(), safe_kc, !up);
+        let source = CGEventSourceCreate(kCGEventSourceStatePrivate);
+        let event = CGEventCreateKeyboardEvent(source, safe_kc, !up);
         if !event.is_null() {
             CGEventSetIntegerValueField(event, 42, INJECTED_EXTRA_INFO as i64); // kCGEventSourceUserData
             CGEventPost(kCGSessionEventTap, event);
             CFRelease(event as *mut c_void);
+        }
+        if !source.is_null() {
+            CFRelease(source);
         }
     }
     Ok(())
@@ -736,7 +743,8 @@ fn inject_mac_keycode(kc: u16, up: bool) -> anyhow::Result<()> {
 pub fn inject_unicode(c: char, up: bool) -> anyhow::Result<()> {
     unsafe {
         // Apple docs: "To generate a Unicode keystroke, use a virtual key code of 0 (kVK_ANSI_A)"
-        let event = CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, !up);
+        let source = CGEventSourceCreate(kCGEventSourceStatePrivate);
+        let event = CGEventCreateKeyboardEvent(source, 0, !up);
         if !event.is_null() {
             let mut utf16 = [0u16; 2];
             let string_length = c.encode_utf16(&mut utf16).len();
@@ -744,6 +752,9 @@ pub fn inject_unicode(c: char, up: bool) -> anyhow::Result<()> {
             CGEventSetIntegerValueField(event, 42, INJECTED_EXTRA_INFO as i64);
             CGEventPost(kCGSessionEventTap, event);
             CFRelease(event as *mut c_void);
+        }
+        if !source.is_null() {
+            CFRelease(source);
         }
     }
     Ok(())
