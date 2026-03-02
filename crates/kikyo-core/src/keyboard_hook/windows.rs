@@ -433,10 +433,27 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let is_switch_layout_key = current_shortcut == switch_sc && switch_sc != 0;
         let is_any_shortcut = is_suspend_key || is_settings_key || is_switch_layout_key;
 
+        let pass_through = || -> LRESULT {
+            if !is_shift_vk {
+                forward_pending_captured_shift_downs_if_needed();
+            } else {
+                if let Some(side) = shift_side_for_event(scan_code, kbd.vkCode) {
+                    if captured_shift_side_enabled(side) {
+                        let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
+                        let side_state = captured_shift_side_mut(&mut captured, side);
+                        if !up {
+                            side_state.os_down_sent = true;
+                        }
+                    }
+                }
+            }
+            CallNextHookEx(None, code, wparam, lparam)
+        };
+
         // Fully bypass the hook while disabled so IME/OS receive original key events.
         // Keep only the suspend key routed so users can re-enable from keyboard.
         if !engine_enabled && !is_any_shortcut {
-            return CallNextHookEx(None, code, wparam, lparam);
+            return pass_through();
         }
 
         // Alt may be used as a logical key source via [機能キー] swap.
@@ -514,10 +531,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             || (is_alt_vk && !alt_needs_handling)
         {
             // Allow them through, but shortcuts might still combinations of them.
-            // Wait, if it's solely a modifier key press, we must CallNextHookEx.
+            // Wait, if it's solely a modifier key press, we must pass_through.
             // But if it's part of a shortcut, evaluating the shortcut might require waiting.
             // For now modifiers pass through.
-            return CallNextHookEx(None, code, wparam, lparam);
+            return pass_through();
         }
 
         let ctrl_pressed = (lctrl_pressed && !left_ctrl_needs_handling)
@@ -536,7 +553,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if (ctrl_pressed || win_pressed || (alt_pressed && !alt_needs_handling))
             && !is_any_shortcut
         {
-            return CallNextHookEx(None, code, wparam, lparam);
+            return pass_through();
         }
 
         let raw_ext =
@@ -558,8 +575,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         match HOOK_QUEUE.0.try_send(event) {
             Ok(()) => LRESULT(1), // Block original; worker will decide inject/pass.
-            Err(TrySendError::Full(_)) => CallNextHookEx(None, code, wparam, lparam),
-            Err(TrySendError::Disconnected(_)) => CallNextHookEx(None, code, wparam, lparam),
+            Err(TrySendError::Full(_)) => pass_through(),
+            Err(TrySendError::Disconnected(_)) => pass_through(),
         }
     }));
 
