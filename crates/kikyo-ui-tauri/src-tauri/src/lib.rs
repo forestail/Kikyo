@@ -595,6 +595,7 @@ fn update_tray_menu_with_state(
                 if let Err(e) = tray.set_icon(Some(icon)) {
                     tracing::error!("Failed to set tray icon: {}", e);
                 } else {
+                    let _ = tray.set_icon_as_template(true);
                     tracing::info!("Tray icon updated successfully");
                 }
             }
@@ -1047,6 +1048,9 @@ pub fn run() {
             request_accessibility_permission,
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Setup Tray with initial menu
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_i])?;

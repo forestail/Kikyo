@@ -27,7 +27,7 @@ portable-mode = []
 
 [dependencies]
 kikyo-core = { path = "../../kikyo-core" }
-tauri = { version = "2.0.0", features = ["tray-icon", "image-png"] }
+tauri = { version = "2.0.0", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-opener = "2.0.0"
 tauri-plugin-dialog = "2.0.0"
 tauri-plugin-single-instance = "2.0.0"
