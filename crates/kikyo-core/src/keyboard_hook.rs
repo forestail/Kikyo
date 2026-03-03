@@ -41,15 +41,25 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RWIN,
     VK_SHIFT,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
+    MOUSEEVENTF_XUP, MOUSEINPUT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
-    LLKHF_ALTDOWN, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
+    LLKHF_ALTDOWN, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
+    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
 };
 /// Magic number to identify our own injected events.
 const INJECTED_EXTRA_INFO: usize = 0xFFC3C3C3;
 
 static HOOK_HANDLE: Mutex<Option<HHOOK>> = Mutex::new(None);
+static MOUSE_HOOK_HANDLE: Mutex<Option<HHOOK>> = Mutex::new(None);
 static HOOK_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
@@ -173,15 +183,18 @@ fn captured_shift_side_mut(
     }
 }
 
-fn forward_pending_captured_shift_downs_if_needed() {
+fn forward_pending_captured_shift_downs_if_needed() -> bool {
     let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    let mut injected = false;
     for side in [ShiftSide::Left, ShiftSide::Right] {
         let side_state = captured_shift_side_mut(&mut state, side);
         if side_state.physical_down && !side_state.os_down_sent {
             let _ = inject_scancode(shift_scancode(side), false, false);
             side_state.os_down_sent = true;
+            injected = true;
         }
     }
+    injected
 }
 
 fn mark_captured_shift_used_for_layout_output() {
@@ -287,12 +300,15 @@ pub fn install_hook() -> anyhow::Result<()> {
     // However, Rust/Windows crates handle Option<HINSTANCE> -> 0.
     let hook_id =
         unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), HINSTANCE::default(), 0) }?;
+    let mouse_hook_id =
+        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), HINSTANCE::default(), 0) }?;
 
     if hook_id.is_invalid() {
         return Err(anyhow::anyhow!("Failed to install hook"));
     }
 
     *HOOK_HANDLE.lock().unwrap() = Some(hook_id);
+    *MOUSE_HOOK_HANDLE.lock().unwrap() = Some(mouse_hook_id);
     info!(
         "Keyboard hook installed successfully. Handle: {:?}",
         hook_id
@@ -309,6 +325,15 @@ pub fn uninstall_hook() {
         info!("Keyboard hook uninstalled.");
     }
     *handle = None;
+
+    let mut mouse_handle = MOUSE_HOOK_HANDLE.lock().unwrap();
+    if let Some(h) = *mouse_handle {
+        unsafe {
+            let _ = UnhookWindowsHookEx(h);
+        };
+        info!("Mouse hook uninstalled.");
+    }
+    *mouse_handle = None;
 }
 
 /// Runs a blocking message loop.
@@ -429,7 +454,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         let pass_through = || -> LRESULT {
             if !is_shift_vk {
-                forward_pending_captured_shift_downs_if_needed();
+                let _ = forward_pending_captured_shift_downs_if_needed();
             } else {
                 if let Some(side) = shift_side_for_event(scan_code, kbd.vkCode) {
                     if captured_shift_side_enabled(side) {
@@ -659,7 +684,7 @@ fn process_event(event: HookEvent) {
     match action {
         KeyAction::Pass => {
             if !is_shift_event {
-                forward_pending_captured_shift_downs_if_needed();
+                let _ = forward_pending_captured_shift_downs_if_needed();
             }
             let _ = inject_scancode(event.sc, event.ext, event.up);
         }
@@ -919,4 +944,98 @@ pub fn inject_unicode(c: char, up: bool) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if code < 0 {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
+        let msg = wparam.0 as u32;
+        let is_mouse_event = msg == WM_LBUTTONDOWN
+            || msg == WM_LBUTTONUP
+            || msg == WM_RBUTTONDOWN
+            || msg == WM_RBUTTONUP
+            || msg == WM_MBUTTONDOWN
+            || msg == WM_MBUTTONUP
+            || msg == WM_XBUTTONDOWN
+            || msg == WM_XBUTTONUP
+            || msg == WM_MOUSEWHEEL
+            || msg == WM_MOUSEHWHEEL
+            || msg == WM_MOUSEMOVE;
+
+        // Ignore injected mouse events to prevent recursion
+        let mouse = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+        if mouse.dwExtraInfo == INJECTED_EXTRA_INFO || (mouse.flags & LLKHF_INJECTED.0) != 0 {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
+        if is_mouse_event {
+            let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
+            if engine_enabled {
+                // Check and forward pending Shift downs BEFORE the mouse event is processed by the OS
+                let injected = forward_pending_captured_shift_downs_if_needed();
+                if injected {
+                    // We just injected a Shift Down event.
+                    // This means the OS might process the current mouse event BEFORE our injected Shift Down
+                    // if we just pass_through.
+                    // To guarantee the order (Shift Down, then Mouse Event), we MUST block this
+                    // original mouse event and inject a new copy of it right after our Shift Down.
+                    let x = mouse.pt.x;
+                    let y = mouse.pt.y;
+                    let mouse_data = mouse.mouseData;
+
+                    // Standard flags
+                    let dw_flags = match msg {
+                        WM_LBUTTONDOWN => MOUSEEVENTF_LEFTDOWN,
+                        WM_LBUTTONUP => MOUSEEVENTF_LEFTUP,
+                        WM_RBUTTONDOWN => MOUSEEVENTF_RIGHTDOWN,
+                        WM_RBUTTONUP => MOUSEEVENTF_RIGHTUP,
+                        WM_MBUTTONDOWN => MOUSEEVENTF_MIDDLEDOWN,
+                        WM_MBUTTONUP => MOUSEEVENTF_MIDDLEUP,
+                        WM_XBUTTONDOWN => MOUSEEVENTF_XDOWN,
+                        WM_XBUTTONUP => MOUSEEVENTF_XUP,
+                        WM_MOUSEWHEEL => MOUSEEVENTF_WHEEL,
+                        WM_MOUSEHWHEEL => MOUSEEVENTF_HWHEEL,
+                        WM_MOUSEMOVE => MOUSEEVENTF_MOVE,
+                        _ => MOUSEEVENTF_MOVE, // Fallback
+                    };
+
+                    let input = INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: x,
+                                dy: y,
+                                mouseData: mouse_data,
+                                dwFlags: dw_flags | MOUSEEVENTF_ABSOLUTE,
+                                time: 0,
+                                dwExtraInfo: INJECTED_EXTRA_INFO,
+                            },
+                        },
+                    };
+
+                    unsafe {
+                        windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
+                            &[input],
+                            std::mem::size_of::<INPUT>() as i32,
+                        );
+                    }
+
+                    return LRESULT(1); // Block the original event
+                }
+            }
+        }
+
+        CallNextHookEx(None, code, wparam, lparam)
+    }));
+
+    match result {
+        Ok(res) => res,
+        Err(_) => {
+            error!("Panic in mouse_hook_proc; falling back to CallNextHookEx");
+            CallNextHookEx(None, code, wparam, lparam)
+        }
+    }
 }
