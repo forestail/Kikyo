@@ -4,8 +4,7 @@ use crate::types::KeyAction;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -41,15 +40,24 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RWIN,
     VK_SHIFT,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
-    LLKHF_ALTDOWN, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_APP, WM_KEYUP, WM_SYSKEYUP,
+    LLKHF_ALTDOWN, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
+    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
 };
 /// Magic number to identify our own injected events.
 const INJECTED_EXTRA_INFO: usize = 0xFFC3C3C3;
 
 static HOOK_HANDLE: Mutex<Option<HHOOK>> = Mutex::new(None);
+static MOUSE_HOOK_HANDLE: Mutex<Option<HHOOK>> = Mutex::new(None);
 static HOOK_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
@@ -60,6 +68,7 @@ static LEFT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
+static CAPTURED_SHIFT_MUTEX_POISONED_REPORTED: AtomicBool = AtomicBool::new(false);
 static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
@@ -175,19 +184,66 @@ fn captured_shift_side_mut(
     }
 }
 
-fn forward_pending_captured_shift_downs_if_needed() {
-    let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
-    for side in [ShiftSide::Left, ShiftSide::Right] {
-        let side_state = captured_shift_side_mut(&mut state, side);
-        if side_state.physical_down && !side_state.os_down_sent {
-            let _ = inject_scancode(shift_scancode(side), false, false);
-            side_state.os_down_sent = true;
+fn report_captured_shift_mutex_poisoned_once() {
+    if !CAPTURED_SHIFT_MUTEX_POISONED_REPORTED.swap(true, Ordering::AcqRel) {
+        warn!("Captured Shift mutex was poisoned; continuing with recovered state");
+    }
+}
+
+fn lock_captured_shift_state() -> MutexGuard<'static, CapturedShiftState> {
+    match CAPTURED_SHIFT_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            report_captured_shift_mutex_poisoned_once();
+            poisoned.into_inner()
         }
     }
 }
 
+fn try_lock_captured_shift_state() -> Option<MutexGuard<'static, CapturedShiftState>> {
+    match CAPTURED_SHIFT_STATE.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::WouldBlock) => None,
+        Err(TryLockError::Poisoned(poisoned)) => {
+            report_captured_shift_mutex_poisoned_once();
+            Some(poisoned.into_inner())
+        }
+    }
+}
+
+fn forward_pending_captured_shift_downs_if_needed() -> bool {
+    let mut left_inject = false;
+    let mut right_inject = false;
+
+    {
+        let Some(mut state) = try_lock_captured_shift_state() else {
+            // Hook callbacks must avoid blocking; skip this cycle if state lock is contended.
+            return false;
+        };
+        let left_state = &mut state.left;
+        if left_state.physical_down && !left_state.os_down_sent {
+            left_state.os_down_sent = true;
+            left_inject = true;
+        }
+        let right_state = &mut state.right;
+        if right_state.physical_down && !right_state.os_down_sent {
+            right_state.os_down_sent = true;
+            right_inject = true;
+        }
+    }
+
+    if left_inject {
+        let _ = inject_scancode(shift_scancode(ShiftSide::Left), false, false);
+    }
+    if right_inject {
+        let _ = inject_scancode(shift_scancode(ShiftSide::Right), false, false);
+    }
+
+    left_inject || right_inject
+}
+
 fn mark_captured_shift_used_for_layout_output() {
-    let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    let mut state = lock_captured_shift_state();
     for side in [ShiftSide::Left, ShiftSide::Right] {
         let side_state = captured_shift_side_mut(&mut state, side);
         if side_state.physical_down && !side_state.os_down_sent {
@@ -197,12 +253,14 @@ fn mark_captured_shift_used_for_layout_output() {
 }
 
 fn captured_shift_down_snapshot() -> (bool, bool) {
-    let state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    let Some(state) = try_lock_captured_shift_state() else {
+        return (false, false);
+    };
     (state.left.physical_down, state.right.physical_down)
 }
 
 fn clear_captured_shift_state() {
-    let mut state = CAPTURED_SHIFT_STATE.lock().unwrap();
+    let mut state = lock_captured_shift_state();
     *state = CapturedShiftState::default();
 }
 
@@ -293,12 +351,15 @@ pub fn install_hook() -> anyhow::Result<()> {
     // However, Rust/Windows crates handle Option<HINSTANCE> -> 0.
     let hook_id =
         unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), HINSTANCE::default(), 0) }?;
+    let mouse_hook_id =
+        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), HINSTANCE::default(), 0) }?;
 
     if hook_id.is_invalid() {
         return Err(anyhow::anyhow!("Failed to install hook"));
     }
 
     *HOOK_HANDLE.lock().unwrap() = Some(hook_id);
+    *MOUSE_HOOK_HANDLE.lock().unwrap() = Some(mouse_hook_id);
     info!(
         "Keyboard hook installed successfully. Handle: {:?}",
         hook_id
@@ -315,6 +376,15 @@ pub fn uninstall_hook() {
         info!("Keyboard hook uninstalled.");
     }
     *handle = None;
+
+    let mut mouse_handle = MOUSE_HOOK_HANDLE.lock().unwrap();
+    if let Some(h) = *mouse_handle {
+        unsafe {
+            let _ = UnhookWindowsHookEx(h);
+        };
+        info!("Mouse hook uninstalled.");
+    }
+    *mouse_handle = None;
 }
 
 /// Runs a blocking message loop.
@@ -435,14 +505,15 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         let pass_through = || -> LRESULT {
             if !is_shift_vk {
-                forward_pending_captured_shift_downs_if_needed();
+                let _ = forward_pending_captured_shift_downs_if_needed();
             } else {
                 if let Some(side) = shift_side_for_event(scan_code, kbd.vkCode) {
                     if captured_shift_side_enabled(side) {
-                        let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
-                        let side_state = captured_shift_side_mut(&mut captured, side);
-                        if !up {
-                            side_state.os_down_sent = true;
+                        if let Some(mut captured) = try_lock_captured_shift_state() {
+                            let side_state = captured_shift_side_mut(&mut captured, side);
+                            if !up {
+                                side_state.os_down_sent = true;
+                            }
                         }
                     }
                 }
@@ -511,14 +582,15 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if is_shift_vk {
             if let Some(side) = shift_side_for_event(scan_code, kbd.vkCode) {
                 if captured_shift_side_enabled(side) {
-                    let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
-                    let side_state = captured_shift_side_mut(&mut captured, side);
-                    if up {
-                        side_state.physical_down = false;
-                    } else {
-                        side_state.physical_down = true;
-                        side_state.os_down_sent = false;
-                        side_state.used_for_layout_output = false;
+                    if let Some(mut captured) = try_lock_captured_shift_state() {
+                        let side_state = captured_shift_side_mut(&mut captured, side);
+                        if up {
+                            side_state.physical_down = false;
+                        } else if !side_state.physical_down {
+                            side_state.physical_down = true;
+                            side_state.os_down_sent = false;
+                            side_state.used_for_layout_output = false;
+                        }
                     }
                 }
             }
@@ -601,25 +673,32 @@ fn hook_worker(rx: Receiver<HookEvent>) {
 fn process_event(event: HookEvent) {
     if let Some(side) = shift_side_for_event(event.sc, event.vk) {
         if captured_shift_side_enabled(side) {
-            let mut captured = CAPTURED_SHIFT_STATE.lock().unwrap();
-            let side_state = captured_shift_side_mut(&mut captured, side);
+            let (should_inject_down, should_inject_up) = {
+                let mut captured = lock_captured_shift_state();
+                let side_state = captured_shift_side_mut(&mut captured, side);
 
-            if !event.up {
-                side_state.physical_down = true;
-                side_state.os_down_sent = false;
-                side_state.used_for_layout_output = false;
-                return;
-            }
+                if !event.up {
+                    if !side_state.physical_down {
+                        side_state.physical_down = true;
+                        side_state.os_down_sent = false;
+                        side_state.used_for_layout_output = false;
+                    }
+                    return;
+                }
 
-            if side_state.os_down_sent {
-                let _ = inject_scancode(shift_scancode(side), false, true);
-            } else if !side_state.used_for_layout_output {
-                // Standalone Shift should still be observed by other apps.
+                let inject_down = !side_state.os_down_sent && !side_state.used_for_layout_output;
+                let inject_up = side_state.os_down_sent || !side_state.used_for_layout_output;
+
+                *side_state = CapturedShiftSideState::default();
+                (inject_down, inject_up)
+            };
+
+            if should_inject_down {
                 let _ = inject_scancode(shift_scancode(side), false, false);
+            }
+            if should_inject_up {
                 let _ = inject_scancode(shift_scancode(side), false, true);
             }
-
-            *side_state = CapturedShiftSideState::default();
             return;
         }
     }
@@ -681,7 +760,7 @@ fn process_event(event: HookEvent) {
     match action {
         KeyAction::Pass => {
             if !is_shift_event {
-                forward_pending_captured_shift_downs_if_needed();
+                let _ = forward_pending_captured_shift_downs_if_needed();
             }
             let _ = inject_scancode(event.sc, event.ext, event.up);
         }
@@ -971,4 +1050,93 @@ pub fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
     }
     let ext = (scan & 0xFF00) == 0xE000;
     Some(((scan & 0x00FF) as u16, ext))
+unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if code < 0 {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
+        let msg = wparam.0 as u32;
+        let is_mouse_event = msg == WM_LBUTTONDOWN
+            || msg == WM_LBUTTONUP
+            || msg == WM_RBUTTONDOWN
+            || msg == WM_RBUTTONUP
+            || msg == WM_MBUTTONDOWN
+            || msg == WM_MBUTTONUP
+            || msg == WM_XBUTTONDOWN
+            || msg == WM_XBUTTONUP
+            || msg == WM_MOUSEWHEEL
+            || msg == WM_MOUSEHWHEEL
+            || msg == WM_MOUSEMOVE;
+
+        // Ignore injected mouse events to prevent recursion
+        let mouse = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+        if mouse.dwExtraInfo == INJECTED_EXTRA_INFO || (mouse.flags & LLKHF_INJECTED.0) != 0 {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
+        if is_mouse_event {
+            let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
+            if engine_enabled {
+                // Check and forward pending Shift downs BEFORE the mouse event is processed by the OS
+                let injected = forward_pending_captured_shift_downs_if_needed();
+                if injected {
+                    // We just injected a Shift Down event.
+                    // This means the OS might process the current mouse event BEFORE our injected Shift Down
+                    // if we just pass_through.
+                    // To guarantee the order (Shift Down, then Mouse Event), we MUST block this
+                    // original mouse event and inject a new copy of it right after our Shift Down.
+                    let mouse_data = mouse.mouseData;
+                    // Standard flags
+                    let dw_flags = match msg {
+                        WM_LBUTTONDOWN => MOUSEEVENTF_LEFTDOWN,
+                        WM_LBUTTONUP => MOUSEEVENTF_LEFTUP,
+                        WM_RBUTTONDOWN => MOUSEEVENTF_RIGHTDOWN,
+                        WM_RBUTTONUP => MOUSEEVENTF_RIGHTUP,
+                        WM_MBUTTONDOWN => MOUSEEVENTF_MIDDLEDOWN,
+                        WM_MBUTTONUP => MOUSEEVENTF_MIDDLEUP,
+                        WM_XBUTTONDOWN => MOUSEEVENTF_XDOWN,
+                        WM_XBUTTONUP => MOUSEEVENTF_XUP,
+                        WM_MOUSEWHEEL => MOUSEEVENTF_WHEEL,
+                        WM_MOUSEHWHEEL => MOUSEEVENTF_HWHEEL,
+                        WM_MOUSEMOVE => MOUSEEVENTF_MOVE,
+                        _ => MOUSEEVENTF_MOVE, // Fallback
+                    };
+
+                    let input = INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: 0,
+                                dy: 0,
+                                mouseData: mouse_data,
+                                dwFlags: dw_flags,
+                                time: 0,
+                                dwExtraInfo: INJECTED_EXTRA_INFO,
+                            },
+                        },
+                    };
+
+                    unsafe {
+                        windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
+                            &[input],
+                            std::mem::size_of::<INPUT>() as i32,
+                        );
+                    }
+
+                    return LRESULT(1); // Block the original event
+                }
+            }
+        }
+
+        CallNextHookEx(None, code, wparam, lparam)
+    }));
+
+    match result {
+        Ok(res) => res,
+        Err(_) => {
+            error!("Panic in mouse_hook_proc; falling back to CallNextHookEx");
+            CallNextHookEx(None, code, wparam, lparam)
+        }
+    }
 }
