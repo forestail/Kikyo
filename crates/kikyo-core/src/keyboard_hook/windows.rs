@@ -27,6 +27,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_UNICODE,
     LASTINPUTINFO,
     MAPVK_VK_TO_VSC_EX,
+    MAP_VIRTUAL_KEY_TYPE,
     VIRTUAL_KEY,
     VK_CONTROL,
     // VK_ESCAPE, // Emergency stop is currently disabled.
@@ -550,8 +551,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let win_pressed = (lwin_pressed && !left_win_needs_handling)
             || (rwin_pressed && !right_win_needs_handling);
 
-        if (ctrl_pressed || win_pressed || (alt_pressed && !alt_needs_handling))
-            && !is_any_shortcut
+        if (ctrl_pressed || win_pressed || (alt_pressed && !alt_needs_handling)) && !is_any_shortcut
         {
             return pass_through();
         }
@@ -956,7 +956,7 @@ pub fn is_sc_key_physically_down(key: crate::types::ScKey) -> Option<bool> {
     if key.ext {
         scan |= 0xE000;
     }
-    let vk = unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) } as i32;
+    let vk = unsafe { MapVirtualKeyW(scan, MAP_VIRTUAL_KEY_TYPE(3)) } as i32;
     if vk == 0 {
         return None;
     }
