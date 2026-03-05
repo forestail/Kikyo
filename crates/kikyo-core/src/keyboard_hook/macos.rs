@@ -88,6 +88,7 @@ extern "C" {
 
     pub fn CGEventPost(tap: u32, event: CGEventRef);
     pub fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+    pub fn CGEventSetFlags(event: CGEventRef, flags: CGEventFlags);
     pub fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
     pub fn CGEventSetIntegerValueField(event: CGEventRef, field: CGEventField, value: i64);
 }
@@ -127,6 +128,7 @@ struct HookEvent {
     is_settings: bool,
     is_switch_layout: bool,
     mac_kc: u16,
+    flags: u64,
 }
 
 // Wrapper for c_void pointer to implement Send/Sync
@@ -522,6 +524,7 @@ extern "C" fn tap_callback(
                 is_settings: is_settings_key,
                 is_switch_layout: is_switch_layout_key,
                 mac_kc: kc,
+                flags,
             };
             if let Ok(()) = HOOK_QUEUE.0.try_send(hook_event) {
                 return std::ptr::null_mut(); // Block original event
@@ -543,6 +546,7 @@ extern "C" fn tap_callback(
             is_settings: false,
             is_switch_layout: false,
             mac_kc: kc,
+            flags,
         };
 
         match HOOK_QUEUE.0.try_send(hook_event) {
@@ -603,24 +607,34 @@ pub fn install_hook() -> anyhow::Result<()> {
                 refresh_runtime_flags_from_engine();
             }
             
+            let mut injected_flags: u64 = 0;
+
             match action {
                 KeyAction::Pass => {
-                    let _ = inject_mac_keycode(ev.mac_kc, ev.up);
+                    let _ = inject_mac_keycode_with_flags(ev.mac_kc, ev.up, ev.flags);
                 }
                 KeyAction::Block => {}
                 KeyAction::Inject(events) => {
                     for i_ev in events {
                         match i_ev {
                             InputEvent::Scancode(sc, ext, up) => {
-                                let _ = inject_scancode(sc, ext, up);
+                                // Track injected Shift state to apply to subsequent characters
+                                if sc == 0x2A || sc == 0x36 {
+                                    if !up {
+                                        injected_flags |= kCGEventFlagMaskShift;
+                                    } else {
+                                        injected_flags &= !kCGEventFlagMaskShift;
+                                    }
+                                }
+                                let _ = inject_scancode_with_flags(sc, ext, up, injected_flags);
                             },
                             InputEvent::Unicode(c, up) => {
-                                let _ = inject_unicode(c, up);
+                                let _ = inject_unicode_with_flags(c, up, injected_flags);
                             },
                             InputEvent::CommitImeComposition => {
                                 if crate::ime::is_composition_active() {
-                                    let _ = inject_scancode(0x1C, false, false);
-                                    let _ = inject_scancode(0x1C, false, true);
+                                    let _ = inject_scancode_with_flags(0x1C, false, false, injected_flags);
+                                    let _ = inject_scancode_with_flags(0x1C, false, true, injected_flags);
                                     thread::sleep(Duration::from_millis(1));
                                 }
                             }
@@ -647,8 +661,8 @@ pub fn install_hook() -> anyhow::Result<()> {
                             }
                             InputEvent::DirectString(s) => {
                                 for c in s.chars() {
-                                    let _ = inject_unicode(c, false);
-                                    let _ = inject_unicode(c, true);
+                                    let _ = inject_unicode_with_flags(c, false, injected_flags);
+                                    let _ = inject_unicode_with_flags(c, true, injected_flags);
                                 }
                             }
                         }
@@ -715,20 +729,31 @@ pub fn run_event_loop() {
 }
 
 pub fn inject_scancode(sc: u16, ext: bool, up: bool) -> anyhow::Result<()> {
+    inject_scancode_with_flags(sc, ext, up, 0)
+}
+
+fn inject_scancode_with_flags(sc: u16, ext: bool, up: bool, flags: u64) -> anyhow::Result<()> {
     let mac_kc = win_to_mac(sc, ext);
     if mac_kc != 0xFFFF {
-        inject_mac_keycode(mac_kc, up)?;
+        inject_mac_keycode_with_flags(mac_kc, up, flags)?;
     }
     Ok(())
 }
 
 fn inject_mac_keycode(kc: u16, up: bool) -> anyhow::Result<()> {
+    inject_mac_keycode_with_flags(kc, up, 0)
+}
+
+fn inject_mac_keycode_with_flags(kc: u16, up: bool, flags: u64) -> anyhow::Result<()> {
     unsafe {
         // Fallback: If kc is 0xFFFF passed by error, rewrite it as 0 to be safe
         let safe_kc = if kc == 0xFFFF { 0 } else { kc };
         let source = CGEventSourceCreate(kCGEventSourceStatePrivate);
         let event = CGEventCreateKeyboardEvent(source, safe_kc, !up);
         if !event.is_null() {
+            if flags != 0 {
+                CGEventSetFlags(event, flags);
+            }
             CGEventSetIntegerValueField(event, 42, INJECTED_EXTRA_INFO as i64); // kCGEventSourceUserData
             CGEventPost(kCGSessionEventTap, event);
             CFRelease(event as *mut c_void);
@@ -741,11 +766,18 @@ fn inject_mac_keycode(kc: u16, up: bool) -> anyhow::Result<()> {
 }
 
 pub fn inject_unicode(c: char, up: bool) -> anyhow::Result<()> {
+    inject_unicode_with_flags(c, up, 0)
+}
+
+fn inject_unicode_with_flags(c: char, up: bool, flags: u64) -> anyhow::Result<()> {
     unsafe {
         // Apple docs: "To generate a Unicode keystroke, use a virtual key code of 0 (kVK_ANSI_A)"
         let source = CGEventSourceCreate(kCGEventSourceStatePrivate);
         let event = CGEventCreateKeyboardEvent(source, 0, !up);
         if !event.is_null() {
+            if flags != 0 {
+                CGEventSetFlags(event, flags);
+            }
             let mut utf16 = [0u16; 2];
             let string_length = c.encode_utf16(&mut utf16).len();
             CGEventKeyboardSetUnicodeString(event, string_length, utf16.as_ptr());
