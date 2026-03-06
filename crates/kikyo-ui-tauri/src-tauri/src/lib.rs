@@ -120,7 +120,10 @@ fn normalize_layout_path_for_compare(path: &str) -> String {
 }
 
 #[tauri::command]
-fn show_main_window(window: tauri::Window) {
+fn show_main_window(app_handle: tauri::AppHandle, window: tauri::Window) {
+    #[cfg(target_os = "macos")]
+    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+
     let _ = window.show();
     let _ = window.set_focus();
 }
@@ -1022,6 +1025,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -1073,6 +1079,9 @@ pub fn run() {
                             std::process::exit(0);
                         }
                         "show" => {
+                            #[cfg(target_os = "macos")]
+                            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
@@ -1124,6 +1133,9 @@ pub fn run() {
                         ..
                     } => {
                         let app = tray.app_handle();
+                        #[cfg(target_os = "macos")]
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
@@ -1172,10 +1184,13 @@ pub fn run() {
             // Prepare Window Event for close
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
+                let app_handle_clone = app.handle().clone();
                 window.on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         let _ = window_clone.hide();
+                        #[cfg(target_os = "macos")]
+                        let _ = app_handle_clone.set_activation_policy(tauri::ActivationPolicy::Accessory);
                     }
                     _ => {}
                 });
