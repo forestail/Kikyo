@@ -4,6 +4,7 @@ use std::ffi::c_void;
 #[link(name = "Carbon", kind = "framework")]
 extern "C" {
     pub static kTISPropertyInputSourceID: *mut c_void;
+    pub static kTISPropertyInputSourceType: *mut c_void;
     fn TISCopyCurrentKeyboardInputSource() -> *mut c_void;
     fn TISGetInputSourceProperty(input_source: *mut c_void, property_key: *mut c_void) -> *mut c_void;
     fn TISSelectInputSource(input_source: *mut c_void) -> i32;
@@ -84,7 +85,10 @@ static LAST_JAPANESE_INPUT_SOURCE: std::sync::Mutex<Option<String>> = std::sync:
 
 extern "C" fn update_ime_cache_work(_ctx: *mut c_void) {
     if let Some(id) = get_current_input_source_id() {
-        let is_jp = id.contains("Japanese") || id.contains("Kotoeri") || id.contains("ATOK");
+        let mut is_jp = id.contains("Japanese") || id.contains("Kotoeri") || id.contains("ATOK");
+        if is_jp && (id.contains("Roman") || id.contains("Alphanumeric")) {
+            is_jp = false;
+        }
         if is_jp {
             if let Ok(mut lock) = LAST_JAPANESE_INPUT_SOURCE.lock() {
                 *lock = Some(id.clone());
@@ -125,58 +129,15 @@ pub fn is_composition_active() -> bool {
 
 extern "C" fn set_force_ime_work(ctx: *mut c_void) {
     let open = ctx as usize != 0;
-    unsafe {
-        let id_key = kTISPropertyInputSourceID;
-        if id_key.is_null() { return; }
-        
-        let target_id = if open {
-            if let Ok(lock) = LAST_JAPANESE_INPUT_SOURCE.lock() {
-                lock.clone()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let target_substring = if open {
-            "Japanese"
-        } else {
-            "com.apple.keylayout.ABC"
-        };
-
-        let list = TISCreateInputSourceList(std::ptr::null_mut(), false);
-        if list.is_null() { return; }
-        
-        let count = CFArrayGetCount(list);
-
-        let mut exact_source = None;
-        let mut fallback_source = None;
-
-        for i in 0..count {
-            let source = CFArrayGetValueAtIndex(list, i);
-            let val = TISGetInputSourceProperty(source, id_key);
-            if let Some(id) = cfstring_to_string(val) {
-                if let Some(ref target) = target_id {
-                    if id == *target {
-                        exact_source = Some(source);
-                        break;
-                    }
-                }
-                
-                if open && fallback_source.is_none() && (id.contains("Japanese") || id.contains("Kotoeri") || id.contains("ATOK")) {
-                    fallback_source = Some(source);
-                } else if !open && fallback_source.is_none() && id.contains(target_substring) {
-                    fallback_source = Some(source);
-                }
-            }
-        }
-
-        if let Some(source) = exact_source.or(fallback_source) {
-            TISSelectInputSource(source);
-        }
-        
-        CFRelease(list);
+    // Utilize native macOS Kana / Eisu key events to force robust IME state toggles,
+    // solving Google Japanese Input's internal Romaji/Hiragana state tracking bug.
+    // 0x79 is Kana (Mac 0x68), 0x7B is Eisu (Mac 0x66).
+    if open {
+        let _ = crate::keyboard_hook::inject_scancode(0x79, false, false);
+        let _ = crate::keyboard_hook::inject_scancode(0x79, false, true);
+    } else {
+        let _ = crate::keyboard_hook::inject_scancode(0x7B, false, false);
+        let _ = crate::keyboard_hook::inject_scancode(0x7B, false, true);
     }
 }
 

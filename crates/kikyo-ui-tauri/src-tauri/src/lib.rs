@@ -1006,6 +1006,14 @@ fn request_accessibility_permission() -> bool {
     kikyo_core::keyboard_hook::request_accessibility_permission()
 }
 
+#[tauri::command]
+fn restart_app() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).spawn();
+        std::process::exit(0);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -1046,6 +1054,7 @@ pub fn run() {
             show_main_window,
             check_accessibility_permission,
             request_accessibility_permission,
+            restart_app,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

@@ -1105,12 +1105,10 @@ async function initAccessibilityCheck() {
         });
       }
 
-      const btnClose = document.getElementById("btn-close-accessibility");
-      if (btnClose) {
-        btnClose.addEventListener("click", () => {
-          if (modal) {
-            modal.style.display = "none";
-          }
+      const btnRestart = document.getElementById("btn-restart-app");
+      if (btnRestart) {
+        btnRestart.addEventListener("click", async () => {
+          await invoke("restart_app");
         });
       }
     }
