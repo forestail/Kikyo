@@ -1050,6 +1050,8 @@ pub fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
     }
     let ext = (scan & 0xFF00) == 0xE000;
     Some(((scan & 0x00FF) as u16, ext))
+}
+
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let result = catch_unwind(AssertUnwindSafe(|| {
         if code < 0 {
