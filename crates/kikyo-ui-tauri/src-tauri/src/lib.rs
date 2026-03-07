@@ -122,7 +122,7 @@ fn normalize_layout_path_for_compare(path: &str) -> String {
 #[tauri::command]
 fn show_main_window(app_handle: tauri::AppHandle, window: tauri::Window) {
     #[cfg(target_os = "macos")]
-    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app_handle.set_dock_visibility(true);
 
     let _ = window.show();
     let _ = window.set_focus();
@@ -1026,7 +1026,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            let _ = app.set_dock_visibility(true);
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -1064,7 +1064,7 @@ pub fn run() {
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_dock_visibility(false);
 
             // Setup Tray with initial menu
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -1080,7 +1080,7 @@ pub fn run() {
                         }
                         "show" => {
                             #[cfg(target_os = "macos")]
-                            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                            let _ = app.set_dock_visibility(true);
 
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
@@ -1134,7 +1134,7 @@ pub fn run() {
                     } => {
                         let app = tray.app_handle();
                         #[cfg(target_os = "macos")]
-                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                        let _ = app.set_dock_visibility(true);
 
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
@@ -1190,7 +1190,7 @@ pub fn run() {
                         api.prevent_close();
                         let _ = window_clone.hide();
                         #[cfg(target_os = "macos")]
-                        let _ = app_handle_clone.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        let _ = app_handle_clone.set_dock_visibility(false);
                     }
                     _ => {}
                 });
