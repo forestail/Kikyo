@@ -65,6 +65,8 @@ static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static LAST_HOOK_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_REINSTALL_MS: AtomicU64 = AtomicU64::new(0);
 static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static LCTRL_PHYSICAL_DOWN: AtomicBool = AtomicBool::new(false);
+static RCTRL_PHYSICAL_DOWN: AtomicBool = AtomicBool::new(false);
 static LEFT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_SHIFT_CAPTURE_FOR_ROMAJI_PINKY: AtomicBool = AtomicBool::new(false);
@@ -452,8 +454,22 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
 
-        let lctrl_pressed = GetAsyncKeyState(VK_LCONTROL.0 as i32) as u16 & 0x8000 != 0;
-        let rctrl_pressed = GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000 != 0;
+        if kbd.vkCode == VK_LCONTROL.0 as u32
+            || (kbd.vkCode == VK_CONTROL.0 as u32
+                && (kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) == 0)
+        {
+            LCTRL_PHYSICAL_DOWN.store(!up, Ordering::Relaxed);
+        } else if kbd.vkCode == VK_RCONTROL.0 as u32
+            || (kbd.vkCode == VK_CONTROL.0 as u32
+                && (kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0)
+        {
+            RCTRL_PHYSICAL_DOWN.store(!up, Ordering::Relaxed);
+        }
+
+        let lctrl_pressed = (GetAsyncKeyState(VK_LCONTROL.0 as i32) as u16 & 0x8000 != 0)
+            || LCTRL_PHYSICAL_DOWN.load(Ordering::Relaxed);
+        let rctrl_pressed = (GetAsyncKeyState(VK_RCONTROL.0 as i32) as u16 & 0x8000 != 0)
+            || RCTRL_PHYSICAL_DOWN.load(Ordering::Relaxed);
         let lshift_pressed = GetAsyncKeyState(VK_LSHIFT.0 as i32) as u16 & 0x8000 != 0;
         let rshift_pressed = GetAsyncKeyState(VK_RSHIFT.0 as i32) as u16 & 0x8000 != 0;
         let lalt_pressed = GetAsyncKeyState(VK_LMENU.0 as i32) as u16 & 0x8000 != 0;

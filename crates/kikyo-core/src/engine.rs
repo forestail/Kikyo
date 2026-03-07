@@ -234,48 +234,16 @@ impl Engine {
         self.chord_engine.profile.switch_layout_shortcut.clone()
     }
 
-    fn needs_sc_key_handling(&self, key: ScKey) -> bool {
-        if !self.enabled {
-            return false;
-        }
-
-        if self.function_key_swaps.contains_key(&key) {
-            return true;
-        }
-
-        if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
-            if tk.left.contains(&key)
-                || tk.right.contains(&key)
-                || tk.ext1.contains(&key)
-                || tk.ext2.contains(&key)
-            {
-                return true;
-            }
-        }
-
-        if let Some(ref targets) = self.chord_engine.profile.target_keys {
-            if targets.contains(&key) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    fn needs_any_sc_key_handling(&self, keys: &[ScKey]) -> bool {
-        keys.iter().any(|k| self.needs_sc_key_handling(*k))
-    }
-
     pub fn needs_alt_handling(&self) -> bool {
-        self.needs_any_sc_key_handling(&[ScKey::new(0x38, false), ScKey::new(0x38, true)])
+        self.needs_modifier_handling(&[ScKey::new(0x38, false), ScKey::new(0x38, true)])
     }
 
     pub fn needs_left_shift_handling(&self) -> bool {
-        self.needs_sc_key_handling(ScKey::new(0x2A, false))
+        self.needs_modifier_handling(&[ScKey::new(0x2A, false)])
     }
 
     pub fn needs_right_shift_handling(&self) -> bool {
-        self.needs_sc_key_handling(ScKey::new(0x36, false))
+        self.needs_modifier_handling(&[ScKey::new(0x36, false)])
     }
 
     fn has_japanese_section_with_suffix(layout: &Layout, suffix: &str) -> bool {
@@ -328,7 +296,7 @@ impl Engine {
             return false;
         }
         self.has_romaji_pinky_shift_section_in_layout()
-            && !self.needs_sc_key_handling(ScKey::new(0x2A, false))
+            && !self.needs_modifier_handling(&[ScKey::new(0x2A, false)])
     }
 
     pub fn capture_right_shift_for_romaji_pinky_shift(&self) -> bool {
@@ -336,23 +304,44 @@ impl Engine {
             return false;
         }
         self.has_romaji_pinky_shift_section_in_layout()
-            && !self.needs_sc_key_handling(ScKey::new(0x36, false))
+            && !self.needs_modifier_handling(&[ScKey::new(0x36, false)])
+    }
+
+    fn needs_modifier_handling(&self, keys: &[ScKey]) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        for k in keys {
+            if self.function_key_swaps.contains_key(k) {
+                return true;
+            }
+            if let Some(ref tk) = self.chord_engine.profile.thumb_keys {
+                if tk.left.contains(k)
+                    || tk.right.contains(k)
+                    || tk.ext1.contains(k)
+                    || tk.ext2.contains(k)
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn needs_left_ctrl_handling(&self) -> bool {
-        self.needs_sc_key_handling(ScKey::new(0x1D, false))
+        self.needs_modifier_handling(&[ScKey::new(0x1D, false)])
     }
 
     pub fn needs_right_ctrl_handling(&self) -> bool {
-        self.needs_sc_key_handling(ScKey::new(0x1D, true))
+        self.needs_modifier_handling(&[ScKey::new(0x1D, true)])
     }
 
     pub fn needs_left_win_handling(&self) -> bool {
-        self.needs_sc_key_handling(ScKey::new(0x5B, true))
+        self.needs_modifier_handling(&[ScKey::new(0x5B, true)])
     }
 
     pub fn needs_right_win_handling(&self) -> bool {
-        self.needs_sc_key_handling(ScKey::new(0x5C, true))
+        self.needs_modifier_handling(&[ScKey::new(0x5C, true)])
     }
 
     fn has_thumb_shift_sections_in_layout(&self) -> bool {
