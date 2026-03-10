@@ -1183,6 +1183,9 @@ pub fn run() {
 
             // Prepare Window Event for close
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                let _ = window.hide();
+
                 let window_clone = window.clone();
                 let app_handle_clone = app.handle().clone();
                 window.on_window_event(move |event| match event {
