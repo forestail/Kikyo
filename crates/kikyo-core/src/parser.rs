@@ -1017,8 +1017,14 @@ mod tests {
             ])
         );
 
-        assert_eq!(parse_token("無", &crate::keyboard_map::new_jis_106()), Token::None);
-        assert_eq!(parse_token("", &crate::keyboard_map::new_jis_106()), Token::None);
+        assert_eq!(
+            parse_token("無", &crate::keyboard_map::new_jis_106()),
+            Token::None
+        );
+        assert_eq!(
+            parse_token("", &crate::keyboard_map::new_jis_106()),
+            Token::None
+        );
 
         // 'a\n' -> a, Enter (0x1C) because \n is likely normalized?
         // Wait, parse_quoted handles escapes. 'a\n' -> string "a\n".
@@ -1055,7 +1061,10 @@ mod tests {
 
         // Case sensitivity check
         // "A" is now treated as Alt modifier, so it produces no keystroke locally if not followed by a key.
-        assert_eq!(parse_token("A", &crate::keyboard_map::new_jis_106()), Token::None);
+        assert_eq!(
+            parse_token("A", &crate::keyboard_map::new_jis_106()),
+            Token::None
+        );
         assert_eq!(
             parse_token("Ａ", &crate::keyboard_map::new_jis_106()), // Fullwidth A
             Token::KeySequence(vec![stroke_char('A')])
@@ -1117,7 +1126,10 @@ mod tests {
 
         // Modifiers (single-stroke)
         // "CA" -> Ctrl + Alt (accumulated modifiers, no key)
-        assert_eq!(parse_token("CA", &crate::keyboard_map::new_jis_106()), Token::None);
+        assert_eq!(
+            parse_token("CA", &crate::keyboard_map::new_jis_106()),
+            Token::None
+        );
 
         // "Cａ" -> Ctrl + a
         assert_eq!(
@@ -1217,124 +1229,239 @@ mod tests {
         );
 
         // "S" -> Empty (No key following)
-        assert_eq!(parse_token("S", &crate::keyboard_map::new_jis_106()), Token::None);
+        assert_eq!(
+            parse_token("S", &crate::keyboard_map::new_jis_106()),
+            Token::None
+        );
     }
 
     #[test]
     fn test_parse_token_kana_mode_maps_to_kana_keycodes() {
         assert_eq!(
-            parse_token_with_mode("の", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "の",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('k')])
         );
         assert_eq!(
-            parse_token_with_mode("と", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "と",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('s')])
         );
         assert_eq!(
-            parse_token_with_mode("ど", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "ど",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('s'), stroke_char('@')])
         );
         assert_eq!(
-            parse_token_with_mode("゛", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "゛",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('@')])
         );
         assert_eq!(
-            parse_token_with_mode("゜", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "゜",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('[')])
         );
         assert_eq!(
-            parse_token_with_mode("ろ", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "ろ",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_scancode(0x73, false)])
         );
         assert_eq!(
-            parse_token_with_mode("。", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "。",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char('.')])
         );
         assert_eq!(
-            parse_token_with_mode("、", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "、",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char(',')])
         );
         assert_eq!(
-            parse_token_with_mode("ー", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "ー",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('\\')])
         );
         assert_eq!(
-            parse_token_with_mode("１", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "１",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('1'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("２", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "２",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('2'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("３", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "３",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('3'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("４", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "４",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('4'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("５", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "５",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('5'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("６", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "６",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('6'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("７", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "７",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('7'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("８", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "８",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('8'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("９", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "９",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('9'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("０", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "０",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('0'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("－", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "－",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('-'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("＾", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "＾",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('^'), stroke_scancode(0x43, false)])
         );
         assert_eq!(
-            parse_token_with_mode("￥", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "￥",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_char('\\'), stroke_scancode(0x43, false)])
         );
 
         assert_eq!(
-            parse_token_with_mode("［", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "［",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char('[')])
         );
         assert_eq!(
-            parse_token_with_mode("］", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "］",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char(']')])
         );
         assert_eq!(
-            parse_token_with_mode("／", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "／",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char('/')])
         );
         assert_eq!(
-            parse_token_with_mode("・", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "・",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char('/')])
         );
         assert_eq!(
-            parse_token_with_mode("｀", TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+            parse_token_with_mode(
+                "｀",
+                TokenParseMode::Kana,
+                &crate::keyboard_map::new_jis_106()
+            ),
             Token::KeySequence(vec![stroke_shift_char('@'), stroke_scancode(0x43, false)])
         );
 
         let expect_f9 = |src: &str, ascii: char| {
             assert_eq!(
-                parse_token_with_mode(src, TokenParseMode::Kana, &crate::keyboard_map::new_jis_106()),
+                parse_token_with_mode(
+                    src,
+                    TokenParseMode::Kana,
+                    &crate::keyboard_map::new_jis_106()
+                ),
                 Token::KeySequence(vec![stroke_char(ascii), stroke_scancode(0x43, false)])
             );
         };
@@ -1366,7 +1493,8 @@ mod tests {
 [かなシフト無し]
 の,ど,゛,゜
 ";
-        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse");
         let sec = layout
             .sections
             .get("かなシフト無し")
@@ -1461,8 +1589,8 @@ mod tests {
 [Main]
 a,b
 ";
-        let layout =
-            parse_layout_content(content_with_name, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+        let layout = parse_layout_content(content_with_name, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse");
         assert_eq!(layout.name, Some("新下駄配列".to_string()));
 
         // Case 2: Skip empty lines and empty comments
@@ -1474,8 +1602,8 @@ a,b
 [Main]
 a,b
 ";
-        let layout_skip =
-            parse_layout_content(content_skip, &crate::keyboard_map::new_jis_106()).expect("Failed to parse");
+        let layout_skip = parse_layout_content(content_skip, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse");
         assert_eq!(layout_skip.name, Some("Real Name".to_string()));
 
         // Case 3: No name found (starts with section)
@@ -1485,13 +1613,15 @@ a,b
 a,b
 ";
         let layout_no_name =
-            parse_layout_content(content_no_name, &crate::keyboard_map::new_jis_106()).expect("Failed");
+            parse_layout_content(content_no_name, &crate::keyboard_map::new_jis_106())
+                .expect("Failed");
         assert_eq!(layout_no_name.name, None);
 
         // Case 4: Name variation
         let content_name_variation = ";My Layout  ";
         let layout_var =
-            parse_layout_content(content_name_variation, &crate::keyboard_map::new_jis_106()).expect("Failed");
+            parse_layout_content(content_name_variation, &crate::keyboard_map::new_jis_106())
+                .expect("Failed");
         assert_eq!(layout_var.name, Some("My Layout".to_string()));
     }
 
@@ -1507,7 +1637,8 @@ Capsロック, 拡張2
 [Main]
 a,b
 ";
-        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
+        let layout =
+            parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(
             layout.function_key_swaps,
             vec![
@@ -1530,7 +1661,8 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 <q>
 xx,2,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
-        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
+        let layout =
+            parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout.max_chord_size, 2);
     }
 
@@ -1546,7 +1678,8 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 <q><w>
 xx,xx,3,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
 ";
-        let layout = parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
+        let layout =
+            parse_layout_content(content, &crate::keyboard_map::new_jis_106()).expect("Failed");
         assert_eq!(layout.max_chord_size, 3);
     }
 

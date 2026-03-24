@@ -2,23 +2,27 @@ use crate::engine::ENGINE;
 use crate::types::{InputEvent, KeyAction};
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::os::raw::{c_int, c_void};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info};
 
-#[repr(C)] pub struct __CGEvent(c_void);
+#[repr(C)]
+pub struct __CGEvent(c_void);
 pub type CGEventRef = *mut __CGEvent;
 
-#[repr(C)] pub struct __CGEventSource(c_void);
+#[repr(C)]
+pub struct __CGEventSource(c_void);
 pub type CGEventSourceRef = *mut __CGEventSource;
 
-#[repr(C)] pub struct __CFMachPort(c_void);
+#[repr(C)]
+pub struct __CFMachPort(c_void);
 pub type CFMachPortRef = *mut __CFMachPort;
 
-#[repr(C)] pub struct __CFRunLoopSource(c_void);
+#[repr(C)]
+pub struct __CFRunLoopSource(c_void);
 pub type CFRunLoopSourceRef = *mut __CFRunLoopSource;
 
 pub type CGEventTapProxy = *mut c_void;
@@ -77,7 +81,7 @@ extern "C" {
         virtualKey: u16,
         keyDown: bool,
     ) -> CGEventRef;
-    
+
     pub fn CGEventKeyboardSetUnicodeString(
         event: CGEventRef,
         stringLength: usize,
@@ -107,7 +111,7 @@ extern "C" {
     pub fn CFRunLoopStop(rl: *mut c_void);
     pub fn CFRetain(cf: *mut c_void);
     pub fn CFRelease(cf: *mut c_void);
-    
+
     // In Rust we can just use the pointer from dlsym or we can link it
 }
 
@@ -250,7 +254,7 @@ fn mac_to_win(kc: u16) -> (u16, u32, bool) {
         0x07 => (0x2D, 0x58, false), // X
         0x10 => (0x15, 0x59, false), // Y
         0x06 => (0x2C, 0x5A, false), // Z
-        
+
         0x12 => (0x02, 0x31, false), // 1
         0x13 => (0x03, 0x32, false), // 2
         0x14 => (0x04, 0x33, false), // 3
@@ -261,23 +265,23 @@ fn mac_to_win(kc: u16) -> (u16, u32, bool) {
         0x1C => (0x09, 0x38, false), // 8
         0x19 => (0x0A, 0x39, false), // 9
         0x1D => (0x0B, 0x30, false), // 0
-        
+
         0x1B => (0x0C, 0xBD, false), // -
         0x18 => (0x0D, 0xBB, false), // ^
         0x5D => (0x7D, 0xDC, false), // Yen
-        
+
         0x21 => (0x1A, 0xC0, false), // @
         0x1E => (0x1B, 0xDB, false), // [
-        
+
         0x29 => (0x27, 0xBA, false), // ;
         0x27 => (0x28, 0xDE, false), // :
         0x2A => (0x2B, 0xDD, false), // ]
-        
+
         0x2B => (0x33, 0xBC, false), // ,
         0x2F => (0x34, 0xBE, false), // .
         0x2C => (0x35, 0xBF, false), // /
         0x5E => (0x73, 0xE2, false), // Underscore
-        
+
         0x38 => (0x2A, 0x10, false), // LShift
         0x3C => (0x36, 0x10, true),  // RShift
         0x3B => (0x1D, 0x11, false), // LCtrl
@@ -286,16 +290,16 @@ fn mac_to_win(kc: u16) -> (u16, u32, bool) {
         0x3D => (0x38, 0x12, true),  // RAlt
         0x37 => (0x5B, 0x5B, true),  // LCmd -> LWin
         0x36 => (0x5C, 0x5C, true),  // RCmd -> RWin
-        
+
         0x31 => (0x39, 0x20, false), // Space
         0x24 => (0x1C, 0x0D, false), // Return
         0x33 => (0x0E, 0x08, false), // Backspace
         0x30 => (0x0F, 0x09, false), // Tab
         0x35 => (0x01, 0x1B, false), // Esc
-        
+
         0x66 => (0x7B, 0xEB, false), // Eisu (Muhenkan)
         0x68 => (0x79, 0x1C, false), // Kana (Henkan)
-        
+
         0x7E => (0x48, 0x26, true), // Up
         0x7D => (0x50, 0x28, true), // Down
         0x7B => (0x4B, 0x25, true), // Left
@@ -307,33 +311,79 @@ fn mac_to_win(kc: u16) -> (u16, u32, bool) {
 fn win_to_mac(sc: u16, ext: bool) -> u16 {
     // Reverse mapping for injection
     match (sc, ext) {
-        (0x1E, _) => 0x00, (0x30, _) => 0x0B, (0x2E, _) => 0x08, (0x20, _) => 0x02,
-        (0x12, _) => 0x0E, (0x21, _) => 0x03, (0x22, _) => 0x05, (0x23, _) => 0x04,
-        (0x17, _) => 0x22, (0x24, _) => 0x26, (0x25, _) => 0x28, (0x26, _) => 0x25,
-        (0x32, _) => 0x2E, (0x31, _) => 0x2D, (0x18, _) => 0x1F, (0x19, _) => 0x23,
-        (0x10, _) => 0x0C, (0x13, _) => 0x0F, (0x1F, _) => 0x01, (0x14, _) => 0x11,
-        (0x16, _) => 0x20, (0x2F, _) => 0x09, (0x11, _) => 0x0D, (0x2D, _) => 0x07,
-        (0x15, _) => 0x10, (0x2C, _) => 0x06,
-        
-        (0x02, _) => 0x12, (0x03, _) => 0x13, (0x04, _) => 0x14, (0x05, _) => 0x15,
-        (0x06, _) => 0x17, (0x07, _) => 0x16, (0x08, _) => 0x1A, (0x09, _) => 0x1C,
-        (0x0A, _) => 0x19, (0x0B, _) => 0x1D,
-        
-        (0x0C, _) => 0x1B, (0x0D, _) => 0x18, (0x7D, _) => 0x5D, (0x1A, _) => 0x21,
-        (0x1B, _) => 0x1E, (0x27, _) => 0x29, (0x28, _) => 0x27, (0x2B, _) => 0x2A,
-        (0x33, _) => 0x2B, (0x34, _) => 0x2F, (0x35, _) => 0x2C, (0x73, _) => 0x5E,
-        
-        (0x2A, false) => 0x38, (0x36, false) => 0x3C,
-        (0x1D, false) => 0x3B, (0x1D, true) => 0x3E,
-        (0x38, false) => 0x3A, (0x38, true) => 0x3D,
-        (0x5B, true)  => 0x37, (0x5C, true) => 0x36,
-        
-        (0x39, _) => 0x31, (0x1C, false) => 0x24, (0x0E, _) => 0x33,
-        (0x0F, _) => 0x30, (0x01, _) => 0x35,
-        
-        (0x7B, _) => 0x66, (0x79, _) => 0x68,
-        
-        (0x48, true) => 0x7E, (0x50, true) => 0x7D, (0x4B, true) => 0x7B, (0x4D, true) => 0x7C,
+        (0x1E, _) => 0x00,
+        (0x30, _) => 0x0B,
+        (0x2E, _) => 0x08,
+        (0x20, _) => 0x02,
+        (0x12, _) => 0x0E,
+        (0x21, _) => 0x03,
+        (0x22, _) => 0x05,
+        (0x23, _) => 0x04,
+        (0x17, _) => 0x22,
+        (0x24, _) => 0x26,
+        (0x25, _) => 0x28,
+        (0x26, _) => 0x25,
+        (0x32, _) => 0x2E,
+        (0x31, _) => 0x2D,
+        (0x18, _) => 0x1F,
+        (0x19, _) => 0x23,
+        (0x10, _) => 0x0C,
+        (0x13, _) => 0x0F,
+        (0x1F, _) => 0x01,
+        (0x14, _) => 0x11,
+        (0x16, _) => 0x20,
+        (0x2F, _) => 0x09,
+        (0x11, _) => 0x0D,
+        (0x2D, _) => 0x07,
+        (0x15, _) => 0x10,
+        (0x2C, _) => 0x06,
+
+        (0x02, _) => 0x12,
+        (0x03, _) => 0x13,
+        (0x04, _) => 0x14,
+        (0x05, _) => 0x15,
+        (0x06, _) => 0x17,
+        (0x07, _) => 0x16,
+        (0x08, _) => 0x1A,
+        (0x09, _) => 0x1C,
+        (0x0A, _) => 0x19,
+        (0x0B, _) => 0x1D,
+
+        (0x0C, _) => 0x1B,
+        (0x0D, _) => 0x18,
+        (0x7D, _) => 0x5D,
+        (0x1A, _) => 0x21,
+        (0x1B, _) => 0x1E,
+        (0x27, _) => 0x29,
+        (0x28, _) => 0x27,
+        (0x2B, _) => 0x2A,
+        (0x33, _) => 0x2B,
+        (0x34, _) => 0x2F,
+        (0x35, _) => 0x2C,
+        (0x73, _) => 0x5E,
+
+        (0x2A, false) => 0x38,
+        (0x36, false) => 0x3C,
+        (0x1D, false) => 0x3B,
+        (0x1D, true) => 0x3E,
+        (0x38, false) => 0x3A,
+        (0x38, true) => 0x3D,
+        (0x5B, true) => 0x37,
+        (0x5C, true) => 0x36,
+
+        (0x39, _) => 0x31,
+        (0x1C, false) => 0x24,
+        (0x0E, _) => 0x33,
+        (0x0F, _) => 0x30,
+        (0x01, _) => 0x35,
+
+        (0x7B, _) => 0x66,
+        (0x79, _) => 0x68,
+
+        (0x48, true) => 0x7E,
+        (0x50, true) => 0x7D,
+        (0x4B, true) => 0x7B,
+        (0x4D, true) => 0x7C,
         _ => 0xFFFF,
     }
 }
@@ -364,9 +414,9 @@ extern "C" fn tap_callback(
         let kc = unsafe { CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) } as u16;
         let flags = unsafe { CGEventGetFlags(event) };
         let shift = (flags & kCGEventFlagMaskShift) != 0;
-        
+
         let (sc, vk, ext) = mac_to_win(kc);
-        
+
         if sc == 0 {
             return event;
         }
@@ -380,20 +430,23 @@ extern "C" fn tap_callback(
             kCGEventKeyDown => {
                 crate::ime::update_ime_cache_on_main_thread();
                 false
-            },
+            }
             kCGEventFlagsChanged => {
                 crate::ime::update_ime_cache_on_main_thread();
                 // If the key is shift, and shift flag is not present, it's an UP event
                 if kc == 0x38 || kc == 0x3C {
                     is_shift_kc = true;
                     !shift
-                } else if kc == 0x3B || kc == 0x3E { // Control
+                } else if kc == 0x3B || kc == 0x3E {
+                    // Control
                     is_ctrl_kc = true;
                     (flags & kCGEventFlagMaskControl) == 0
-                } else if kc == 0x3A || kc == 0x3D { // Option
+                } else if kc == 0x3A || kc == 0x3D {
+                    // Option
                     is_alt_kc = true;
                     (flags & kCGEventFlagMaskAlternate) == 0
-                } else if kc == 0x37 || kc == 0x36 { // Command
+                } else if kc == 0x37 || kc == 0x36 {
+                    // Command
                     is_win_kc = true;
                     (flags & kCGEventFlagMaskCommand) == 0
                 } else {
@@ -472,7 +525,7 @@ extern "C" fn tap_callback(
         }
 
         let sc_mapped = sc;
-        
+
         let current_shortcut = {
             let mut val = vk as u64;
             if (flags & kCGEventFlagMaskControl) != 0 {
@@ -512,7 +565,7 @@ extern "C" fn tap_callback(
         if !ENGINE_ENABLED.load(Ordering::Relaxed) && !is_any_shortcut {
             return event;
         }
-        
+
         if is_any_shortcut {
             let hook_event = HookEvent {
                 sc: sc_mapped,
@@ -552,10 +605,10 @@ extern "C" fn tap_callback(
         match HOOK_QUEUE.0.try_send(hook_event) {
             Ok(()) => {
                 std::ptr::null_mut() // Block original event
-            },
+            }
             Err(_) => {
                 event // Pass through if queue full
-            },
+            }
         }
     }));
 
@@ -568,13 +621,17 @@ extern "C" fn tap_callback(
 pub fn install_hook() -> anyhow::Result<()> {
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/kikyo_panic.log") {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/kikyo_panic.log")
+        {
             let backtrace = std::backtrace::Backtrace::force_capture();
             let _ = writeln!(f, "Panic occurred: {:?}\nBacktrace:\n{}", info, backtrace);
         }
     }));
     refresh_runtime_flags_from_engine();
-    
+
     // Spawn worker thread
     let rx = HOOK_QUEUE.1.clone();
     thread::spawn(move || {
@@ -602,11 +659,11 @@ pub fn install_hook() -> anyhow::Result<()> {
                 engine.process_key(ev.sc, ev.ext, ev.up, ev.shift)
             };
             drop(engine);
-            
+
             if refresh_flags {
                 refresh_runtime_flags_from_engine();
             }
-            
+
             let mut injected_flags: u64 = 0;
 
             match action {
@@ -627,14 +684,24 @@ pub fn install_hook() -> anyhow::Result<()> {
                                     }
                                 }
                                 let _ = inject_scancode_with_flags(sc, ext, up, injected_flags);
-                            },
+                            }
                             InputEvent::Unicode(c, up) => {
                                 let _ = inject_unicode_with_flags(c, up, injected_flags);
-                            },
+                            }
                             InputEvent::CommitImeComposition => {
                                 if crate::ime::is_composition_active() {
-                                    let _ = inject_scancode_with_flags(0x1C, false, false, injected_flags);
-                                    let _ = inject_scancode_with_flags(0x1C, false, true, injected_flags);
+                                    let _ = inject_scancode_with_flags(
+                                        0x1C,
+                                        false,
+                                        false,
+                                        injected_flags,
+                                    );
+                                    let _ = inject_scancode_with_flags(
+                                        0x1C,
+                                        false,
+                                        true,
+                                        injected_flags,
+                                    );
                                     thread::sleep(Duration::from_millis(1));
                                 }
                             }
@@ -691,7 +758,8 @@ pub fn uninstall_hook() {
 
 pub fn run_event_loop() {
     unsafe {
-        let events_of_interest = (1u64 << kCGEventKeyDown) | (1u64 << kCGEventKeyUp) | (1u64 << kCGEventFlagsChanged);
+        let events_of_interest =
+            (1u64 << kCGEventKeyDown) | (1u64 << kCGEventKeyUp) | (1u64 << kCGEventFlagsChanged);
         let tap = CGEventTapCreate(
             kCGSessionEventTap,
             kCGHeadInsertEventTap,
@@ -709,20 +777,29 @@ pub fn run_event_loop() {
         *TAP_PORT.lock() = Some(TapPortPtr(tap));
 
         let dlsym_handle = libc::dlopen(
-            std::ffi::CStr::from_bytes_with_nul(b"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation\0").unwrap().as_ptr(),
-            libc::RTLD_LAZY
+            std::ffi::CStr::from_bytes_with_nul(
+                b"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation\0",
+            )
+            .unwrap()
+            .as_ptr(),
+            libc::RTLD_LAZY,
         );
-        let k_cf_rl_modes_ptr = libc::dlsym(dlsym_handle, std::ffi::CStr::from_bytes_with_nul(b"kCFRunLoopCommonModes\0").unwrap().as_ptr());
+        let k_cf_rl_modes_ptr = libc::dlsym(
+            dlsym_handle,
+            std::ffi::CStr::from_bytes_with_nul(b"kCFRunLoopCommonModes\0")
+                .unwrap()
+                .as_ptr(),
+        );
         let common_modes = *(k_cf_rl_modes_ptr as *mut *mut c_void);
 
         let run_loop_source = CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0);
         let run_loop = CFRunLoopGetCurrent();
-        
+
         *RUN_LOOP_PTR.lock() = Some(RunLoopPtr(run_loop));
-        
+
         CFRunLoopAddSource(run_loop, run_loop_source, common_modes);
         CGEventTapEnable(tap, true);
-        
+
         info!("MacOS Event Loop started.");
         CFRunLoopRun();
     }
@@ -800,39 +877,81 @@ pub fn request_accessibility_permission() -> bool {
     unsafe {
         // Prepare dictionary: { kAXTrustedCheckOptionPrompt: kCFBooleanTrue }
         let handle = libc::dlopen(
-            std::ffi::CStr::from_bytes_with_nul(b"/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices\0").unwrap().as_ptr(),
-            libc::RTLD_LAZY
+            std::ffi::CStr::from_bytes_with_nul(
+                b"/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices\0",
+            )
+            .unwrap()
+            .as_ptr(),
+            libc::RTLD_LAZY,
         );
-        let prompt_key_ptr = libc::dlsym(handle, std::ffi::CStr::from_bytes_with_nul(b"kAXTrustedCheckOptionPrompt\0").unwrap().as_ptr());
-        
+        let prompt_key_ptr = libc::dlsym(
+            handle,
+            std::ffi::CStr::from_bytes_with_nul(b"kAXTrustedCheckOptionPrompt\0")
+                .unwrap()
+                .as_ptr(),
+        );
+
         if prompt_key_ptr.is_null() {
             return AXIsProcessTrusted();
         }
-        
+
         let prompt_key = *(prompt_key_ptr as *mut *mut std::ffi::c_void);
-        
+
         let cf_handle = libc::dlopen(
-            std::ffi::CStr::from_bytes_with_nul(b"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation\0").unwrap().as_ptr(),
-            libc::RTLD_LAZY
+            std::ffi::CStr::from_bytes_with_nul(
+                b"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation\0",
+            )
+            .unwrap()
+            .as_ptr(),
+            libc::RTLD_LAZY,
         );
-        let true_ptr = libc::dlsym(cf_handle, std::ffi::CStr::from_bytes_with_nul(b"kCFBooleanTrue\0").unwrap().as_ptr());
+        let true_ptr = libc::dlsym(
+            cf_handle,
+            std::ffi::CStr::from_bytes_with_nul(b"kCFBooleanTrue\0")
+                .unwrap()
+                .as_ptr(),
+        );
         let true_val = *(true_ptr as *mut *mut std::ffi::c_void);
 
-        type CFDictionaryCreateFn = extern "C" fn(*mut std::ffi::c_void, *const *mut std::ffi::c_void, *const *mut std::ffi::c_void, isize, *const std::ffi::c_void, *const std::ffi::c_void) -> *mut std::ffi::c_void;
-        let dict_create_ptr = libc::dlsym(cf_handle, std::ffi::CStr::from_bytes_with_nul(b"CFDictionaryCreate\0").unwrap().as_ptr());
+        type CFDictionaryCreateFn = extern "C" fn(
+            *mut std::ffi::c_void,
+            *const *mut std::ffi::c_void,
+            *const *mut std::ffi::c_void,
+            isize,
+            *const std::ffi::c_void,
+            *const std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+        let dict_create_ptr = libc::dlsym(
+            cf_handle,
+            std::ffi::CStr::from_bytes_with_nul(b"CFDictionaryCreate\0")
+                .unwrap()
+                .as_ptr(),
+        );
         let dict_create: CFDictionaryCreateFn = std::mem::transmute(dict_create_ptr);
 
         let keys = [prompt_key];
         let values = [true_val];
-        let options = dict_create(std::ptr::null_mut(), keys.as_ptr(), values.as_ptr(), 1, std::ptr::null(), std::ptr::null());
+        let options = dict_create(
+            std::ptr::null_mut(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
 
         let res = AXIsProcessTrustedWithOptions(options);
-        
+
         type CFReleaseFn = extern "C" fn(*mut std::ffi::c_void);
-        let release_ptr = libc::dlsym(cf_handle, std::ffi::CStr::from_bytes_with_nul(b"CFRelease\0").unwrap().as_ptr());
+        let release_ptr = libc::dlsym(
+            cf_handle,
+            std::ffi::CStr::from_bytes_with_nul(b"CFRelease\0")
+                .unwrap()
+                .as_ptr(),
+        );
         let release: CFReleaseFn = std::mem::transmute(release_ptr);
         release(options);
-        
+
         res
     }
 }
@@ -851,11 +970,33 @@ pub fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
     match vk {
         65..=90 => {
             let sc = match vk - 65 {
-                0 => 0x1E, 1 => 0x30, 2 => 0x2E, 3 => 0x20, 4 => 0x12, 5 => 0x21,
-                6 => 0x22, 7 => 0x23, 8 => 0x17, 9 => 0x24, 10 => 0x25, 11 => 0x26,
-                12 => 0x32, 13 => 0x31, 14 => 0x18, 15 => 0x19, 16 => 0x10, 17 => 0x13,
-                18 => 0x1F, 19 => 0x14, 20 => 0x16, 21 => 0x2F, 22 => 0x11, 23 => 0x2D,
-                24 => 0x15, 25 => 0x2C, _ => return None,
+                0 => 0x1E,
+                1 => 0x30,
+                2 => 0x2E,
+                3 => 0x20,
+                4 => 0x12,
+                5 => 0x21,
+                6 => 0x22,
+                7 => 0x23,
+                8 => 0x17,
+                9 => 0x24,
+                10 => 0x25,
+                11 => 0x26,
+                12 => 0x32,
+                13 => 0x31,
+                14 => 0x18,
+                15 => 0x19,
+                16 => 0x10,
+                17 => 0x13,
+                18 => 0x1F,
+                19 => 0x14,
+                20 => 0x16,
+                21 => 0x2F,
+                22 => 0x11,
+                23 => 0x2D,
+                24 => 0x15,
+                25 => 0x2C,
+                _ => return None,
             };
             Some((sc, false))
         }

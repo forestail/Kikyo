@@ -14,11 +14,13 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::WindowEvent;
+use tauri_plugin_autostart::ManagerExt as _;
 
 static ENTRY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 const TRAY_LAYOUT_ITEM_ID_PREFIX: &str = "layout_entry::";
 const DUPLICATE_LAYOUT_PATH_MESSAGE: &str = "\u{3059}\u{3067}\u{306b}\u{767b}\u{9332}\u{3055}\u{308c}\u{3066}\u{3044}\u{308b}\u{5b9a}\u{7fa9}\u{30d5}\u{30a1}\u{30a4}\u{30eb}\u{3067}\u{3059}";
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const AUTOSTART_PREFERENCE_FILE_NAME: &str = "autostart.pref";
 
 fn tray_layout_item_menu_id(entry_id: &str) -> String {
     format!("{TRAY_LAYOUT_ITEM_ID_PREFIX}{entry_id}")
@@ -65,6 +67,8 @@ struct Settings {
     profile: Option<Profile>,
     #[serde(default = "default_enabled")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    autostart_enabled: Option<bool>,
     #[serde(default = "default_keyboard_type")]
     pub keyboard_type: String,
 }
@@ -85,6 +89,7 @@ impl Default for Settings {
             active_layout_id: None,
             profile: None,
             enabled: true,
+            autostart_enabled: None,
             keyboard_type: "JIS106".to_string(),
         }
     }
@@ -385,6 +390,23 @@ fn get_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|err| err.to_string())
 }
 
+fn get_settings_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let settings_path = get_settings_path(app)?;
+    settings_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            format!(
+                "Failed to resolve settings directory from path: {}",
+                settings_path.display()
+            )
+        })
+}
+
+fn get_autostart_preference_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    get_settings_dir(app).map(|dir| dir.join(AUTOSTART_PREFERENCE_FILE_NAME))
+}
+
 fn load_settings_from_path(path: &Path) -> Option<Settings> {
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
@@ -423,6 +445,85 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
     load_settings_from_path(&path).unwrap_or_default()
 }
 
+fn load_autostart_preference_from_path(path: &Path) -> Option<bool> {
+    let content = fs::read_to_string(path).ok()?;
+    match content.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn load_autostart_preference(app: &tauri::AppHandle) -> Option<bool> {
+    let path = get_autostart_preference_path(app).ok()?;
+    load_autostart_preference_from_path(&path)
+}
+
+fn write_autostart_preference_to_path(path: &Path, enabled: bool) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create autostart preference directory ({}): {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+
+    fs::write(path, if enabled { "1" } else { "0" }).map_err(|err| {
+        format!(
+            "Failed to write autostart preference file ({}): {}",
+            path.display(),
+            err
+        )
+    })
+}
+
+fn persist_autostart_preference(app: &tauri::AppHandle, enabled: bool) -> bool {
+    let path = match get_autostart_preference_path(app) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::error!("Failed to resolve autostart preference path: {}", err);
+            return false;
+        }
+    };
+
+    if let Err(err) = write_autostart_preference_to_path(&path, enabled) {
+        tracing::error!("{}", err);
+        return false;
+    }
+
+    true
+}
+
+fn sync_autostart_preference_artifacts(app: &tauri::AppHandle, settings: &Settings) {
+    if let Some(enabled) = settings.autostart_enabled {
+        let _ = persist_autostart_preference(app, enabled);
+    }
+}
+
+fn current_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|err| err.to_string())
+}
+
+fn desired_autostart_enabled(settings: &Settings) -> bool {
+    settings.autostart_enabled.unwrap_or(false)
+}
+
+fn infer_autostart_preference(app: &tauri::AppHandle) -> bool {
+    if let Some(enabled) = load_autostart_preference(app) {
+        return enabled;
+    }
+
+    match current_autostart_enabled(app) {
+        Ok(enabled) => enabled,
+        Err(err) => {
+            tracing::warn!("Failed to infer current autostart state: {}", err);
+            false
+        }
+    }
+}
+
 fn write_settings_to_path(path: &Path, settings: &Settings) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
@@ -448,7 +549,16 @@ fn write_settings_to_path(path: &Path, settings: &Settings) -> Result<(), String
 
 fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
     let mut settings = load_settings(app);
-    let migrated = migrate_settings(&mut settings);
+    let mut migrated = false;
+
+    if settings.autostart_enabled.is_none() {
+        settings.autostart_enabled = Some(infer_autostart_preference(app));
+        migrated = true;
+    }
+
+    if migrate_settings(&mut settings) {
+        migrated = true;
+    }
     let needs_initial_write = match get_settings_path(app) {
         Ok(path) => !path.exists(),
         Err(err) => {
@@ -460,6 +570,7 @@ fn load_settings_with_migration(app: &tauri::AppHandle) -> Settings {
     if migrated || needs_initial_write {
         let _ = save_settings(app, &settings);
     }
+    sync_autostart_preference_artifacts(app, &settings);
     settings
 }
 
@@ -477,7 +588,34 @@ fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> bool {
         return false;
     }
 
+    sync_autostart_preference_artifacts(app, settings);
     true
+}
+
+fn apply_autostart_state(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|err| err.to_string())
+    } else {
+        match autolaunch.is_enabled() {
+            Ok(true) => autolaunch.disable().map_err(|err| err.to_string()),
+            Ok(false) => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+}
+
+fn sync_autostart_registration_with_settings(
+    app: &tauri::AppHandle,
+    settings: &Settings,
+) -> Result<bool, String> {
+    apply_autostart_state(app, desired_autostart_enabled(settings))?;
+    current_autostart_enabled(app)
+}
+
+fn sync_autostart_registration(app: &tauri::AppHandle) -> Result<bool, String> {
+    let settings = load_settings_with_migration(app);
+    sync_autostart_registration_with_settings(app, &settings)
 }
 
 fn sanitize_profile_for_save(mut profile: Profile) -> Profile {
@@ -947,6 +1085,29 @@ fn activate_layout_entry(
     activate_layout_entry_by_id(&app, &state, id.as_str())
 }
 
+#[tauri::command]
+fn get_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    sync_autostart_registration(&app)
+}
+
+#[tauri::command]
+fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let previous_actual = current_autostart_enabled(&app)?;
+    let mut settings = load_settings_with_migration(&app);
+    let previous_preference = settings.autostart_enabled;
+
+    apply_autostart_state(&app, enabled)?;
+
+    settings.autostart_enabled = Some(enabled);
+    if !save_settings(&app, &settings) {
+        let _ = apply_autostart_state(&app, previous_actual);
+        settings.autostart_enabled = previous_preference;
+        return Err("Failed to save autostart preference".to_string());
+    }
+
+    current_autostart_enabled(&app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_layout_path_for_compare, settings_path_in_current_exe_dir, Settings};
@@ -960,6 +1121,7 @@ mod tests {
     fn settings_deserialize_without_enabled_defaults_to_true() {
         let parsed: Settings = serde_json::from_str("{}").expect("settings json");
         assert!(parsed.enabled);
+        assert_eq!(parsed.autostart_enabled, None);
     }
 
     #[test]
@@ -980,6 +1142,17 @@ mod tests {
             Some("layout.yab")
         );
         assert!(value.get("last_yab_path").is_none());
+    }
+
+    #[test]
+    fn settings_serialize_uses_autostart_enabled_key() {
+        let mut settings = Settings::default();
+        settings.autostart_enabled = Some(true);
+        let value = serde_json::to_value(settings).expect("serialize settings");
+        assert_eq!(
+            value.get("autostart_enabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1057,6 +1230,8 @@ pub fn run() {
             get_keyboard_types,
             get_keyboard_type,
             set_keyboard_type,
+            get_autostart_enabled,
+            set_autostart_enabled,
             show_main_window,
             check_accessibility_permission,
             request_accessibility_permission,
@@ -1148,6 +1323,9 @@ pub fn run() {
 
             // Load settings (profile first, then layout)
             let settings = load_settings_with_migration(app.handle());
+            if let Err(err) = sync_autostart_registration_with_settings(app.handle(), &settings) {
+                tracing::error!("Failed to sync autostart registration: {}", err);
+            }
             ENGINE.lock().set_enabled(settings.enabled);
             keyboard_hook::refresh_runtime_flags_from_engine();
             if let Some(profile) = settings.profile.as_ref() {

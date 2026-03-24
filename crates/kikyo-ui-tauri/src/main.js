@@ -1150,24 +1150,22 @@ async function initAutoLaunch() {
   if (!autoLaunchCb) return;
 
   try {
-    const cur = await invoke('plugin:autostart|is_enabled');
+    const cur = await invoke("get_autostart_enabled");
     autoLaunchCb.checked = cur;
   } catch (e) {
     console.error("Autostart check failed:", e);
   }
 
   autoLaunchCb.addEventListener("change", async () => {
+    const next = autoLaunchCb.checked;
     try {
-      if (autoLaunchCb.checked) {
-        await invoke('plugin:autostart|enable');
-      } else {
-        await invoke('plugin:autostart|disable');
-      }
+      const actual = await invoke("set_autostart_enabled", { enabled: next });
+      autoLaunchCb.checked = actual;
     } catch (e) {
       console.error("Autostart toggle failed:", e);
       statusMsg.innerText = "自動起動の切り替えに失敗しました: " + e;
       // Revert
-      autoLaunchCb.checked = !autoLaunchCb.checked;
+      autoLaunchCb.checked = !next;
     }
   });
 }

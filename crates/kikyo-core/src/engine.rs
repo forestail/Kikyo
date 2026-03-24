@@ -3577,8 +3577,14 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         engine.set_ignore_ime(true);
         engine.load_layout(layout);
 
-        assert_eq!(engine.process_key(0x13, false, false, false), KeyAction::Block);
-        assert_eq!(engine.process_key(0x1C, false, false, false), KeyAction::Block);
+        assert_eq!(
+            engine.process_key(0x13, false, false, false),
+            KeyAction::Block
+        );
+        assert_eq!(
+            engine.process_key(0x1C, false, false, false),
+            KeyAction::Block
+        );
 
         let res = engine.process_key(0x13, false, true, false);
         assert_eq!(

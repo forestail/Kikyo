@@ -6,7 +6,10 @@ extern "C" {
     pub static kTISPropertyInputSourceID: *mut c_void;
     pub static kTISPropertyInputSourceType: *mut c_void;
     fn TISCopyCurrentKeyboardInputSource() -> *mut c_void;
-    fn TISGetInputSourceProperty(input_source: *mut c_void, property_key: *mut c_void) -> *mut c_void;
+    fn TISGetInputSourceProperty(
+        input_source: *mut c_void,
+        property_key: *mut c_void,
+    ) -> *mut c_void;
     fn TISSelectInputSource(input_source: *mut c_void) -> i32;
     fn TISCreateInputSourceList(properties: *mut c_void, include_all: bool) -> *mut c_void;
 }
@@ -14,7 +17,12 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFStringGetCStringPtr(string: *mut c_void, encoding: u32) -> *const i8;
-    fn CFStringGetCString(theString: *mut c_void, buffer: *mut i8, bufferSize: isize, encoding: u32) -> bool;
+    fn CFStringGetCString(
+        theString: *mut c_void,
+        buffer: *mut i8,
+        bufferSize: isize,
+        encoding: u32,
+    ) -> bool;
     fn CFRelease(cf: *mut c_void);
     fn CFArrayGetCount(array: *mut c_void) -> isize;
     fn CFArrayGetValueAtIndex(array: *mut c_void, idx: isize) -> *mut c_void;
@@ -46,7 +54,12 @@ fn cfstring_to_string(cf_str: *mut c_void) -> Option<String> {
             return Some(cstr.to_string_lossy().into_owned());
         } else {
             let mut buf = vec![0u8; 256];
-            if CFStringGetCString(cf_str, buf.as_mut_ptr() as *mut i8, buf.len() as isize, 0x08000100) {
+            if CFStringGetCString(
+                cf_str,
+                buf.as_mut_ptr() as *mut i8,
+                buf.len() as isize,
+                0x08000100,
+            ) {
                 if let Ok(c_str) = std::ffi::CStr::from_ptr(buf.as_ptr() as *const i8).to_str() {
                     return Some(c_str.to_string());
                 }
@@ -67,7 +80,7 @@ fn get_current_input_source_id() -> Option<String> {
         let val = TISGetInputSourceProperty(source, id_key);
         let result = cfstring_to_string(val);
         CFRelease(source);
-        
+
         result
     }
 }
@@ -150,4 +163,3 @@ pub fn set_force_ime_status(open: bool) {
         );
     }
 }
-
