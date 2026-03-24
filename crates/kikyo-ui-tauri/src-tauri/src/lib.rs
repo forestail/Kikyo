@@ -120,9 +120,9 @@ fn normalize_layout_path_for_compare(path: &str) -> String {
 }
 
 #[tauri::command]
-fn show_main_window(app_handle: tauri::AppHandle, window: tauri::Window) {
+fn show_main_window(_app_handle: tauri::AppHandle, window: tauri::Window) {
     #[cfg(target_os = "macos")]
-    let _ = app_handle.set_dock_visibility(true);
+    let _ = _app_handle.set_dock_visibility(true);
 
     let _ = window.show();
     let _ = window.set_focus();
@@ -1021,7 +1021,7 @@ fn restart_app() {
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1187,13 +1187,13 @@ pub fn run() {
                 let _ = window.hide();
 
                 let window_clone = window.clone();
-                let app_handle_clone = app.handle().clone();
+                let _app_handle_clone = app.handle().clone();
                 window.on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         let _ = window_clone.hide();
                         #[cfg(target_os = "macos")]
-                        let _ = app_handle_clone.set_dock_visibility(false);
+                        let _ = _app_handle_clone.set_dock_visibility(false);
                     }
                     _ => {}
                 });
@@ -1240,6 +1240,14 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, event| {
+        #[cfg(target_os = "windows")]
+        if let tauri::RunEvent::Resumed = event {
+            tracing::info!("Application resumed; requesting Windows hook recovery");
+            keyboard_hook::recover_from_system_resume();
+        }
+    });
 }

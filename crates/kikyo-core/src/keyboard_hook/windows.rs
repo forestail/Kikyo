@@ -63,6 +63,7 @@ static HOOK_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static LAST_HOOK_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_MOUSE_HOOK_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_REINSTALL_MS: AtomicU64 = AtomicU64::new(0);
 static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LCTRL_PHYSICAL_DOWN: AtomicBool = AtomicBool::new(false);
@@ -122,14 +123,14 @@ fn encode_shortcut(s: &Option<crate::types::ShortcutKey>) -> u64 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CapturedShiftSideState {
     physical_down: bool,
     os_down_sent: bool,
     used_for_layout_output: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CapturedShiftState {
     left: CapturedShiftSideState,
     right: CapturedShiftSideState,
@@ -267,6 +268,17 @@ fn clear_captured_shift_state() {
     *state = CapturedShiftState::default();
 }
 
+fn reset_transient_input_state() {
+    LCTRL_PHYSICAL_DOWN.store(false, Ordering::Relaxed);
+    RCTRL_PHYSICAL_DOWN.store(false, Ordering::Relaxed);
+    clear_captured_shift_state();
+}
+
+fn clear_hook_activity_timestamps() {
+    LAST_HOOK_MS.store(0, Ordering::Relaxed);
+    LAST_MOUSE_HOOK_MS.store(0, Ordering::Relaxed);
+}
+
 fn ensure_worker_thread() {
     if HOOK_WORKER_STARTED.swap(true, Ordering::AcqRel) {
         return;
@@ -317,7 +329,7 @@ pub fn refresh_runtime_flags_from_engine() {
         RIGHT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
         LEFT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
         RIGHT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
-        clear_captured_shift_state();
+        reset_transient_input_state();
         return;
     }
 
@@ -349,6 +361,8 @@ pub fn install_hook() -> anyhow::Result<()> {
 
     // Avoid leaking an old handle if this is a reinstall request.
     uninstall_hook();
+    reset_transient_input_state();
+    clear_hook_activity_timestamps();
 
     // Low-level hooks require hMod to be NULL if threadId is 0.
     // However, Rust/Windows crates handle Option<HINSTANCE> -> 0.
@@ -388,6 +402,22 @@ pub fn uninstall_hook() {
         info!("Mouse hook uninstalled.");
     }
     *mouse_handle = None;
+
+    reset_transient_input_state();
+    clear_hook_activity_timestamps();
+}
+
+pub fn recover_from_system_resume() {
+    let now = monotonic_ms();
+    reset_transient_input_state();
+    clear_hook_activity_timestamps();
+
+    if request_reinstall() {
+        LAST_REINSTALL_MS.store(now, Ordering::Relaxed);
+        info!("Requested hook reinstall after system resume.");
+    } else {
+        warn!("System resume detected before hook thread was ready; transient state reset only.");
+    }
 }
 
 /// Runs a blocking message loop.
@@ -929,6 +959,38 @@ fn last_input_age_ms() -> Option<u64> {
     Some(age_ms)
 }
 
+fn should_request_reinstall(
+    now: u64,
+    last_keyboard_hook: u64,
+    last_mouse_hook: u64,
+    input_age: u64,
+    last_reinstall: u64,
+) -> bool {
+    if last_keyboard_hook == 0 {
+        return false;
+    }
+
+    let since_keyboard = now.saturating_sub(last_keyboard_hook);
+    if since_keyboard < HOOK_STALL_MS {
+        return false;
+    }
+
+    if input_age > INPUT_RECENT_MS {
+        return false;
+    }
+
+    if now.saturating_sub(last_reinstall) < REINSTALL_BACKOFF_MS {
+        return false;
+    }
+
+    // Mouse-only activity should not look like a stalled keyboard hook.
+    if last_mouse_hook != 0 && now.saturating_sub(last_mouse_hook) < INPUT_RECENT_MS {
+        return false;
+    }
+
+    true
+}
+
 fn watchdog_loop() {
     loop {
         thread::sleep(Duration::from_millis(WATCHDOG_INTERVAL_MS));
@@ -938,16 +1000,9 @@ fn watchdog_loop() {
             continue;
         }
 
-        let last_hook = LAST_HOOK_MS.load(Ordering::Relaxed);
-        if last_hook == 0 {
-            continue;
-        }
-
         let now = monotonic_ms();
-        let since_hook = now.saturating_sub(last_hook);
-        if since_hook < HOOK_STALL_MS {
-            continue;
-        }
+        let last_hook = LAST_HOOK_MS.load(Ordering::Relaxed);
+        let last_mouse_hook = LAST_MOUSE_HOOK_MS.load(Ordering::Relaxed);
 
         let input_age = match last_input_age_ms() {
             Some(age) => age,
@@ -957,20 +1012,18 @@ fn watchdog_loop() {
             }
         };
 
-        if input_age > INPUT_RECENT_MS {
-            continue;
-        }
-
         let last_reinstall = LAST_REINSTALL_MS.load(Ordering::Relaxed);
-        if now.saturating_sub(last_reinstall) < REINSTALL_BACKOFF_MS {
+        if !should_request_reinstall(now, last_hook, last_mouse_hook, input_age, last_reinstall) {
             continue;
         }
 
         if request_reinstall() {
             LAST_REINSTALL_MS.store(now, Ordering::Relaxed);
             warn!(
-                "Hook watchdog requested reinstall: last_hook={}ms ago, last_input={}ms ago",
-                since_hook, input_age
+                "Hook watchdog requested reinstall: last_keyboard_hook={}ms ago, last_mouse_hook={}ms ago, last_input={}ms ago",
+                now.saturating_sub(last_hook),
+                now.saturating_sub(last_mouse_hook),
+                input_age
             );
         }
     }
@@ -1093,6 +1146,8 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
+        LAST_MOUSE_HOOK_MS.store(monotonic_ms(), Ordering::Relaxed);
+
         if is_mouse_event {
             let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
             if engine_enabled {
@@ -1156,5 +1211,66 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             error!("Panic in mouse_hook_proc; falling back to CallNextHookEx");
             CallNextHookEx(None, code, wparam, lparam)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_transient_input_state_clears_modifier_latches() {
+        LCTRL_PHYSICAL_DOWN.store(true, Ordering::Relaxed);
+        RCTRL_PHYSICAL_DOWN.store(true, Ordering::Relaxed);
+
+        {
+            let mut state = lock_captured_shift_state();
+            state.left.physical_down = true;
+            state.left.os_down_sent = true;
+            state.right.physical_down = true;
+            state.right.used_for_layout_output = true;
+        }
+
+        reset_transient_input_state();
+
+        assert!(!LCTRL_PHYSICAL_DOWN.load(Ordering::Relaxed));
+        assert!(!RCTRL_PHYSICAL_DOWN.load(Ordering::Relaxed));
+
+        let state = lock_captured_shift_state();
+        assert_eq!(*state, CapturedShiftState::default());
+    }
+
+    #[test]
+    fn watchdog_skips_mouse_only_activity() {
+        let now = 10_000;
+        let last_keyboard_hook = now - (HOOK_STALL_MS + 100);
+        let last_mouse_hook = now - 100;
+        let input_age = 100;
+        let last_reinstall = 0;
+
+        assert!(!should_request_reinstall(
+            now,
+            last_keyboard_hook,
+            last_mouse_hook,
+            input_age,
+            last_reinstall
+        ));
+    }
+
+    #[test]
+    fn watchdog_requests_reinstall_when_both_hooks_are_stale() {
+        let now = 10_000;
+        let last_keyboard_hook = now - (HOOK_STALL_MS + 100);
+        let last_mouse_hook = now - (INPUT_RECENT_MS + 100);
+        let input_age = 100;
+        let last_reinstall = 0;
+
+        assert!(should_request_reinstall(
+            now,
+            last_keyboard_hook,
+            last_mouse_hook,
+            input_age,
+            last_reinstall
+        ));
     }
 }
