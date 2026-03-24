@@ -554,7 +554,7 @@ impl Engine {
             return emit_pseudo_function_key(pseudo, up);
         }
 
-        self.recover_stale_deferred_enter_rollover();
+        self.recover_stale_deferred_enter_rollover(key, up);
 
         if let Some(action) =
             self.handle_deferred_enter_event(source_key, key, pass_through_current, up)
@@ -1007,12 +1007,18 @@ impl Engine {
             .map(|(k, _)| k)
     }
 
-    fn recover_stale_deferred_enter_rollover(&mut self) {
+    fn recover_stale_deferred_enter_rollover(&mut self, current_key: ScKey, up: bool) {
         let Some(deferred) = self.deferred_enter_rollover else {
             return;
         };
 
         if deferred.down_emitted {
+            return;
+        }
+
+        // The waited key's own KeyUp is the normal release path for the deferred Enter.
+        // Recovering here would purge the pending tap before it can resolve.
+        if deferred.wait_for == current_key && up {
             return;
         }
 
@@ -3506,6 +3512,88 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             res,
             KeyAction::Pass,
             "Enter key (0x1C) should pass immediately (Up)"
+        );
+    }
+
+    #[test]
+    fn test_wait_key_up_skips_deferred_enter_recovery() {
+        let config = "
+[ローマ字シフト無し]
+dummy
+dummy
+a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let wait_key = ScKey::new(0x13, false);
+        let now = Instant::now();
+        engine.chord_engine.state.pressed.insert(wait_key);
+        engine.chord_engine.state.down_ts.insert(wait_key, now);
+        engine.chord_engine.state.pending.push(PendingKey {
+            key: wait_key,
+            t_down: now,
+            t_up: None,
+            used: false,
+        });
+        engine.deferred_enter_rollover = Some(DeferredEnterRollover {
+            source_key: ScKey::new(0x1C, false),
+            pass_through: PassThroughCurrent::Original,
+            wait_for: wait_key,
+            down_emitted: false,
+            up_seen_while_waiting: false,
+            started_at: Instant::now(),
+        });
+
+        engine.recover_stale_deferred_enter_rollover(wait_key, true);
+
+        assert!(engine.deferred_enter_rollover.is_some());
+        assert!(engine.chord_engine.state.pressed.contains(&wait_key));
+        assert!(engine
+            .chord_engine
+            .state
+            .pending
+            .iter()
+            .any(|pending| pending.key == wait_key));
+    }
+
+    #[test]
+    fn test_enter_rollover_preserves_preceding_mapped_tap() {
+        let config = "
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,x,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert_eq!(engine.process_key(0x13, false, false, false), KeyAction::Block);
+        assert_eq!(engine.process_key(0x1C, false, false, false), KeyAction::Block);
+
+        let res = engine.process_key(0x13, false, true, false);
+        assert_eq!(
+            res,
+            KeyAction::Inject(vec![
+                InputEvent::Scancode(0x2D, false, false),
+                InputEvent::Scancode(0x2D, false, true),
+                InputEvent::Scancode(0x1C, false, false),
+            ])
+        );
+
+        let res = engine.process_key(0x1C, false, true, false);
+        assert_eq!(
+            res,
+            KeyAction::Inject(vec![InputEvent::Scancode(0x1C, false, true)])
         );
     }
 
