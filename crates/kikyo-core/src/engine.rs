@@ -1,3 +1,4 @@
+use crate::analytics::AnalyticsCollector;
 use crate::chord_engine::{
     ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile, ThumbShiftSinglePress,
     EXTENDED_KEY_1_SC, EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
@@ -121,6 +122,7 @@ pub struct Engine {
     function_key_swaps: HashMap<ScKey, FunctionKeySwapTarget>,
     deferred_enter_rollover: Option<DeferredEnterRollover>,
     pub keyboard_map: Arc<KeyboardMap>,
+    pub analytics: AnalyticsCollector,
 }
 
 impl Default for Engine {
@@ -140,6 +142,7 @@ impl Default for Engine {
             function_key_swaps: HashMap::new(),
             deferred_enter_rollover: None,
             keyboard_map: Arc::new(crate::keyboard_map::new_jis_106()),
+            analytics: AnalyticsCollector::new(),
         }
     }
 }
@@ -538,6 +541,17 @@ impl Engine {
             return KeyAction::Pass;
         }
 
+        // Analytics: record physical keystroke on key down (character keys only)
+        if !up {
+            let sc_key = ScKey::new(sc, false);
+            // Only count keys that are in the keyboard matrix (character keys).
+            // This excludes Space, Enter, Backspace, modifiers, etc.
+            if self.keyboard_map.sc_to_rc.contains_key(&sc_key) {
+                let key_name = self.keyboard_map.sc_to_key_name(sc).map(|s| s.to_string());
+                self.analytics.record_physical_keystroke(key_name.as_deref());
+            }
+        }
+
         // Check IME state
         let ime_mode = self.chord_engine.profile.ime_mode;
         let is_japanese = crate::ime::is_japanese_input_active(ime_mode);
@@ -918,6 +932,13 @@ impl Engine {
                 if let Some(ev) = passthrough_event(pass_through_current, source_key, up) {
                     inject_ops.push(ev);
                 }
+            }
+            // Analytics: record output virtual keys from injected events.
+            // Note: The chord engine often emits character output on key UP (e.g. KeyTap on release),
+            // so we must count on both down and up events.
+            {
+                let output_count = crate::analytics::count_output_virtual_keys(&inject_ops, &self.keyboard_map);
+                self.analytics.record_output_virtual_keys(output_count);
             }
             return KeyAction::Inject(inject_ops);
         }

@@ -16,6 +16,7 @@
       <li class="nav-item" data-target="section-thumb">親指シフト</li>
       <li class="nav-item" data-target="section-chord">文字キー同時打鍵シフト</li>
       <li class="nav-item" data-target="section-behavior">動作モード</li>
+      <li class="nav-item" data-target="section-analytics">分析</li>
       <li class="nav-item" data-target="section-about">桔梗について</li>
     </ul>
   </div>
@@ -323,6 +324,79 @@
           <div class="setting-control">
             <input type="text" id="switch-layout-shortcut" class="shortcut-input" placeholder="なし" readonly>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 分析セクション -->
+    <div id="section-analytics" class="settings-section">
+      <h2>分析</h2>
+
+      <div class="setting-item">
+        <div class="setting-label">集計機能</div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div class="setting-control">
+            <label class="toggle-switch">
+              <input type="checkbox" id="analytics-enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="setting-desc">オンにすると、キー入力の統計情報を収集します。パフォーマンスにわずかな影響を与える可能性があります。</div>
+      </div>
+
+      <div id="analytics-content" style="display: none;">
+        <div style="display: flex; gap: 12px; margin-top: 20px; margin-bottom: 16px; align-items: center;">
+          <div class="setting-label" style="margin-bottom: 0;">配列</div>
+          <select id="analytics-layout-filter" style="max-width: 180px;">
+            <option value="all">全配列</option>
+          </select>
+        </div>
+
+        <div class="setting-group" style="margin-top: 12px;">
+          <h3>効率化指標</h3>
+          <div class="setting-item">
+            <div class="setting-label">集計期間</div>
+            <div class="setting-control" id="analytics-period-display" style="font-size: 14px; color: #a1a1aa;">
+              -
+            </div>
+          </div>
+
+          <div id="analytics-efficiency-stats" class="analytics-stats-grid">
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-label">物理キー押下</div>
+              <div class="analytics-stat-value" id="stat-physical-keys">0</div>
+              <div class="analytics-stat-unit">回</div>
+            </div>
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-label">出力仮想キー</div>
+              <div class="analytics-stat-value" id="stat-output-chars">0</div>
+              <div class="analytics-stat-unit">キー</div>
+            </div>
+            <div class="analytics-stat-card analytics-stat-card-highlight">
+              <div class="analytics-stat-label">効率化率</div>
+              <div class="analytics-stat-value" id="stat-efficiency-ratio">—</div>
+              <div class="analytics-stat-unit" id="stat-efficiency-desc"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group" style="margin-top: 30px;">
+          <h3>ヒートマップ</h3>
+          <div id="analytics-heatmap-container" class="analytics-heatmap-container"></div>
+          <div class="analytics-heatmap-legend">
+            <span class="analytics-legend-label">少</span>
+            <div class="analytics-legend-gradient"></div>
+            <span class="analytics-legend-label">多</span>
+          </div>
+        </div>
+
+        <div class="setting-item" style="margin-top: 30px; border-top: 1px solid #3e3e42; padding-top: 20px;">
+          <div style="display: flex; gap: 12px; margin-bottom: 8px;">
+            <button id="analytics-export-btn" style="background-color: #274b5b; border: 1px solid #3b748a;">データをエクスポート</button>
+            <button id="analytics-clear-btn" style="background-color: #5b2727; border: 1px solid #8a3b3b;">データをクリア</button>
+          </div>
+          <div class="setting-desc">現在のすべての集計データをJSON形式で保存するか、完全に削除します。削除操作は取り消せません。</div>
         </div>
       </div>
     </div>
