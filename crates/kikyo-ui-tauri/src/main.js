@@ -1282,7 +1282,11 @@ async function initAnalytics() {
   // Clear button
   if (analyticsClearBtn) {
     analyticsClearBtn.addEventListener("click", async () => {
-      if (!window.confirm("すべての集計データを削除してもよいですか？")) return;
+      const confirmed = await window.__TAURI__.dialog.confirm("すべての集計データを削除してもよいですか？", {
+        title: "桔梗",
+        kind: "warning",
+      });
+      if (!confirmed) return;
       try {
         await invoke("clear_analytics_data");
         await refreshAnalytics();
