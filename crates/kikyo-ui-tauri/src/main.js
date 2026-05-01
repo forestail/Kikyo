@@ -2,6 +2,7 @@ import { mountAboutContributors } from "./components/aboutContributors.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const { save } = window.__TAURI__.dialog;
 let globalEnabledCb;
 let statusMsg;
 
@@ -1085,6 +1086,7 @@ window.addEventListener("DOMContentLoaded", () => {
   initVersion();
   initKeyboardTypes();
   initAccessibilityCheck();
+  initAnalytics();
 });
 
 async function initAccessibilityCheck() {
@@ -1196,5 +1198,318 @@ async function initKeyboardTypes() {
     });
   } catch (e) {
     console.error("Failed to initialize keyboard types:", e);
+  }
+}
+
+// --- Analytics ---
+
+let analyticsEnabledCb;
+let analyticsContentEl;
+let analyticsPeriodDisplay;
+let analyticsLayoutSel;
+let analyticsExportBtn;
+let analyticsClearBtn;
+let analyticsData = null;
+let analyticsKeyboardLayout = null;
+
+async function initAnalytics() {
+  analyticsEnabledCb = document.querySelector("#analytics-enabled");
+  analyticsContentEl = document.querySelector("#analytics-content");
+  analyticsPeriodDisplay = document.querySelector("#analytics-period-display");
+  analyticsLayoutSel = document.querySelector("#analytics-layout-filter");
+  analyticsExportBtn = document.querySelector("#analytics-export-btn");
+  analyticsClearBtn = document.querySelector("#analytics-clear-btn");
+
+  if (!analyticsEnabledCb) return;
+
+  // Load initial state
+  try {
+    const enabled = await invoke("get_analytics_enabled");
+    analyticsEnabledCb.checked = enabled;
+    toggleAnalyticsContent(enabled);
+    if (enabled) {
+      await refreshAnalytics();
+    }
+  } catch (e) {
+    console.error("Failed to init analytics:", e);
+  }
+
+  // Toggle handler
+  analyticsEnabledCb.addEventListener("change", async () => {
+    const enabled = analyticsEnabledCb.checked;
+    try {
+      await invoke("set_analytics_enabled", { enabled });
+      toggleAnalyticsContent(enabled);
+      if (enabled) {
+        await refreshAnalytics();
+      }
+    } catch (e) {
+      console.error("Failed to toggle analytics:", e);
+      analyticsEnabledCb.checked = !enabled;
+    }
+  });
+
+  // Period change handlers
+  if (analyticsLayoutSel) {
+    analyticsLayoutSel.addEventListener("change", () => {
+      updateEfficiencyDisplay();
+      renderHeatmap();
+    });
+  }
+
+  // Export button
+  if (analyticsExportBtn) {
+    analyticsExportBtn.addEventListener("click", async () => {
+      try {
+        const filePath = await save({
+          filters: [{
+            name: 'JSON',
+            extensions: ['json']
+          }],
+          defaultPath: 'analytics.json',
+        });
+        if (filePath) {
+          await invoke("export_analytics_data", { targetPath: filePath });
+          statusMsg.innerText = "データをエクスポートしました";
+        }
+      } catch (e) {
+        console.error("Failed to export analytics:", e);
+        statusMsg.innerText = "エクスポートに失敗しました: " + e;
+      }
+    });
+  }
+
+  // Clear button
+  if (analyticsClearBtn) {
+    analyticsClearBtn.addEventListener("click", async () => {
+      const confirmed = await window.__TAURI__.dialog.confirm("すべての集計データを削除してもよいですか？", {
+        title: "桔梗",
+        kind: "warning",
+      });
+      if (!confirmed) return;
+      try {
+        await invoke("clear_analytics_data");
+        await refreshAnalytics();
+        statusMsg.innerText = "集計データを削除しました";
+      } catch (e) {
+        console.error("Failed to clear analytics:", e);
+      }
+    });
+  }
+
+  // Refresh when section becomes visible
+  const analyticsNavItem = document.querySelector('[data-target="section-analytics"]');
+  if (analyticsNavItem) {
+    analyticsNavItem.addEventListener("click", async () => {
+      if (analyticsEnabledCb.checked) {
+        await refreshAnalytics();
+      }
+    });
+  }
+}
+
+function toggleAnalyticsContent(enabled) {
+  if (analyticsContentEl) {
+    analyticsContentEl.style.display = enabled ? "block" : "none";
+  }
+}
+
+async function refreshAnalytics() {
+  try {
+    analyticsData = await invoke("get_analytics_data");
+    analyticsKeyboardLayout = await invoke("get_keyboard_layout_for_heatmap");
+
+    // Populate layout names filter
+    const names = await invoke("get_layout_names_for_analytics");
+    if (analyticsLayoutSel) {
+      const currentVal = analyticsLayoutSel.value;
+      analyticsLayoutSel.innerHTML = '<option value="all">全配列</option>';
+      for (const name of names) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        analyticsLayoutSel.appendChild(opt);
+      }
+      // Restore selection if still valid
+      if (names.includes(currentVal)) {
+        analyticsLayoutSel.value = currentVal;
+      }
+    }
+
+    updateEfficiencyDisplay();
+    renderHeatmap();
+  } catch (e) {
+    console.error("Failed to refresh analytics:", e);
+  }
+}
+
+
+
+function updateEfficiencyDisplay() {
+  if (!analyticsData) return;
+
+  const layoutFilter = analyticsLayoutSel?.value || "all";
+  let records = analyticsData.records || [];
+  if (layoutFilter !== "all") {
+    records = records.filter(r => r.layout_name === layoutFilter);
+  }
+
+  let totalPhysical = 0;
+  let totalOutput = 0;
+  let minStart = null;
+  let maxUpdated = null;
+
+  for (const r of records) {
+    totalPhysical += r.physical_keystrokes || 0;
+    totalOutput += r.output_virtual_keys || 0;
+    if (r.start_date) {
+      if (!minStart || r.start_date < minStart) minStart = r.start_date;
+    }
+    if (r.last_updated_date) {
+      if (!maxUpdated || r.last_updated_date > maxUpdated) maxUpdated = r.last_updated_date;
+    }
+  }
+
+  if (analyticsPeriodDisplay) {
+    if (minStart && maxUpdated) {
+      if (minStart === maxUpdated) {
+        analyticsPeriodDisplay.textContent = minStart;
+      } else {
+        analyticsPeriodDisplay.textContent = `${minStart} 〜 ${maxUpdated}`;
+      }
+    } else {
+      analyticsPeriodDisplay.textContent = "データなし";
+    }
+  }
+
+  const physicalEl = document.querySelector("#stat-physical-keys");
+  const outputEl = document.querySelector("#stat-output-chars");
+  const ratioEl = document.querySelector("#stat-efficiency-ratio");
+  const descEl = document.querySelector("#stat-efficiency-desc");
+
+  if (physicalEl) physicalEl.textContent = totalPhysical.toLocaleString();
+  if (outputEl) outputEl.textContent = totalOutput.toLocaleString();
+
+  if (ratioEl) {
+    if (totalPhysical > 0) {
+      const ratio = totalOutput / totalPhysical;
+      ratioEl.textContent = ratio.toFixed(2) + "x";
+      if (descEl) {
+        descEl.textContent = `1キーあたり平均 ${ratio.toFixed(2)} 仮想キー`;
+      }
+    } else {
+      ratioEl.textContent = "—";
+      if (descEl) descEl.textContent = "データがありません";
+    }
+  }
+}
+
+function getHeatmapColor(ratio) {
+  // ratio: 0.0 (no usage) to 1.0 (max usage)
+  // Color stops: dark -> blue -> teal -> gold -> red
+  if (ratio <= 0) return "#2a2a2a";
+
+  const stops = [
+    { pos: 0.0, r: 42, g: 42, b: 42 },
+    { pos: 0.25, r: 26, g: 58, b: 92 },
+    { pos: 0.5, r: 14, g: 99, b: 156 },
+    { pos: 0.75, r: 212, g: 160, b: 23 },
+    { pos: 1.0, r: 198, g: 40, b: 40 },
+  ];
+
+  let i = 0;
+  while (i < stops.length - 1 && stops[i + 1].pos < ratio) i++;
+  if (i >= stops.length - 1) i = stops.length - 2;
+
+  const a = stops[i];
+  const b = stops[i + 1];
+  const t = (ratio - a.pos) / (b.pos - a.pos);
+
+  const r = Math.round(a.r + (b.r - a.r) * t);
+  const g = Math.round(a.g + (b.g - a.g) * t);
+  const bl = Math.round(a.b + (b.b - a.b) * t);
+
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
+function renderHeatmap() {
+  const container = document.querySelector("#analytics-heatmap-container");
+  if (!container || !analyticsKeyboardLayout) return;
+
+  // Get filtered records
+  const layoutFilter = analyticsLayoutSel?.value || "all";
+
+  let records = analyticsData?.records || [];
+  if (layoutFilter !== "all") {
+    records = records.filter(r => r.layout_name === layoutFilter);
+  }
+
+  // Aggregate key counts
+  const keyCounts = {};
+  let maxCount = 0;
+  for (const r of records) {
+    if (r.key_counts) {
+      for (const [key, count] of Object.entries(r.key_counts)) {
+        keyCounts[key] = (keyCounts[key] || 0) + count;
+        if (keyCounts[key] > maxCount) maxCount = keyCounts[key];
+      }
+    }
+  }
+
+  // Group keyboard layout by row
+  const rows = {};
+  for (const key of analyticsKeyboardLayout) {
+    if (!rows[key.row]) rows[key.row] = [];
+    rows[key.row].push(key);
+  }
+
+  // Sort rows and keys within each row by col
+  const sortedRowNums = Object.keys(rows).map(Number).sort((a, b) => a - b);
+
+  container.innerHTML = "";
+
+  for (const rowNum of sortedRowNums) {
+    const rowKeys = rows[rowNum].sort((a, b) => a.col - b.col);
+    const rowEl = document.createElement("div");
+    rowEl.className = "analytics-keyboard-row";
+
+    // Add row offset for realistic keyboard layout
+    const offsets = [0, 12, 16, 24];
+    const offset = offsets[rowNum] || 0;
+    if (offset > 0) {
+      rowEl.style.paddingLeft = offset + "px";
+    }
+
+    for (const key of rowKeys) {
+      const count = keyCounts[key.name] || 0;
+      const ratio = maxCount > 0 ? count / maxCount : 0;
+      const color = getHeatmapColor(ratio);
+
+      const keyEl = document.createElement("div");
+      keyEl.className = "analytics-key";
+      keyEl.style.backgroundColor = color;
+
+      // Adjust border color based on intensity
+      if (ratio > 0.3) {
+        keyEl.style.borderColor = "rgba(255,255,255,0.15)";
+      }
+
+      const labelEl = document.createElement("span");
+      labelEl.className = "analytics-key-label";
+      labelEl.textContent = key.name;
+      keyEl.appendChild(labelEl);
+
+      if (count > 0) {
+        const countEl = document.createElement("span");
+        countEl.className = "analytics-key-count";
+        countEl.textContent = count >= 1000 ? (count / 1000).toFixed(1) + "k" : count;
+        keyEl.appendChild(countEl);
+      }
+
+      keyEl.title = `${key.name}: ${count.toLocaleString()} 回`;
+      rowEl.appendChild(keyEl);
+    }
+
+    container.appendChild(rowEl);
   }
 }

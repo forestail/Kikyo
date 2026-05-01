@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod chord_engine;
 pub mod engine;
 pub mod ime;

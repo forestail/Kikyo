@@ -1,4 +1,5 @@
 use image::GenericImageView;
+use kikyo_core::analytics::AnalyticsData;
 use kikyo_core::chord_engine::Profile;
 use kikyo_core::engine::ENGINE;
 use kikyo_core::{keyboard_hook, parser};
@@ -21,6 +22,7 @@ const TRAY_LAYOUT_ITEM_ID_PREFIX: &str = "layout_entry::";
 const DUPLICATE_LAYOUT_PATH_MESSAGE: &str = "\u{3059}\u{3067}\u{306b}\u{767b}\u{9332}\u{3055}\u{308c}\u{3066}\u{3044}\u{308b}\u{5b9a}\u{7fa9}\u{30d5}\u{30a1}\u{30a4}\u{30eb}\u{3067}\u{3059}";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const AUTOSTART_PREFERENCE_FILE_NAME: &str = "autostart.pref";
+const ANALYTICS_FILE_NAME: &str = "analytics.json";
 
 fn tray_layout_item_menu_id(entry_id: &str) -> String {
     format!("{TRAY_LAYOUT_ITEM_ID_PREFIX}{entry_id}")
@@ -808,7 +810,9 @@ fn activate_layout_entry_by_id(
         .ok_or_else(|| "Layout entry not found".to_string())?;
 
     let display_name = preferred_entry_display_name(&entry);
-    let stats = apply_layout_from_path(app, state, &entry.path, Some(display_name))?;
+    let stats = apply_layout_from_path(app, state, &entry.path, Some(display_name.clone()))?;
+    // Update analytics layout name when switching layout
+    ENGINE.lock().analytics.set_layout_name(display_name);
     settings.active_layout_id = Some(entry.id);
     settings.last_layout_path = Some(entry.path);
     save_settings(app, &settings);
@@ -1190,6 +1194,157 @@ fn restart_app() {
     }
 }
 
+// --- Analytics Commands ---
+
+fn get_analytics_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    get_settings_dir(app).map(|dir| dir.join(ANALYTICS_FILE_NAME))
+}
+
+fn load_analytics_data(app: &tauri::AppHandle) -> AnalyticsData {
+    let path = match get_analytics_path(app) {
+        Ok(path) => path,
+        Err(_) => return AnalyticsData::default(),
+    };
+    if !path.exists() {
+        return AnalyticsData::default();
+    }
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return AnalyticsData::default(),
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+fn save_analytics_data(app: &tauri::AppHandle, data: &AnalyticsData) -> bool {
+    let path = match get_analytics_path(app) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::error!("Failed to resolve analytics path: {}", err);
+            return false;
+        }
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match serde_json::to_string(data) {
+        Ok(content) => {
+            if let Err(err) = fs::write(&path, content) {
+                tracing::error!("Failed to write analytics file: {}", err);
+                return false;
+            }
+            true
+        }
+        Err(err) => {
+            tracing::error!("Failed to serialize analytics data: {}", err);
+            false
+        }
+    }
+}
+
+fn flush_analytics(app: &tauri::AppHandle) {
+    let data = ENGINE.lock().analytics.to_data();
+    if ENGINE.lock().analytics.is_dirty() {
+        save_analytics_data(app, &data);
+        ENGINE.lock().analytics.clear_dirty();
+    }
+}
+
+#[tauri::command]
+fn get_analytics_enabled() -> bool {
+    ENGINE.lock().analytics.is_enabled()
+}
+
+#[tauri::command]
+fn set_analytics_enabled(app: tauri::AppHandle, enabled: bool) -> bool {
+    {
+        let mut engine = ENGINE.lock();
+        engine.analytics.set_enabled(enabled);
+    }
+    // Persist immediately
+    let data = ENGINE.lock().analytics.to_data();
+    save_analytics_data(&app, &data);
+    ENGINE.lock().analytics.clear_dirty();
+    enabled
+}
+
+#[derive(serde::Serialize)]
+struct AnalyticsResponse {
+    enabled: bool,
+    records: Vec<kikyo_core::analytics::AnalyticsRecord>,
+}
+
+#[tauri::command]
+fn get_analytics_data(app: tauri::AppHandle) -> AnalyticsResponse {
+    // Flush latest data first
+    flush_analytics(&app);
+    let data = ENGINE.lock().analytics.to_data();
+    AnalyticsResponse {
+        enabled: data.enabled,
+        records: data.records,
+    }
+}
+
+#[tauri::command]
+fn clear_analytics_data(app: tauri::AppHandle) {
+    ENGINE.lock().analytics.clear_all();
+    let data = ENGINE.lock().analytics.to_data();
+    save_analytics_data(&app, &data);
+    ENGINE.lock().analytics.clear_dirty();
+}
+
+#[tauri::command]
+fn export_analytics_data(app: tauri::AppHandle, target_path: String) -> Result<(), String> {
+    flush_analytics(&app);
+    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let db_path = app_dir.join(ANALYTICS_FILE_NAME);
+    if db_path.exists() {
+        std::fs::copy(&db_path, Path::new(&target_path)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct KeyboardKey {
+    name: String,
+    row: u8,
+    col: u8,
+    scancode: u16,
+}
+
+#[tauri::command]
+fn get_keyboard_layout_for_heatmap() -> Vec<KeyboardKey> {
+    let engine = ENGINE.lock();
+    let map = &engine.keyboard_map;
+    let mut keys = Vec::new();
+    for (&sc_key, &rc) in map.sc_to_rc.iter() {
+        if let Some(name) = map.sc_to_key_name(sc_key.sc) {
+            keys.push(KeyboardKey {
+                name: name.to_string(),
+                row: rc.row,
+                col: rc.col,
+                scancode: sc_key.sc,
+            });
+        }
+    }
+    // Sort by row, then column for consistent ordering
+    keys.sort_by(|a, b| a.row.cmp(&b.row).then(a.col.cmp(&b.col)));
+    keys
+}
+
+#[tauri::command]
+fn get_layout_names_for_analytics() -> Vec<String> {
+    let data = ENGINE.lock().analytics.to_data();
+    let mut names: Vec<String> = data
+        .records
+        .iter()
+        .map(|r| r.layout_name.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    names.sort();
+    names
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -1236,6 +1391,13 @@ pub fn run() {
             check_accessibility_permission,
             request_accessibility_permission,
             restart_app,
+            get_analytics_enabled,
+            set_analytics_enabled,
+            get_analytics_data,
+            clear_analytics_data,
+            export_analytics_data,
+            get_keyboard_layout_for_heatmap,
+            get_layout_names_for_analytics,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -1331,6 +1493,34 @@ pub fn run() {
             if let Some(profile) = settings.profile.as_ref() {
                 ENGINE.lock().set_profile(profile.clone());
                 keyboard_hook::refresh_runtime_flags_from_engine();
+            }
+
+            // Initialize Analytics
+            {
+                let analytics_data = load_analytics_data(app.handle());
+                let mut engine = ENGINE.lock();
+                engine.analytics.load_from_data(&analytics_data);
+                // Set initial layout name for analytics
+                if let Some(active_id) = settings.active_layout_id.as_ref() {
+                    if let Some(entry) = settings
+                        .layout_entries
+                        .iter()
+                        .find(|e| &e.id == active_id)
+                    {
+                        engine
+                            .analytics
+                            .set_layout_name(preferred_entry_display_name(entry));
+                    }
+                }
+            }
+
+            // Spawn analytics flush timer (every 30 seconds)
+            {
+                let handle_for_analytics = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    flush_analytics(&handle_for_analytics);
+                });
             }
             let startup_path = settings
                 .active_layout_id
