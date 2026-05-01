@@ -39,3 +39,6 @@ test_*.txt
 stderr.txt
 stdout.txt
 test/
+
+# Python scripts (temporary)
+*.py
