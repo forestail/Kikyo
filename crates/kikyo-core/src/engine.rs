@@ -541,17 +541,6 @@ impl Engine {
             return KeyAction::Pass;
         }
 
-        // Analytics: record physical keystroke on key down (character keys only)
-        if !up {
-            let sc_key = ScKey::new(sc, false);
-            // Only count keys that are in the keyboard matrix (character keys).
-            // This excludes Space, Enter, Backspace, modifiers, etc.
-            if self.keyboard_map.sc_to_rc.contains_key(&sc_key) {
-                let key_name = self.keyboard_map.sc_to_key_name(sc).map(|s| s.to_string());
-                self.analytics.record_physical_keystroke(key_name.as_deref());
-            }
-        }
-
         // Check IME state
         let ime_mode = self.chord_engine.profile.ime_mode;
         let is_japanese = crate::ime::is_japanese_input_active(ime_mode);
@@ -730,6 +719,7 @@ impl Engine {
                                 is_japanese,
                                 is_kana_input,
                             ) {
+                                self.record_analytics_replacement(&[key], &ops);
                                 self.chord_engine.state.pressed.insert(key);
                                 self.chord_engine.state.down_ts.insert(key, Instant::now());
                                 return KeyAction::Inject(ops);
@@ -778,6 +768,8 @@ impl Engine {
         self.chord_engine.profile.max_chord_size = prev_max_chord_size;
 
         let mut inject_ops = Vec::new();
+        let mut analytics_ops = Vec::new();
+        let mut analytics_physical_keys = Vec::new();
         let mut pass_current = false;
 
         for d in decisions {
@@ -795,6 +787,8 @@ impl Engine {
                         if let Some(ops) =
                             self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
                         {
+                            analytics_physical_keys.push(k);
+                            analytics_ops.extend(ops.iter().cloned());
                             inject_ops.extend(ops);
                         }
                     } else {
@@ -810,6 +804,8 @@ impl Engine {
                         if let Some(ops) =
                             self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
                         {
+                            analytics_physical_keys.extend(keys.iter().copied());
+                            analytics_ops.extend(ops.iter().cloned());
                             inject_ops.extend(ops);
                         }
                         if let Some(mod_key) = modifier {
@@ -844,6 +840,8 @@ impl Engine {
                                     is_japanese,
                                     is_kana_input,
                                 ) {
+                                    analytics_physical_keys.push(k);
+                                    analytics_ops.extend(ops.iter().cloned());
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -876,6 +874,8 @@ impl Engine {
                                     is_japanese,
                                     is_kana_input,
                                 ) {
+                                    analytics_physical_keys.push(k);
+                                    analytics_ops.extend(ops.iter().cloned());
                                     inject_ops.extend(ops);
                                     resolved = true;
                                 }
@@ -896,6 +896,8 @@ impl Engine {
                                         is_japanese,
                                         is_kana_input,
                                     ) {
+                                        analytics_physical_keys.push(k);
+                                        analytics_ops.extend(ops.iter().cloned());
                                         inject_ops.extend(ops);
                                         resolved = true;
                                     }
@@ -926,19 +928,14 @@ impl Engine {
         }
 
         if !inject_ops.is_empty() {
+            self.record_analytics_replacement(&analytics_physical_keys, &analytics_ops);
+
             if pass_current {
                 // If we also need to pass the current key, append it to the injection sequence.
                 // This ensures "Flushed Keys" -> "Current Key" order.
                 if let Some(ev) = passthrough_event(pass_through_current, source_key, up) {
                     inject_ops.push(ev);
                 }
-            }
-            // Analytics: record output virtual keys from injected events.
-            // Note: The chord engine often emits character output on key UP (e.g. KeyTap on release),
-            // so we must count on both down and up events.
-            {
-                let output_count = crate::analytics::count_output_virtual_keys(&inject_ops, &self.keyboard_map);
-                self.analytics.record_output_virtual_keys(output_count);
             }
             return KeyAction::Inject(inject_ops);
         }
@@ -948,6 +945,31 @@ impl Engine {
         }
 
         KeyAction::Block
+    }
+
+    fn record_analytics_replacement(
+        &mut self,
+        physical_keys: &[ScKey],
+        output_events: &[InputEvent],
+    ) {
+        let output_count =
+            crate::analytics::count_output_virtual_keys(output_events, &self.keyboard_map);
+        if output_count == 0 {
+            return;
+        }
+
+        for key in physical_keys {
+            let sc_key = ScKey::new(key.sc, false);
+            if self.keyboard_map.sc_to_rc.contains_key(&sc_key) {
+                let key_name = self
+                    .keyboard_map
+                    .sc_to_key_name(key.sc)
+                    .map(|s| s.to_string());
+                self.analytics
+                    .record_physical_keystroke(key_name.as_deref());
+            }
+        }
+        self.analytics.record_output_virtual_keys(output_count);
     }
 
     fn active_shift_thumb_for_passthrough(&self) -> Option<ScKey> {
@@ -1971,11 +1993,16 @@ impl Engine {
             return KeyAction::Block;
         }
 
+        let mut resolved_from_layout = false;
         let events = if let Some(token) = token {
-            self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
-                .unwrap_or_else(|| {
-                    self.repeat_fallback_events(&keys, shift, is_japanese, is_kana_input)
-                })
+            if let Some(events) =
+                self.token_to_events_with_ime(&token, shift, is_japanese, is_kana_input)
+            {
+                resolved_from_layout = true;
+                events
+            } else {
+                self.repeat_fallback_events(&keys, shift, is_japanese, is_kana_input)
+            }
         } else {
             self.repeat_fallback_events(&keys, shift, is_japanese, is_kana_input)
         };
@@ -1988,6 +2015,10 @@ impl Engine {
             self.consume_pending_for_repeat(&keys);
         }
         self.repeat_plans.entry(key).or_insert(keys);
+        if resolved_from_layout {
+            let keys = self.repeat_plans.get(&key).cloned().unwrap_or_default();
+            self.record_analytics_replacement(&keys, &events);
+        }
         KeyAction::Inject(events)
     }
 
@@ -2585,6 +2616,60 @@ z,x,c,v,b,n,m,,,.,/,\\
             }
             _ => panic!("Expected Inject on KeyUp for K, got {:?}", res),
         }
+    }
+
+    #[test]
+    fn test_analytics_records_only_layout_replacements_in_alpha_mode() {
+        let config = "
+[英数シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+b,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+";
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ime_mode(ImeMode::ForceAlpha);
+        engine.load_layout(layout);
+        engine.analytics.set_enabled(true);
+        engine
+            .analytics
+            .set_layout_name("analytics-test".to_string());
+
+        assert_eq!(
+            engine.process_key(0x30, false, false, false),
+            KeyAction::Pass
+        );
+        assert_eq!(
+            engine.process_key(0x30, false, true, false),
+            KeyAction::Pass
+        );
+        assert!(engine.analytics.to_data().records.is_empty());
+
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        match engine.process_key(0x1E, false, true, false) {
+            KeyAction::Inject(events) => assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, InputEvent::Scancode(0x30, false, false))),
+                "expected defined a -> b replacement, got {:?}",
+                events
+            ),
+            other => panic!("expected Inject for defined replacement, got {:?}", other),
+        }
+
+        let data = engine.analytics.to_data();
+        assert_eq!(data.records.len(), 1);
+        let record = &data.records[0];
+        assert_eq!(record.physical_keystrokes, 1);
+        assert_eq!(record.output_virtual_keys, 1);
+        assert_eq!(record.key_counts.get("a"), Some(&1));
+        assert_eq!(record.key_counts.get("b"), None);
     }
 
     #[test]
