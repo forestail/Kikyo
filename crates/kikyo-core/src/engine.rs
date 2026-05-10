@@ -812,6 +812,143 @@ impl Engine {
                             self.consume_non_modifier_keys(&keys, mod_key);
                         }
                     } else {
+                        // 3-key undefined chord with single CharShift modifier -> split into
+                        // sequential 2-key chords. Common case: a continuous-shift modifier
+                        // key M held while two non-modifier keys roll (e.g. K1 then K2). With
+                        // M+K1+K2 undefined but M+K1 and M+K2 each defined, emit the two
+                        // resolved 2-key chords instead of falling back to the three base keys.
+                        //
+                        // For unresolved 2-key sub-chords, falls back to the non-modifier's
+                        // base single-key resolution (preserving partial behavior).
+                        let mut handled_as_3key_split = false;
+                        if self.chord_engine.profile.char_key_continuous && keys.len() == 3 {
+                            // Try each of the 3 keys as the candidate continuous modifier.
+                            // The "best" split is the one that resolves the most 2-key chord
+                            // sub-pairs. This handles the case where multiple keys are also
+                            // chord trigger keys (e.g. with `<v><;>` and `<v><l>` planes,
+                            // ; and L are both trigger_keys, so we can't identify the
+                            // modifier by `is_char_shift_key` alone).
+                            let mut best_split: Option<(
+                                usize,           // m_idx
+                                Vec<InputEvent>, // ops
+                                Vec<ScKey>,      // emitted physical keys
+                                usize,           // chord-resolved count
+                            )> = None;
+                            for m_idx in 0..keys.len() {
+                                let modifier = keys[m_idx];
+                                if !self.is_char_shift_key(modifier) {
+                                    continue;
+                                }
+                                let others: Vec<ScKey> = keys
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| *i != m_idx)
+                                    .map(|(_, k)| *k)
+                                    .collect();
+                                let mut split_ops: Vec<InputEvent> = Vec::new();
+                                let mut emit_keys: Vec<ScKey> = Vec::new();
+                                let mut chord_resolved_count: usize = 0;
+                                for &other in &others {
+                                    let pair = vec![modifier, other];
+                                    let (token, _) =
+                                        self.resolve_with_modifier(&pair, shift, is_japanese);
+                                    if let Some(token) = token {
+                                        if let Some(ops) = self.token_to_events_with_ime(
+                                            &token,
+                                            shift,
+                                            is_japanese,
+                                            is_kana_input,
+                                        ) {
+                                            split_ops.extend(ops);
+                                            emit_keys.push(other);
+                                            chord_resolved_count += 1;
+                                            continue;
+                                        }
+                                    }
+                                    if let Some(token) = self.resolve(&[other], shift, is_japanese)
+                                    {
+                                        if let Some(ops) = self.token_to_events_with_ime(
+                                            &token,
+                                            shift,
+                                            is_japanese,
+                                            is_kana_input,
+                                        ) {
+                                            split_ops.extend(ops);
+                                            emit_keys.push(other);
+                                        }
+                                    }
+                                }
+                                // Keep the candidate that resolves the most
+                                // 2-key sub-chords. Strictly-greater means a tie
+                                // keeps the first-encountered candidate (lowest
+                                // key index); in practice only one of the three
+                                // keys is a char-shift key, so ties are rare and
+                                // this choice stays deterministic.
+                                if chord_resolved_count > 0 {
+                                    let take = match &best_split {
+                                        None => true,
+                                        Some((_, _, _, prev_count)) => {
+                                            chord_resolved_count > *prev_count
+                                        }
+                                    };
+                                    if take {
+                                        best_split = Some((
+                                            m_idx,
+                                            split_ops,
+                                            emit_keys,
+                                            chord_resolved_count,
+                                        ));
+                                    }
+                                }
+                            }
+                            if let Some((m_idx, split_ops, emit_keys, _)) = best_split {
+                                let modifier = keys[m_idx];
+                                analytics_physical_keys.extend(emit_keys.iter().copied());
+                                analytics_ops.extend(split_ops.iter().cloned());
+                                inject_ops.extend(split_ops);
+                                // The split has already emitted output for these
+                                // non-modifier keys. Unlike the normal
+                                // continuous-shift consume path, they must NOT be
+                                // re-queued into pending: a still-held key would
+                                // otherwise re-chord on the next keypress and be
+                                // emitted a second time. Remove every non-modifier
+                                // key from pending unconditionally and keep only
+                                // the modifier (so its used_modifiers entry is
+                                // preserved).
+                                //
+                                // Defensive hardening: even if a 3-key
+                                // undefined chord reaches this path (e.g.
+                                // three overlapping char-shift keys with
+                                // no 3-key mapping), duplicate consumption
+                                // cannot occur. This split path is entered
+                                // only when the chord resolves to no token
+                                // (the `else` of the `Some(token)` arm
+                                // above), which is mutually exclusive with
+                                // the `consume_non_modifier_keys` call on
+                                // the token-resolved arm. Removing the
+                                // non-modifier keys here keeps split's
+                                // consume semantics consistent with that
+                                // arm and prevents a still-held key from
+                                // being re-queued into pending and
+                                // double-emitted on the next keypress.
+                                let mut remove_set = HashSet::new();
+                                for k in &keys {
+                                    if *k != modifier {
+                                        remove_set.insert(*k);
+                                        self.pending_nonshift_for_shift.remove(k);
+                                    }
+                                }
+                                self.chord_engine
+                                    .state
+                                    .used_modifiers
+                                    .retain(|k| !remove_set.contains(k));
+                                self.remove_keys_from_pending(&remove_set, false);
+                                handled_as_3key_split = true;
+                            }
+                        }
+                        if handled_as_3key_split {
+                            continue;
+                        }
                         // Continuous shift rollover case:
                         // if an older still-held key and a later key formed an undefined chord,
                         // emit only the later key to avoid leaking the older key's single output.
@@ -6348,6 +6485,209 @@ xx,xx,xx,xx,xx,4,xx,xx,xx,xx,xx
             "Second chord: expected '4' (sc=0x05) but got {:?}. \
              If '3' (0x03) was output, F-only shift was used instead of D+F.",
             events2
+        );
+    }
+
+    #[test]
+    fn test_3key_undefined_chord_with_continuous_modifier_splits() {
+        // Reproduces the rolling bug: D held + ; rolled + L rolled, with
+        // <d>+;+L undefined but <d>+;='1' and <d>+L='2' defined -> expect
+        // '1','2' (split into two 2-key chords) instead of falling back to
+        // base D/;/L scancodes.
+        //
+        // Scancodes: d=0x20, l=0x26, ;=0x27. '1'=sc 0x02, '2'=sc 0x03.
+        let config = "
+[英数シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d,xx,xx,xx,xx,xx,l,;,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d,xx,xx,xx,xx,xx,l,;,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<d>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,2,1,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.35;
+        engine.set_profile(profile);
+
+        // Roll: D down -> ; down -> L down -> ; up -> L up -> D up
+        engine.process_key(0x20, false, false, false); // D down
+        std::thread::sleep(Duration::from_millis(5));
+        engine.process_key(0x27, false, false, false); // ; down
+        std::thread::sleep(Duration::from_millis(5));
+        engine.process_key(0x26, false, false, false); // L down
+        std::thread::sleep(Duration::from_millis(5));
+        let r1 = engine.process_key(0x27, false, true, false); // ; up
+        std::thread::sleep(Duration::from_millis(5));
+        let r2 = engine.process_key(0x26, false, true, false); // L up
+        std::thread::sleep(Duration::from_millis(5));
+        let r3 = engine.process_key(0x20, false, true, false); // D up
+
+        let mut all_events = Vec::new();
+        if let KeyAction::Inject(evs) = r1 {
+            all_events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r2 {
+            all_events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r3 {
+            all_events.extend(evs);
+        }
+
+        let down_scancodes: Vec<u16> = all_events
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Scancode(sc, _, false) => Some(*sc),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            down_scancodes.contains(&0x02),
+            "Expected '1' (D+; chord, sc=0x02) in {:?}",
+            down_scancodes
+        );
+        assert!(
+            down_scancodes.contains(&0x03),
+            "Expected '2' (D+L chord, sc=0x03) in {:?}",
+            down_scancodes
+        );
+        assert!(
+            !down_scancodes.contains(&0x20),
+            "Should NOT emit D base (sc=0x20) -- would mean fell back to base"
+        );
+        assert!(
+            !down_scancodes.contains(&0x27),
+            "Should NOT emit ; base (sc=0x27)"
+        );
+        assert!(
+            !down_scancodes.contains(&0x26),
+            "Should NOT emit L base (sc=0x26)"
+        );
+    }
+
+    #[test]
+    fn test_3key_split_when_other_keys_are_also_trigger_keys() {
+        // Realistic scenario where ; and L are ALSO trigger_keys because
+        // `<v><;>` and `<v><l>` planes exist. The modifier identification can't
+        // rely on is_char_shift_key alone -- must try each key as candidate
+        // and pick the best resolution.
+        //
+        // Layout: <d>+;='1', <d>+L='2', plus dummy <v><;> and <v><l> sections
+        // to register ; and L as trigger_keys (with no useful values for D pairs).
+        let config = "
+[英数シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d,xx,xx,xx,xx,v,l,;,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+[ローマ字シフト無し]
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,d,xx,xx,xx,xx,v,l,;,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<d>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,2,1,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<v><;>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+
+<v><l>
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
+";
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        let mut profile = engine.get_profile();
+        profile.char_key_continuous = true;
+        profile.char_key_overlap_ratio = 0.35;
+        engine.set_profile(profile);
+
+        engine.process_key(0x20, false, false, false); // D down
+        std::thread::sleep(Duration::from_millis(5));
+        engine.process_key(0x27, false, false, false); // ; down
+        std::thread::sleep(Duration::from_millis(5));
+        engine.process_key(0x26, false, false, false); // L down
+        std::thread::sleep(Duration::from_millis(5));
+        let r1 = engine.process_key(0x27, false, true, false); // ; up
+        std::thread::sleep(Duration::from_millis(5));
+        let r2 = engine.process_key(0x26, false, true, false); // L up
+        std::thread::sleep(Duration::from_millis(5));
+        let r3 = engine.process_key(0x20, false, true, false); // D up
+
+        let mut all_events = Vec::new();
+        if let KeyAction::Inject(evs) = r1 {
+            all_events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r2 {
+            all_events.extend(evs);
+        }
+        if let KeyAction::Inject(evs) = r3 {
+            all_events.extend(evs);
+        }
+
+        let down_scancodes: Vec<u16> = all_events
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Scancode(sc, _, false) => Some(*sc),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            down_scancodes.contains(&0x02),
+            "Expected '1' (D+; chord, sc=0x02) in {:?} (modifier identification \
+             must pick D, not ; or L)",
+            down_scancodes
+        );
+        assert!(
+            down_scancodes.contains(&0x03),
+            "Expected '2' (D+L chord, sc=0x03) in {:?}",
+            down_scancodes
+        );
+        assert!(
+            !down_scancodes.contains(&0x20),
+            "Should NOT emit D base (sc=0x20)"
+        );
+        assert!(
+            !down_scancodes.contains(&0x27),
+            "Should NOT emit ; base (sc=0x27)"
+        );
+        assert!(
+            !down_scancodes.contains(&0x26),
+            "Should NOT emit L base (sc=0x26)"
         );
     }
 
