@@ -360,29 +360,25 @@ fn parse_key_sequence_expanded_with_mode(
     while i < chars.len() {
         let c = chars[i];
 
-        // Check for modifiers
-        match c {
-            'S' => {
-                current_mods.shift = true;
+        // Check for modifiers -- but only consume as a modifier prefix if there's
+        // a non-modifier character following. Otherwise, treat as a literal letter.
+        // This preserves "Sa" -> Shift+a while making bare "S" output literal "S"
+        // (needed by layouts that assign a bare uppercase S/C/A/W to a cell).
+        if matches!(c, 'S' | 'C' | 'A' | 'W') {
+            let has_following_non_modifier =
+                (i + 1..chars.len()).any(|j| !matches!(chars[j], 'S' | 'C' | 'A' | 'W'));
+            if has_following_non_modifier {
+                match c {
+                    'S' => current_mods.shift = true,
+                    'C' => current_mods.ctrl = true,
+                    'A' => current_mods.alt = true,
+                    'W' => current_mods.win = true,
+                    _ => unreachable!(),
+                }
                 i += 1;
                 continue;
             }
-            'C' => {
-                current_mods.ctrl = true;
-                i += 1;
-                continue;
-            }
-            'A' => {
-                current_mods.alt = true;
-                i += 1;
-                continue;
-            }
-            'W' => {
-                current_mods.win = true;
-                i += 1;
-                continue;
-            }
-            _ => {}
+            // Else fall through to default parsing (treat as literal letter).
         }
 
         let (mut strokes, consumed) = parse_unit(&chars[i..], mode, kb_map);
@@ -1060,10 +1056,10 @@ mod tests {
         );
 
         // Case sensitivity check
-        // "A" is now treated as Alt modifier, so it produces no keystroke locally if not followed by a key.
+        // "A" alone is NOT a modifier prefix (no following key), so it produces literal 'A'.
         assert_eq!(
             parse_token("A", &crate::keyboard_map::new_jis_106()),
-            Token::None
+            Token::KeySequence(vec![stroke_char('A')])
         );
         assert_eq!(
             parse_token("Ａ", &crate::keyboard_map::new_jis_106()), // Fullwidth A
@@ -1124,11 +1120,11 @@ mod tests {
 
         // Modifiers (single-stroke)
 
-        // Modifiers (single-stroke)
-        // "CA" -> Ctrl + Alt (accumulated modifiers, no key)
+        // "CA" without a following key -> literal 'C' and 'A' (NOT modifier prefixes,
+        // since there's no non-modifier character after).
         assert_eq!(
             parse_token("CA", &crate::keyboard_map::new_jis_106()),
-            Token::None
+            Token::KeySequence(vec![stroke_char('C'), stroke_char('A')])
         );
 
         // "Cａ" -> Ctrl + a
@@ -1139,6 +1135,22 @@ mod tests {
                 mods: Modifiers {
                     ctrl: true,
                     shift: false,
+                    alt: false,
+                    win: false,
+                },
+            }])
+        );
+
+        // "Sa" (ASCII trailing key) -> Shift + a: the modifier prefix IS
+        // consumed because a non-modifier character follows. Regression guard
+        // for the preservation case the commit message names explicitly.
+        assert_eq!(
+            parse_token("Sa", &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('a'),
+                mods: Modifiers {
+                    ctrl: false,
+                    shift: true,
                     alt: false,
                     win: false,
                 },
@@ -1228,10 +1240,65 @@ mod tests {
             }])
         );
 
-        // "S" -> Empty (No key following)
+        // "S" alone -> literal 'S' character (no key follows the S, so it's NOT
+        // a modifier prefix). This matters for layouts that assign a bare
+        // uppercase letter S/C/A/W to a cell, which should output that letter.
         assert_eq!(
             parse_token("S", &crate::keyboard_map::new_jis_106()),
-            Token::None
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('S'),
+                mods: Modifiers::none(),
+            }])
+        );
+
+        // "C" alone -> literal 'C'
+        assert_eq!(
+            parse_token("C", &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('C'),
+                mods: Modifiers::none(),
+            }])
+        );
+
+        // "A" alone -> literal 'A'
+        assert_eq!(
+            parse_token("A", &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('A'),
+                mods: Modifiers::none(),
+            }])
+        );
+
+        // "W" alone -> literal 'W'
+        assert_eq!(
+            parse_token("W", &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![KeyStroke {
+                key: KeySpec::Char('W'),
+                mods: Modifiers::none(),
+            }])
+        );
+
+        // "SCAW" (all modifiers, no following key) -> literal characters S, C, A, W
+        assert_eq!(
+            parse_token("SCAW", &crate::keyboard_map::new_jis_106()),
+            Token::KeySequence(vec![
+                KeyStroke {
+                    key: KeySpec::Char('S'),
+                    mods: Modifiers::none(),
+                },
+                KeyStroke {
+                    key: KeySpec::Char('C'),
+                    mods: Modifiers::none(),
+                },
+                KeyStroke {
+                    key: KeySpec::Char('A'),
+                    mods: Modifiers::none(),
+                },
+                KeyStroke {
+                    key: KeySpec::Char('W'),
+                    mods: Modifiers::none(),
+                },
+            ])
         );
     }
 
