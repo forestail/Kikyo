@@ -1581,6 +1581,7 @@ impl Engine {
             t_down,
             t_up: None,
             used: false,
+            tapped_out: false,
         });
     }
 
@@ -3645,6 +3646,7 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             t_down: now,
             t_up: None,
             used: false,
+            tapped_out: false,
         });
         engine.deferred_enter_rollover = Some(DeferredEnterRollover {
             source_key: ScKey::new(0x1C, false),
@@ -3736,6 +3738,7 @@ a,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
             t_down: now,
             t_up: None,
             used: false,
+            tapped_out: false,
         });
         engine.chord_engine.state.passed_keys.insert(stale_wait_key);
         engine
