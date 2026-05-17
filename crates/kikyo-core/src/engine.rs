@@ -3,7 +3,7 @@ use crate::chord_engine::{
     ChordEngine, Decision, ImeMode, KeyEdge, KeyEvent, PendingKey, Profile, ThumbShiftSinglePress,
     EXTENDED_KEY_1_SC, EXTENDED_KEY_2_SC, EXTENDED_KEY_3_SC, EXTENDED_KEY_4_SC,
 };
-use crate::keyboard_map::KeyboardMap;
+use crate::keyboard_map::{KeyboardLayout, KeyboardMap};
 use crate::types::{InputEvent, KeyAction, KeySpec, KeyStroke, Layout, Modifiers, ScKey, Token};
 use parking_lot::Mutex;
 use std::cell::RefCell;
@@ -1836,13 +1836,14 @@ impl Engine {
                         committed_for_uppercase = true;
                     }
                     // Strict scancode only for KeySequence (which now comes from single-quote/bare tokens)
-                    append_keystroke_events(
+                    append_keystroke_events_layout(
                         &mut events,
                         stroke,
                         effective_shift_held,
                         false,
                         is_japanese,
                         is_kana_input,
+                        self.keyboard_map.layout(),
                     );
                 }
                 if events.is_empty() {
@@ -2340,6 +2341,19 @@ fn function_key_scancode_from_name(name: &str) -> Option<u16> {
     }
 }
 
+// Backward-compatible wrapper: keeps the original 6-argument arity callable
+// by delegating to the layout-aware `append_keystroke_events_layout` with
+// `KeyboardLayout::Jis`, which is exactly the behavior before layout support
+// was added.
+//
+// This arity has no caller within this change: the production call site was
+// moved to the layout-aware variant. The wrapper is retained so that a
+// separate, independent fix -- which adds a regression test exercising the
+// original 6-argument arity in this file's test module -- keeps compiling
+// when both changes land together, without forcing that unrelated change to
+// adapt to this signature change. `dead_code` is allowed because, within
+// this change alone, the original arity has no caller.
+#[allow(dead_code)]
 fn append_keystroke_events(
     events: &mut Vec<InputEvent>,
     stroke: &KeyStroke,
@@ -2348,10 +2362,30 @@ fn append_keystroke_events(
     is_japanese: bool,
     _is_kana_input: bool,
 ) {
+    append_keystroke_events_layout(
+        events,
+        stroke,
+        shift_held,
+        allow_unicode_fallback,
+        is_japanese,
+        _is_kana_input,
+        KeyboardLayout::Jis,
+    )
+}
+
+fn append_keystroke_events_layout(
+    events: &mut Vec<InputEvent>,
+    stroke: &KeyStroke,
+    shift_held: bool,
+    allow_unicode_fallback: bool,
+    is_japanese: bool,
+    _is_kana_input: bool,
+    kb_layout: KeyboardLayout,
+) {
     let key_events = match stroke.key {
         KeySpec::Scancode(sc, ext) => Some((sc, ext, false)),
         KeySpec::VirtualKey(vk) => vk_to_scancode(vk).map(|(s, e)| (s, e, false)),
-        KeySpec::Char(c) => char_to_scancode(c, is_japanese),
+        KeySpec::Char(c) => char_to_scancode(c, is_japanese, kb_layout),
         KeySpec::ImeOn => {
             events.push(InputEvent::ImeControl(true));
             return;
@@ -2419,16 +2453,89 @@ fn vk_to_scancode(vk: u16) -> Option<(u16, bool)> {
     crate::keyboard_hook::vk_to_scancode(vk)
 }
 
-fn char_to_scancode(c: char, is_japanese: bool) -> Option<(u16, bool, bool)> {
-    // JP-Specific overrides
+/// US 101/104 char -> (scancode, ext, needs_shift) for symbols and shifted
+/// punctuation. Alphanumerics, space, arrows, BS/Enter etc. are intentionally
+/// not handled here so the caller can fall back to the JIS table where they
+/// are identical. Returns None for chars that should fall through.
+fn char_to_scancode_us(c: char) -> Option<(u16, bool, bool)> {
+    match c {
+        // Base row 0 (number row)
+        '`' => Some((0x29, false, false)),
+        '~' => Some((0x29, false, true)),
+        '!' => Some((0x02, false, true)),
+        '@' => Some((0x03, false, true)),
+        '#' => Some((0x04, false, true)),
+        '$' => Some((0x05, false, true)),
+        '%' => Some((0x06, false, true)),
+        '^' => Some((0x07, false, true)),
+        '&' => Some((0x08, false, true)),
+        '*' => Some((0x09, false, true)),
+        '(' => Some((0x0A, false, true)),
+        ')' => Some((0x0B, false, true)),
+        '-' => Some((0x0C, false, false)),
+        '_' => Some((0x0C, false, true)),
+        '=' => Some((0x0D, false, false)),
+        '+' => Some((0x0D, false, true)),
+
+        // Row 1 right side
+        '[' => Some((0x1A, false, false)),
+        '{' => Some((0x1A, false, true)),
+        ']' => Some((0x1B, false, false)),
+        '}' => Some((0x1B, false, true)),
+        '\\' => Some((0x2B, false, false)),
+        '|' => Some((0x2B, false, true)),
+
+        // Row 2 right side
+        ';' => Some((0x27, false, false)),
+        ':' => Some((0x27, false, true)),
+        '\'' => Some((0x28, false, false)),
+        '"' => Some((0x28, false, true)),
+
+        // Row 3 right side (these match JIS but listed for clarity)
+        ',' => Some((0x33, false, false)),
+        '<' => Some((0x33, false, true)),
+        '.' => Some((0x34, false, false)),
+        '>' => Some((0x34, false, true)),
+        '/' => Some((0x35, false, false)),
+        '?' => Some((0x35, false, true)),
+
+        _ => None,
+    }
+}
+
+fn char_to_scancode(
+    c: char,
+    is_japanese: bool,
+    kb_layout: KeyboardLayout,
+) -> Option<(u16, bool, bool)> {
+    // JP-Specific overrides -- sent as keystrokes that the IME interprets.
+    // The "[" / "]" physical key is what the IME maps to "「" / "」", but
+    // that key has a different scancode on JIS vs US, so we have to pick
+    // the right scancode for the physical layout.
     if is_japanese {
         match c {
-            '、' => return Some((0x33, false, false)), // ,
-            '。' => return Some((0x34, false, false)), // .
-            '・' => return Some((0x35, false, false)), // /
-            '「' => return Some((0x1B, false, false)), // [
-            '」' => return Some((0x2B, false, false)), // ]
+            '、' => return Some((0x33, false, false)),
+            '。' => return Some((0x34, false, false)),
+            '・' => return Some((0x35, false, false)),
+            '「' => {
+                return Some(match kb_layout {
+                    KeyboardLayout::Jis => (0x1B, false, false), // JIS [
+                    _ => (0x1A, false, false),                   // US [
+                });
+            }
+            '」' => {
+                return Some(match kb_layout {
+                    KeyboardLayout::Jis => (0x2B, false, false), // JIS ]
+                    _ => (0x1B, false, false),                   // US ]
+                });
+            }
             _ => {}
+        }
+    }
+
+    if matches!(kb_layout, KeyboardLayout::Us | KeyboardLayout::Ax) {
+        if let Some(v) = char_to_scancode_us(c) {
+            return Some(v);
         }
     }
 
@@ -2560,16 +2667,82 @@ mod tests {
 
     #[test]
     fn test_char_to_scancode() {
-        // Updated to use 2 args (is_japanese=false) and return 3-tuple (sc, ext, shift)
-        assert_eq!(char_to_scancode('－', false), Some((0x0C, false, false)));
-        assert_eq!(char_to_scancode('ー', false), Some((0x0C, false, false)));
-        assert_eq!(char_to_scancode('1', false), Some((0x02, false, false)));
-        assert_eq!(char_to_scancode('a', false), Some((0x1E, false, false)));
-        // Shifted char
-        assert_eq!(char_to_scancode('!', false), Some((0x02, false, true)));
-        // Japanese punctuation
-        assert_eq!(char_to_scancode('。', true), Some((0x34, false, false)));
-        assert_eq!(char_to_scancode('。', false), None); // Should fallback to unicode if not JP mode scancode mapping
+        // JIS layout (default). 3-tuple: (sc, ext, needs_shift)
+        let jis = KeyboardLayout::Jis;
+        assert_eq!(
+            char_to_scancode('－', false, jis),
+            Some((0x0C, false, false))
+        );
+        assert_eq!(
+            char_to_scancode('ー', false, jis),
+            Some((0x0C, false, false))
+        );
+        assert_eq!(
+            char_to_scancode('1', false, jis),
+            Some((0x02, false, false))
+        );
+        assert_eq!(
+            char_to_scancode('a', false, jis),
+            Some((0x1E, false, false))
+        );
+        // Shifted char (JIS)
+        assert_eq!(char_to_scancode('!', false, jis), Some((0x02, false, true)));
+        // Japanese punctuation (IME-on path)
+        assert_eq!(
+            char_to_scancode('。', true, jis),
+            Some((0x34, false, false))
+        );
+        assert_eq!(char_to_scancode('。', false, jis), None);
+    }
+
+    #[test]
+    fn test_char_to_scancode_us() {
+        // US 101/104 layout. Symbols differ from JIS.
+        let us = KeyboardLayout::Us;
+        // alphanumerics share the JIS encoding
+        assert_eq!(char_to_scancode('a', false, us), Some((0x1E, false, false)));
+        assert_eq!(char_to_scancode('1', false, us), Some((0x02, false, false)));
+        // ' is unshifted on US (JIS would emit Shift+7)
+        assert_eq!(
+            char_to_scancode('\'', false, us),
+            Some((0x28, false, false))
+        );
+        // " is Shift+0x28 on US (JIS would emit Shift+2)
+        assert_eq!(char_to_scancode('"', false, us), Some((0x28, false, true)));
+        // @ is Shift+2 on US (JIS would emit unshifted 0x1A)
+        assert_eq!(char_to_scancode('@', false, us), Some((0x03, false, true)));
+        // & is Shift+7 on US (JIS would emit Shift+6)
+        assert_eq!(char_to_scancode('&', false, us), Some((0x08, false, true)));
+        // ( is Shift+9 on US (JIS would emit Shift+8)
+        assert_eq!(char_to_scancode('(', false, us), Some((0x0A, false, true)));
+        // [ is unshifted 0x1A on US (JIS would emit unshifted 0x1B)
+        assert_eq!(char_to_scancode('[', false, us), Some((0x1A, false, false)));
+        // ] is unshifted 0x1B on US (JIS would emit unshifted 0x2B)
+        assert_eq!(char_to_scancode(']', false, us), Some((0x1B, false, false)));
+        // \ is unshifted 0x2B on US (JIS would emit Yen 0x7D)
+        assert_eq!(
+            char_to_scancode('\\', false, us),
+            Some((0x2B, false, false))
+        );
+        // = is unshifted on US (JIS would emit Shift+- so 0x0C+shift)
+        assert_eq!(char_to_scancode('=', false, us), Some((0x0D, false, false)));
+        // ` is unshifted 0x29 on US
+        assert_eq!(char_to_scancode('`', false, us), Some((0x29, false, false)));
+        // IME-on JP punctuation still works on US (driven by IME, not physical layout)
+        assert_eq!(char_to_scancode('。', true, us), Some((0x34, false, false)));
+        // 「 / 」 must use the US scancode for the [ / ] physical keys (Mozc maps these to the JP brackets)
+        assert_eq!(char_to_scancode('「', true, us), Some((0x1A, false, false)));
+        assert_eq!(char_to_scancode('」', true, us), Some((0x1B, false, false)));
+        // JIS path stays unchanged
+        let jis = KeyboardLayout::Jis;
+        assert_eq!(
+            char_to_scancode('「', true, jis),
+            Some((0x1B, false, false))
+        );
+        assert_eq!(
+            char_to_scancode('」', true, jis),
+            Some((0x2B, false, false))
+        );
     }
 
     use crate::parser::parse_layout_content;
