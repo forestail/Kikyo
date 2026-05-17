@@ -2382,9 +2382,16 @@ fn append_keystroke_events(
             mods.shift = true;
         }
 
-        if mods.shift && shift_held {
-            mods.shift = false;
-        }
+        // Note: we deliberately do NOT skip shift injection when shift_held is true.
+        // The injected events run on a worker thread some milliseconds after the
+        // hook observed the physical shift. If the user releases the physical shift
+        // very quickly (faster than the worker delay), the OS shift state will be
+        // up by the time we SendInput the scancode, and a shifted symbol like '('
+        // would degrade to '9'. Re-injecting the shift modifier here is safe even
+        // when the user is still physically holding shift, because subsequent hook
+        // callbacks rely on GetAsyncKeyState (which tracks physical state, not
+        // injected state) to recover the held condition.
+        let _ = shift_held;
 
         let mods_evs = modifier_scancodes(mods);
         for (mod_sc, mod_ext) in mods_evs.iter() {
@@ -6471,5 +6478,47 @@ xx
             }
             other => panic!("Expected Inject, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_shift_modifier_reinjected_when_shift_held() {
+        // F5: `append_keystroke_events` must NOT drop the shift modifier when
+        // `shift_held` is true. The inject runs on a worker thread some
+        // milliseconds after the hook observed the physical shift; if the user
+        // releases shift faster than that delay, dropping the modifier here
+        // would degrade a shifted stroke (mods.shift = true, e.g. Shift+a) to
+        // a bare 'a'. The modifier must be re-injected regardless of
+        // shift_held.
+        let stroke = KeyStroke {
+            key: KeySpec::Char('a'),
+            mods: Modifiers {
+                shift: true,
+                ctrl: false,
+                alt: false,
+                win: false,
+            },
+        };
+        let mut events = Vec::new();
+        // shift_held = true is the exact case the old code mishandled: it
+        // skipped the shift modifier here.
+        append_keystroke_events(&mut events, &stroke, true, false, false, false);
+
+        // The shift modifier scancode (0x2A) must be present despite
+        // shift_held being true.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x2A, _, _))),
+            "shift modifier (0x2A) must be re-injected when shift_held, got {:?}",
+            events
+        );
+        // The 'a' scancode (0x1E) is still emitted.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, InputEvent::Scancode(0x1E, _, _))),
+            "expected 'a' scancode 0x1E in {:?}",
+            events
+        );
     }
 }
