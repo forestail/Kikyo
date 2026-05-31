@@ -407,6 +407,13 @@ pub struct PendingKey {
     /// Whether this key has been used/consumed in a chord decision.
     /// If true, this key will not be emitted as a KeyTap when flushed.
     pub used: bool,
+    /// Whether this key has already been emitted as a KeyTap by an earlier
+    /// pass through `check_chords` in the same on_event sequence. Set when
+    /// `flushed_indices[i]` is set together with a KeyTap push, and propagated
+    /// to `pending` even on early returns. Prevents the same KeyTap being
+    /// re-emitted in a later check_chords call when the pending entry was not
+    /// removed (e.g. because of an early `return output` skipping cleanup).
+    pub tapped_out: bool,
     // kind_hint: PendingKindHint
 }
 
@@ -532,6 +539,7 @@ impl ChordEngine {
                         t_down: now,
                         t_up: None,
                         used: false,
+                        tapped_out: false,
                     });
                 }
 
@@ -559,9 +567,9 @@ impl ChordEngine {
 
                 // 3. Flush Single Taps
                 if self.state.pending.len() == 1 {
-                    let (key, t_up, used) = {
+                    let (key, t_up, used, tapped_out) = {
                         let p = &self.state.pending[0];
-                        (p.key, p.t_up, p.used)
+                        (p.key, p.t_up, p.used, p.tapped_out)
                     };
 
                     if t_up.is_some() {
@@ -596,7 +604,7 @@ impl ChordEngine {
                                         _ => ThumbShiftSinglePress::None,
                                     };
 
-                                    if !used {
+                                    if !used && !tapped_out {
                                         match sp_setting {
                                             ThumbShiftSinglePress::None => {
                                                 // Disable single press (swallow)
@@ -619,12 +627,12 @@ impl ChordEngine {
                             ModifierKind::CharShift => {
                                 if self.state.used_modifiers.contains(&key) {
                                     self.state.used_modifiers.remove(&key);
-                                } else if !used {
+                                } else if !used && !tapped_out {
                                     output.push(Decision::KeyTap(key));
                                 }
                             }
                             ModifierKind::None => {
-                                if !used {
+                                if !used && !tapped_out {
                                     output.push(Decision::KeyTap(key));
                                 }
                             }
@@ -736,6 +744,7 @@ impl ChordEngine {
         let mut consumed_indices = vec![false; pending_len];
         let mut flushed_indices = vec![false; pending_len];
         let mut mark_as_used = vec![false; pending_len];
+        let mut mark_as_tapped = vec![false; pending_len];
 
         let mut ordered_indices: Vec<usize> = (0..pending_len).collect();
         ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
@@ -744,19 +753,28 @@ impl ChordEngine {
         if allow_three_key_chord && pending_len >= 3 {
             for oi in 0..ordered_indices.len() {
                 let idx1 = ordered_indices[oi];
-                if consumed_indices[idx1] || flushed_indices[idx1] {
+                if consumed_indices[idx1]
+                    || flushed_indices[idx1]
+                    || self.state.pending[idx1].tapped_out
+                {
                     continue;
                 }
 
                 for oj in (oi + 1)..ordered_indices.len() {
                     let idx2 = ordered_indices[oj];
-                    if consumed_indices[idx2] || flushed_indices[idx2] {
+                    if consumed_indices[idx2]
+                        || flushed_indices[idx2]
+                        || self.state.pending[idx2].tapped_out
+                    {
                         continue;
                     }
 
                     for ok in (oj + 1)..ordered_indices.len() {
                         let idx3 = ordered_indices[ok];
-                        if consumed_indices[idx3] || flushed_indices[idx3] {
+                        if consumed_indices[idx3]
+                            || flushed_indices[idx3]
+                            || self.state.pending[idx3].tapped_out
+                        {
                             continue;
                         }
 
@@ -796,19 +814,56 @@ impl ChordEngine {
                             // Wait for release
                             break;
                         }
-                        let valid = r12.unwrap() >= self.profile.char_key_overlap_ratio
+                        let valid_pairwise = r12.unwrap() >= self.profile.char_key_overlap_ratio
                             && r23.unwrap() >= self.profile.char_key_overlap_ratio
                             && r13.unwrap() >= self.profile.char_key_overlap_ratio;
+                        // Hybrid fallback for the "all three held at some point" pattern:
+                        //   - Binary check captures intent of "press 3 keys together" even
+                        //     when pairwise overlap ratios drop (e.g. brief simultaneous taps,
+                        //     "J↓ K↓ L↓ J↑ K↑ L↑").
+                        //   - BUT this alone over-fires for continuous-shift + roll patterns:
+                        //     one key held throughout while two others roll briefly. At the
+                        //     moment the second rolling key goes down, all three are pressed,
+                        //     so the binary check fires a spurious 3-key chord and emits an
+                        //     unintended chord character instead of the intended rolled output.
+                        //
+                        // So: only allow the binary fallback when the three keys' hold
+                        // durations are roughly symmetric. When asymmetric (one key acts as
+                        // continuous shift), require strict pairwise overlap, which lets
+                        // r23 (the rolling pair) correctly disqualify the chord.
+                        //
+                        // Symmetry is judged with char_key_overlap_ratio, the same threshold
+                        // used for the pairwise overlap check above: a deliberate 3-key press
+                        // keeps its hold durations within the same proportion that defines an
+                        // intentional overlap, so reusing it avoids adding a second tunable
+                        // constant.
+                        let p1_end = p1.t_up.unwrap_or(now);
+                        let p2_end = p2.t_up.unwrap_or(now);
+                        let p3_end = p3.t_up.unwrap_or(now);
+                        let p1_dur = p1_end.saturating_duration_since(p1.t_down);
+                        let p2_dur = p2_end.saturating_duration_since(p2.t_down);
+                        let p3_dur = p3_end.saturating_duration_since(p3.t_down);
+                        let min_dur = p1_dur.min(p2_dur).min(p3_dur);
+                        let max_dur = p1_dur.max(p2_dur).max(p3_dur);
+                        let symmetric_holds = if max_dur > Duration::ZERO {
+                            min_dur.as_secs_f64() / max_dur.as_secs_f64()
+                                >= self.profile.char_key_overlap_ratio
+                        } else {
+                            false
+                        };
+                        let all_three_held_at_some_point = p1.t_up.is_none_or(|t| t > p3.t_down)
+                            && p2.t_up.is_none_or(|t| t > p3.t_down);
+                        let valid = if symmetric_holds {
+                            valid_pairwise || all_three_held_at_some_point
+                        } else {
+                            valid_pairwise
+                        };
                         let has_modifier = self.modifier_kind(p1.key).is_modifier()
                             || self.modifier_kind(p2.key).is_modifier()
                             || self.modifier_kind(p3.key).is_modifier();
 
                         if valid && (!self.profile.require_modifier_for_char_chord || has_modifier)
                         {
-                            println!(
-                                "DEBUG: 3-key chord formed: {:?}, {:?}, {:?}",
-                                p1.key, p2.key, p3.key
-                            );
                             let k1 = p1.key;
                             let k2 = p2.key;
                             let k3 = p3.key;
@@ -829,10 +884,6 @@ impl ChordEngine {
                                 if !keep {
                                     consumed_indices[idx] = true;
                                 } else {
-                                    println!(
-                                        "DEBUG: Marking 3-key component as used: {:?} idx={}",
-                                        k, idx
-                                    );
                                     mark_as_used[idx] = true;
                                 }
                             }
@@ -877,6 +928,7 @@ impl ChordEngine {
             consumed_indices = vec![false; pending_len];
             flushed_indices = vec![false; pending_len];
             mark_as_used = vec![false; pending_len];
+            mark_as_tapped = vec![false; pending_len];
             ordered_indices = (0..pending_len).collect();
             ordered_indices.sort_unstable_by_key(|idx| self.state.pending[*idx].t_down);
         }
@@ -887,13 +939,19 @@ impl ChordEngine {
                 break;
             }
             let idx1 = ordered_indices[oi];
-            if consumed_indices[idx1] || flushed_indices[idx1] {
+            if consumed_indices[idx1]
+                || flushed_indices[idx1]
+                || self.state.pending[idx1].tapped_out
+            {
                 continue;
             }
 
             for oj in (oi + 1)..ordered_indices.len() {
                 let idx2 = ordered_indices[oj];
-                if consumed_indices[idx2] || flushed_indices[idx2] {
+                if consumed_indices[idx2]
+                    || flushed_indices[idx2]
+                    || self.state.pending[idx2].tapped_out
+                {
                     continue;
                 }
 
@@ -903,10 +961,8 @@ impl ChordEngine {
                 // If both keys have already been used in a chord (e.g. continuous shift),
                 // they should not form a new chord with each other.
                 if p1.used && p2.used {
-                    println!("DEBUG: Both keys used: {:?} {:?}", p1.key, p2.key);
                     // If p1 is released, we must flush it to prevent it from sticking in pending forever.
                     if p1.t_up.is_some() {
-                        println!("DEBUG: Flushing released used key: {:?}", p1.key);
                         flushed_indices[idx1] = true;
                         // KeyTap is suppressed by !p1.used check in flush block or automatic checks
                     }
@@ -923,6 +979,19 @@ impl ChordEngine {
                     None => {
                         if allow_three_key_chord {
                             // Wait for more events when 3-key chord extension is enabled.
+                            // Before the early return, run the full pending post-processing
+                            // via apply_pending_mutations: propagate used/tapped marks AND
+                            // remove flushed/consumed entries. Performing the complete
+                            // cleanup on every early-return path is what prevents stuck
+                            // pending — a key flushed (and KeyTap'd) in an earlier iteration
+                            // must not linger in pending, or the next on_event call would
+                            // re-emit the same KeyTap. (See test_repro_roll_*.)
+                            self.apply_pending_mutations(
+                                &consumed_indices,
+                                &flushed_indices,
+                                &mark_as_used,
+                                &mark_as_tapped,
+                            );
                             return output;
                         }
                         // In 2-key mode, keep waiting by default. However, if p1 is already
@@ -948,6 +1017,7 @@ impl ChordEngine {
 
                                     if !suppress_p1_tap && !p1.used {
                                         output.push(Decision::KeyTap(p1.key));
+                                        mark_as_tapped[idx1] = true;
                                     }
                                 }
                             }
@@ -967,6 +1037,7 @@ impl ChordEngine {
                             flushed_indices[idx1] = true;
                             if !p1.used {
                                 output.push(Decision::KeyTap(p1.key));
+                                mark_as_tapped[idx1] = true;
                             }
                             break;
                         }
@@ -1001,6 +1072,7 @@ impl ChordEngine {
 
                         if !suppress_p1_tap && !p1.used {
                             output.push(Decision::KeyTap(p1.key));
+                            mark_as_tapped[idx1] = true;
                         }
 
                         break;
@@ -1024,6 +1096,14 @@ impl ChordEngine {
                         }
                         if extension_wait {
                             // Wait globally for 3-key resolution.
+                            // BUGFIX: same partial cleanup as the ratio=None branch —
+                            // propagate used/tapped marks only, don't remove pending entries.
+                            self.apply_pending_mutations(
+                                &consumed_indices,
+                                &flushed_indices,
+                                &mark_as_used,
+                                &mark_as_tapped,
+                            );
                             return output;
                         }
                     }
@@ -1072,6 +1152,7 @@ impl ChordEngine {
 
                     if !suppress_p1_tap && !p1.used {
                         output.push(Decision::KeyTap(p1.key));
+                        mark_as_tapped[idx1] = true;
                     }
 
                     break;
@@ -1079,41 +1160,59 @@ impl ChordEngine {
             }
         }
 
-        // Update 'used' status on pending keys before removal
-        for (i, p) in self.state.pending.iter_mut().enumerate() {
-            if mark_as_used[i] {
-                p.used = true;
-            }
-        }
+        self.apply_pending_mutations(
+            &consumed_indices,
+            &flushed_indices,
+            &mark_as_used,
+            &mark_as_tapped,
+        );
 
+        output
+    }
+
+    /// Apply marked mutations (consumed/flushed/used/tapped) to `self.state.pending`.
+    /// Removes entries marked consumed or flushed and propagates used/tapped flags
+    /// into the surviving entries.
+    fn apply_pending_mutations(
+        &mut self,
+        consumed_indices: &[bool],
+        flushed_indices: &[bool],
+        mark_as_used: &[bool],
+        mark_as_tapped: &[bool],
+    ) {
         let has_consumed = consumed_indices.iter().any(|v| *v);
         let has_flushed = flushed_indices.iter().any(|v| *v);
         if has_consumed || has_flushed {
             let old_pending = std::mem::take(&mut self.state.pending);
             let mut new_pending = Vec::with_capacity(old_pending.len());
             for (i, mut p) in old_pending.into_iter().enumerate() {
-                if consumed_indices[i] || flushed_indices[i] {
+                let removed =
+                    i < consumed_indices.len() && (consumed_indices[i] || flushed_indices[i]);
+                if removed {
                     if !self.state.pressed.contains(&p.key) {
                         self.state.down_ts.remove(&p.key);
                     }
                     continue;
                 }
-                if mark_as_used[i] {
+                if i < mark_as_used.len() && mark_as_used[i] {
                     p.used = true;
+                }
+                if i < mark_as_tapped.len() && mark_as_tapped[i] {
+                    p.tapped_out = true;
                 }
                 new_pending.push(p);
             }
             self.state.pending = new_pending;
         } else {
-            // No structural change, but we might need to update 'used' flags
             for (i, p) in self.state.pending.iter_mut().enumerate() {
-                if mark_as_used[i] {
+                if i < mark_as_used.len() && mark_as_used[i] {
                     p.used = true;
+                }
+                if i < mark_as_tapped.len() && mark_as_tapped[i] {
+                    p.tapped_out = true;
                 }
             }
         }
-
-        output
     }
 
     fn pair_overlap_ratio(
@@ -2261,5 +2360,331 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ===== Repro tests for the roll duplicate-base-char issue =====
+    fn collect_keytaps(decisions: &[Decision]) -> Vec<ScKey> {
+        decisions
+            .iter()
+            .filter_map(|d| {
+                if let Decision::KeyTap(k) = d {
+                    Some(*k)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_repro_roll_jkl_slow_two_triggers() {
+        // Scenario: J↓ K↓ J↑ L↓ K↑ L↑
+        // J,K both trigger keys; L non-trigger. Slow roll.
+        let t0 = Instant::now();
+        let k_j = make_key(0x24);
+        let k_k = make_key(0x25);
+        let k_l = make_key(0x26);
+        let mut profile = continuous_char_profile(0.5, &[k_j, k_k]);
+        profile.max_chord_size = 3;
+        let mut engine = ChordEngine::new(profile);
+
+        let log_event = |label: &str, decisions: &[Decision]| {
+            eprintln!("    [{}] -> {:?}", label, decisions);
+        };
+        let mut all_decisions = Vec::new();
+        let r = engine.on_event(make_event(k_j, KeyEdge::Down, t0));
+        log_event("J↓ t=0", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(100),
+        ));
+        log_event("K↓ t=100", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_j,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(150),
+        ));
+        log_event("J↑ t=150", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_l,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(200),
+        ));
+        log_event("L↓ t=200", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_k,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(250),
+        ));
+        log_event("K↑ t=250", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_l,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(300),
+        ));
+        log_event("L↑ t=300", &r);
+        all_decisions.extend(r);
+
+        let taps = collect_keytaps(&all_decisions);
+        let j_taps = taps.iter().filter(|k| **k == k_j).count();
+        eprintln!("[SLOW JKL] J count: {}", j_taps);
+        assert!(
+            j_taps <= 1,
+            "BUG: J keytap emitted {} times (expected <=1)",
+            j_taps
+        );
+    }
+
+    #[test]
+    fn test_repro_roll_jkl_fast_two_triggers() {
+        let t0 = Instant::now();
+        let k_j = make_key(0x24);
+        let k_k = make_key(0x25);
+        let k_l = make_key(0x26);
+        let mut profile = continuous_char_profile(0.5, &[k_j, k_k]);
+        profile.max_chord_size = 3;
+        let mut engine = ChordEngine::new(profile);
+
+        let mut all_decisions = Vec::new();
+        all_decisions.extend(engine.on_event(make_event(k_j, KeyEdge::Down, t0)));
+        all_decisions.extend(engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_j,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(20),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_l,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(30),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_k,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(40),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_l,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(50),
+        )));
+
+        eprintln!("[FAST JKL] decisions: {:#?}", all_decisions);
+        let taps = collect_keytaps(&all_decisions);
+        let j_taps = taps.iter().filter(|k| **k == k_j).count();
+        eprintln!("[FAST JKL] keytaps: {:?}, J count: {}", taps, j_taps);
+        assert!(
+            j_taps <= 1,
+            "BUG: J keytap emitted {} times (expected <=1)",
+            j_taps
+        );
+    }
+
+    #[test]
+    fn test_repro_roll_dsa_one_trigger() {
+        // Pattern: D↓ S↓ A↓ D↑ S↑ A↑, only D is a trigger key.
+        // Symptom: the trigger key's base char was emitted multiple times
+        // instead of once when rolled together with two non-trigger keys.
+        let t0 = Instant::now();
+        let k_d = make_key(0x20);
+        let k_s = make_key(0x1F);
+        let k_a = make_key(0x1E);
+        let mut profile = continuous_char_profile(0.5, &[k_d]);
+        profile.max_chord_size = 3;
+        let mut engine = ChordEngine::new(profile);
+
+        let mut all_decisions = Vec::new();
+        all_decisions.extend(engine.on_event(make_event(k_d, KeyEdge::Down, t0)));
+        all_decisions.extend(engine.on_event(make_event(
+            k_s,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(50),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_a,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(100),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_d,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(150),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_s,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(200),
+        )));
+        all_decisions.extend(engine.on_event(make_event(
+            k_a,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(250),
+        )));
+
+        eprintln!("[DSA] decisions: {:#?}", all_decisions);
+        let taps = collect_keytaps(&all_decisions);
+        let d_taps = taps.iter().filter(|k| **k == k_d).count();
+        eprintln!("[DSA] keytaps: {:?}, D count: {}", taps, d_taps);
+        assert!(
+            d_taps <= 1,
+            "BUG: D keytap emitted {} times (expected <=1)",
+            d_taps
+        );
+    }
+
+    #[test]
+    fn test_repro_jkl_all_down_then_all_up() {
+        // Pattern: J↓ K↓ L↓ J↑ K↑ L↑ (all 3 keys held simultaneously, then released in order)
+        // J,K trigger keys; L non-trigger.
+        // Real Kikyo behavior reported by user: produces unexpected output.
+        let t0 = Instant::now();
+        let k_j = make_key(0x24);
+        let k_k = make_key(0x25);
+        let k_l = make_key(0x26);
+        let mut profile = continuous_char_profile(0.5, &[k_j, k_k]);
+        profile.max_chord_size = 3;
+        let mut engine = ChordEngine::new(profile);
+
+        let log_event = |label: &str, decisions: &[Decision]| {
+            eprintln!("    [{}] -> {:?}", label, decisions);
+        };
+        let mut all_decisions = Vec::new();
+        let r = engine.on_event(make_event(k_j, KeyEdge::Down, t0));
+        log_event("J↓ t=0", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(10),
+        ));
+        log_event("K↓ t=10", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(
+            k_l,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(20),
+        ));
+        log_event("L↓ t=20", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(k_j, KeyEdge::Up, t0 + Duration::from_millis(30)));
+        log_event("J↑ t=30", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(40)));
+        log_event("K↑ t=40", &r);
+        all_decisions.extend(r);
+        let r = engine.on_event(make_event(k_l, KeyEdge::Up, t0 + Duration::from_millis(50)));
+        log_event("L↑ t=50", &r);
+        all_decisions.extend(r);
+
+        eprintln!("[JKL all-down-then-up] all decisions: {:#?}", all_decisions);
+
+        // After the "all three held at some point" rule, this pattern should
+        // be a 3-key Chord([J,K,L]) which engine.rs resolves (and falls back
+        // to per-key emit if no chord is defined).
+        let three_key_chord = all_decisions.iter().any(|d| {
+            matches!(d, Decision::Chord(keys) if keys.len() == 3
+                && keys.contains(&k_j) && keys.contains(&k_k) && keys.contains(&k_l))
+        });
+        let two_key_jk_chord = all_decisions.iter().any(|d| {
+            matches!(d, Decision::Chord(keys) if keys.len() == 2
+                && keys.contains(&k_j) && keys.contains(&k_k))
+        });
+
+        assert!(
+            three_key_chord,
+            "Expected 3-key Chord([J,K,L]), got: {:#?}",
+            all_decisions
+        );
+        assert!(
+            !two_key_jk_chord,
+            "Should not have produced a 2-key J+K chord (older-key would be suppressed by engine.rs)"
+        );
+    }
+
+    #[test]
+    fn test_repro_roll_then_keys_no_stuck_keytap() {
+        // Scenario: roll two physical keys (M, K) at speed, then press a
+        // third key (O), then any subsequent key (X). The O keytap gets
+        // "stuck" and re-fires on the following key.
+        //
+        // Internally: after the M/K roll, M and K are flushed as KeyTap.
+        // With the previous partial-cleanup early-return path, the flushed
+        // entries were never removed from `pending`, only flag-marked. The
+        // next O↓ would therefore see stale pending entries, hit an
+        // extension_wait, early-return WITHOUT removing the flushed/consumed
+        // entries again, and leave O in pending unflushed. On the next key
+        // event, O's KeyTap re-fires.
+        //
+        // After the fix: apply_pending_mutations always removes flushed/
+        // consumed entries even on early returns.
+        let t0 = Instant::now();
+        let k_m = make_key(0x32); // US 'm'
+        let k_k = make_key(0x25); // US 'k'
+        let k_o = make_key(0x18); // US 'o'
+        let k_x = make_key(0x2D); // arbitrary follow-up key (US 'x')
+        let mut profile = continuous_char_profile(0.5, &[]);
+        profile.max_chord_size = 3;
+        let mut engine = ChordEngine::new(profile);
+
+        let mut all = Vec::new();
+        // roll: M↓ K↓ M↑ K↑
+        all.extend(engine.on_event(make_event(k_m, KeyEdge::Down, t0)));
+        all.extend(engine.on_event(make_event(
+            k_k,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(20),
+        )));
+        all.extend(engine.on_event(make_event(k_m, KeyEdge::Up, t0 + Duration::from_millis(40))));
+        all.extend(engine.on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(60))));
+        // third key
+        all.extend(engine.on_event(make_event(
+            k_o,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(100),
+        )));
+        all.extend(engine.on_event(make_event(
+            k_o,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(120),
+        )));
+        // subsequent arbitrary key
+        all.extend(engine.on_event(make_event(
+            k_x,
+            KeyEdge::Down,
+            t0 + Duration::from_millis(160),
+        )));
+        all.extend(engine.on_event(make_event(
+            k_x,
+            KeyEdge::Up,
+            t0 + Duration::from_millis(180),
+        )));
+
+        eprintln!("[ROLL+KEY] decisions: {:#?}", all);
+        let taps = collect_keytaps(&all);
+        let o_count = taps.iter().filter(|k| **k == k_o).count();
+        let x_count = taps.iter().filter(|k| **k == k_x).count();
+        eprintln!("[ROLL+KEY] taps: o={}, x={}", o_count, x_count);
+        // The M/K roll is emitted as either Chord([M,K]) (which engine.rs
+        // unfolds into per-key KeyTaps) or as direct KeyTaps — either is fine
+        // for chord_engine alone. The regression we are guarding against is O
+        // sticking in pending and re-firing on subsequent keys.
+        assert_eq!(
+            o_count, 1,
+            "O should be tapped exactly once (regression: was sticking after multi-key roll)"
+        );
+        assert_eq!(
+            x_count, 1,
+            "X (subsequent key) should be tapped exactly once (regression: stale O was firing)"
+        );
     }
 }
