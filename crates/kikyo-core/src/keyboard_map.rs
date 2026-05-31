@@ -1,6 +1,14 @@
 use crate::types::{Rc, ScKey};
 use std::collections::HashMap;
 
+/// Coarse keyboard layout family, used to drive char->scancode conversion on the output side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardLayout {
+    Jis,
+    Us,
+    Ax,
+}
+
 /// Provides dynamic keyboard layout mapping (Scancode <-> Row/Col, Scancode <-> KeyName)
 #[derive(Debug, Clone)]
 pub struct KeyboardMap {
@@ -56,6 +64,19 @@ impl KeyboardMap {
 
     pub fn key_name_to_sc(&self, name: &str) -> Option<u16> {
         self.name_to_sc.get(name).copied()
+    }
+
+    /// Returns the coarse keyboard family inferred from the map's name.
+    /// Used by the output path (char->scancode) to pick the right symbol table.
+    pub fn layout(&self) -> KeyboardLayout {
+        let n = self.name.to_ascii_uppercase();
+        if n.starts_with("US") {
+            KeyboardLayout::Us
+        } else if n.starts_with("AX") {
+            KeyboardLayout::Ax
+        } else {
+            KeyboardLayout::Jis
+        }
     }
 
     pub fn load_from_file(
