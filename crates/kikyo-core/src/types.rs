@@ -29,6 +29,8 @@ pub struct ShortcutKey {
 pub enum InputEvent {
     /// Scancode injection (scancode, ext, up).
     Scancode(u16, bool, bool),
+    /// Press and release a scancode with modifiers resolved at injection time.
+    ModifiedScancode(u16, bool, Modifiers),
     /// Unicode character injection (char, up).
     Unicode(char, bool),
     /// Commit current IME composition if any.

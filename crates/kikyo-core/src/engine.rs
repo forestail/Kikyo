@@ -2555,7 +2555,8 @@ fn append_keystroke_events_layout(
         }
 
         if mods.shift && shift_held {
-            mods.shift = false;
+            events.push(InputEvent::ModifiedScancode(sc, ext, mods));
+            return;
         }
 
         let mods_evs = modifier_scancodes(mods);
@@ -6986,6 +6987,32 @@ xx
                 );
             }
             other => panic!("Expected Inject, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_shift_held_shifted_output_uses_modified_scancode() {
+        let stroke = KeyStroke {
+            key: KeySpec::Char('a'),
+            mods: Modifiers {
+                shift: true,
+                ctrl: false,
+                alt: false,
+                win: false,
+            },
+        };
+        let mut events = Vec::new();
+
+        append_keystroke_events(&mut events, &stroke, true, false, false, false);
+
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            InputEvent::ModifiedScancode(sc, ext, mods) => {
+                assert_eq!(sc, 0x1E);
+                assert!(!ext);
+                assert!(mods.shift);
+            }
+            ref other => panic!("expected ModifiedScancode, got {:?}", other),
         }
     }
 }

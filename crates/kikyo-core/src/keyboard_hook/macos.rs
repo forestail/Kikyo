@@ -388,6 +388,23 @@ fn win_to_mac(sc: u16, ext: bool) -> u16 {
     }
 }
 
+fn event_flags_for_modifiers(mods: crate::types::Modifiers) -> u64 {
+    let mut flags = 0;
+    if mods.shift {
+        flags |= kCGEventFlagMaskShift;
+    }
+    if mods.ctrl {
+        flags |= kCGEventFlagMaskControl;
+    }
+    if mods.alt {
+        flags |= kCGEventFlagMaskAlternate;
+    }
+    if mods.win {
+        flags |= kCGEventFlagMaskCommand;
+    }
+    flags
+}
+
 extern "C" fn tap_callback(
     _proxy: CGEventTapProxy,
     type_: CGEventType,
@@ -684,6 +701,11 @@ pub fn install_hook() -> anyhow::Result<()> {
                                     }
                                 }
                                 let _ = inject_scancode_with_flags(sc, ext, up, injected_flags);
+                            }
+                            InputEvent::ModifiedScancode(sc, ext, mods) => {
+                                let flags = injected_flags | event_flags_for_modifiers(mods);
+                                let _ = inject_scancode_with_flags(sc, ext, false, flags);
+                                let _ = inject_scancode_with_flags(sc, ext, true, flags);
                             }
                             InputEvent::Unicode(c, up) => {
                                 let _ = inject_unicode_with_flags(c, up, injected_flags);
