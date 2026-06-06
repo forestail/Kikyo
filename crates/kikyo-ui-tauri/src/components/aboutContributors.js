@@ -9,6 +9,7 @@ export const ABOUT_ARRAY_VALIDATION_CONTRIBUTORS = [
   "京橋 ひよわ",
   "kouy（山原コウ）",
   "aimu_san2",
+  "tokiokashi",
 ];
 
 function normalizeContributorNames(contributors) {
