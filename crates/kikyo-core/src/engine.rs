@@ -2533,9 +2533,17 @@ fn append_keystroke_events_layout(
             return;
         }
         KeySpec::DirectString(ref s) => {
-            // Hand off the complex IME handling logic to the hook (outside the lock).
-            // This avoids deadlock when calling IME APIs while holding the Engine lock.
-            events.push(InputEvent::DirectString(s.clone()));
+            // Empty DirectString cells (e.g. `""` in a layout) are conventionally
+            // used as a "block" marker for a physical key. Emitting an empty
+            // DirectString triggers IME-control side effects (composition commit,
+            // IME state notifications) on the hook side, which surprised users
+            // who only intended a no-op. Skip the event when the string is empty
+            // so the cell still blocks pass-through but stays a true no-op.
+            if !s.is_empty() {
+                // Hand off the complex IME handling logic to the hook (outside the lock).
+                // This avoids deadlock when calling IME APIs while holding the Engine lock.
+                events.push(InputEvent::DirectString(s.clone()));
+            }
             return;
         }
     };
@@ -2547,7 +2555,8 @@ fn append_keystroke_events_layout(
         }
 
         if mods.shift && shift_held {
-            mods.shift = false;
+            events.push(InputEvent::ModifiedScancode(sc, ext, mods));
+            return;
         }
 
         let mods_evs = modifier_scancodes(mods);
@@ -6930,6 +6939,80 @@ xx
                 }
             }
             other => panic!("Expected Inject for direct string + key, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_empty_directstring_is_noop() {
+        // An empty DirectString cell (`""`) is used as a "block" marker: it must
+        // suppress pass-through WITHOUT emitting an empty DirectString event,
+        // which would otherwise trigger IME-control side effects (composition
+        // commit, IME state notifications) on the hook side. A non-empty
+        // DirectString is unchanged. Layout: row2 col0 = `""` then `b`.
+        let config = "
+[ローマ字シフト無し]
+xx
+xx
+\"\"b
+";
+        let layout =
+            crate::parser::parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+                .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        // 'a' (0x1E) -> "" (empty DirectString, must be skipped) then 'b' (0x30)
+        assert_eq!(
+            engine.process_key(0x1E, false, false, false),
+            KeyAction::Block
+        );
+        let res = engine.process_key(0x1E, false, true, false);
+        match res {
+            KeyAction::Inject(evs) => {
+                // No DirectString event must be emitted for the empty cell.
+                assert!(
+                    !evs.iter().any(|e| matches!(e, InputEvent::DirectString(_))),
+                    "empty DirectString must be skipped, got {:?}",
+                    evs
+                );
+                // The following `b` key is still emitted (non-DirectString path
+                // unchanged): down of scancode 0x30.
+                assert!(
+                    evs.iter()
+                        .any(|e| matches!(e, InputEvent::Scancode(0x30, _, false))),
+                    "expected `b` (0x30) down in {:?}",
+                    evs
+                );
+            }
+            other => panic!("Expected Inject, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_shift_held_shifted_output_uses_modified_scancode() {
+        let stroke = KeyStroke {
+            key: KeySpec::Char('a'),
+            mods: Modifiers {
+                shift: true,
+                ctrl: false,
+                alt: false,
+                win: false,
+            },
+        };
+        let mut events = Vec::new();
+
+        append_keystroke_events(&mut events, &stroke, true, false, false, false);
+
+        assert_eq!(events.len(), 1);
+        match events[0] {
+            InputEvent::ModifiedScancode(sc, ext, mods) => {
+                assert_eq!(sc, 0x1E);
+                assert!(!ext);
+                assert!(mods.shift);
+            }
+            ref other => panic!("expected ModifiedScancode, got {:?}", other),
         }
     }
 }

@@ -278,6 +278,12 @@ pub fn count_output_virtual_keys(
                     }
                 }
             }
+            crate::types::InputEvent::ModifiedScancode(sc, _ext, _mods) => {
+                let sc_key = crate::types::ScKey::new(*sc, false);
+                if keyboard_map.sc_to_rc.contains_key(&sc_key) {
+                    count += 1;
+                }
+            }
             crate::types::InputEvent::Unicode(_, up) => {
                 if !up {
                     count += 1;
@@ -338,16 +344,17 @@ mod tests {
 
     #[test]
     fn test_count_output_virtual_keys() {
-        use crate::types::InputEvent;
+        use crate::types::{InputEvent, Modifiers};
         let map = crate::keyboard_map::new_jis_106();
         let events = vec![
             InputEvent::Scancode(0x1E, false, false), // 'a' down (character key)
             InputEvent::Scancode(0x1E, false, true),  // 'a' up
+            InputEvent::ModifiedScancode(0x30, false, Modifiers::none()), // 'b'
             InputEvent::Unicode('あ', false),          // unicode down
             InputEvent::Unicode('あ', true),           // unicode up
             InputEvent::DirectString("こんにちは".to_string()),
         ];
-        assert_eq!(count_output_virtual_keys(&events, &map), 7); // 1 + 1 + 5
+        assert_eq!(count_output_virtual_keys(&events, &map), 8); // 1 + 1 + 1 + 5
     }
 
     #[test]

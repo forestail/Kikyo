@@ -263,6 +263,69 @@ fn captured_shift_down_snapshot() -> (bool, bool) {
     (state.left.physical_down, state.right.physical_down)
 }
 
+fn modifier_scancodes_for_injection(mods: crate::types::Modifiers) -> Vec<(u16, bool)> {
+    let mut scancodes = Vec::new();
+    if mods.ctrl {
+        scancodes.push((0x1D, false));
+    }
+    if mods.shift {
+        scancodes.push((0x2A, false));
+    }
+    if mods.alt {
+        scancodes.push((0x38, false));
+    }
+    if mods.win {
+        scancodes.push((0x5B, true));
+    }
+    scancodes
+}
+
+fn virtual_key_is_down(vk: i32) -> bool {
+    unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
+}
+
+fn shift_available_for_modified_injection() -> bool {
+    let state = lock_captured_shift_state();
+
+    let left_available = virtual_key_is_down(VK_LSHIFT.0 as i32)
+        && !(state.left.physical_down && !state.left.os_down_sent);
+    let right_available = virtual_key_is_down(VK_RSHIFT.0 as i32)
+        && !(state.right.physical_down && !state.right.os_down_sent);
+
+    left_available || right_available
+}
+
+fn modifier_available_for_injection(sc: u16, ext: bool) -> bool {
+    match (sc, ext) {
+        (0x2A, false) | (0x36, false) => shift_available_for_modified_injection(),
+        _ => false,
+    }
+}
+
+fn inject_modified_scancode(
+    sc: u16,
+    ext: bool,
+    mods: crate::types::Modifiers,
+) -> anyhow::Result<()> {
+    let mut injected_mods = Vec::new();
+
+    for (mod_sc, mod_ext) in modifier_scancodes_for_injection(mods) {
+        if !modifier_available_for_injection(mod_sc, mod_ext) {
+            inject_scancode(mod_sc, mod_ext, false)?;
+            injected_mods.push((mod_sc, mod_ext));
+        }
+    }
+
+    inject_scancode(sc, ext, false)?;
+    inject_scancode(sc, ext, true)?;
+
+    for (mod_sc, mod_ext) in injected_mods.into_iter().rev() {
+        inject_scancode(mod_sc, mod_ext, true)?;
+    }
+
+    Ok(())
+}
+
 fn clear_captured_shift_state() {
     let mut state = lock_captured_shift_state();
     *state = CapturedShiftState::default();
@@ -819,6 +882,9 @@ fn process_event(event: HookEvent) {
                 match ev {
                     InputEvent::Scancode(sc, ext, up) => {
                         let _ = inject_scancode(sc, ext, up);
+                    }
+                    InputEvent::ModifiedScancode(sc, ext, mods) => {
+                        let _ = inject_modified_scancode(sc, ext, mods);
                     }
                     InputEvent::Unicode(c, up) => {
                         let _ = inject_unicode(c, up);
