@@ -1,9 +1,10 @@
 use crate::engine::ENGINE;
 use crate::types::InputEvent;
 use crate::types::KeyAction;
+use crate::types::ScKey;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread;
 use std::time::Duration;
@@ -77,6 +78,7 @@ static LEFT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_CTRL_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static RIGHT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
+static CURSOR_KEYS_NEED_HANDLING: AtomicU8 = AtomicU8::new(0);
 static ENGINE_ENABLED: AtomicBool = AtomicBool::new(true);
 static SUSPEND_SHORTCUT: AtomicU64 = AtomicU64::new(0);
 static SETTINGS_SHORTCUT: AtomicU64 = AtomicU64::new(0);
@@ -89,6 +91,10 @@ const HOOK_STALL_MS: u64 = 5000;
 const INPUT_RECENT_MS: u64 = 2000;
 const REINSTALL_BACKOFF_MS: u64 = 10000;
 const WM_HOOK_REINSTALL: u32 = WM_APP + 0x4B10;
+const CURSOR_UP_BIT: u8 = 1 << 0;
+const CURSOR_LEFT_BIT: u8 = 1 << 1;
+const CURSOR_RIGHT_BIT: u8 = 1 << 2;
+const CURSOR_DOWN_BIT: u8 = 1 << 3;
 
 #[derive(Clone, Copy, Debug)]
 struct HookEvent {
@@ -121,6 +127,35 @@ fn encode_shortcut(s: &Option<crate::types::ShortcutKey>) -> u64 {
     } else {
         0
     }
+}
+
+fn cursor_key_bit(sc: u16, ext: bool) -> Option<u8> {
+    if !ext {
+        return None;
+    }
+
+    match sc {
+        0x48 => Some(CURSOR_UP_BIT),
+        0x4B => Some(CURSOR_LEFT_BIT),
+        0x4D => Some(CURSOR_RIGHT_BIT),
+        0x50 => Some(CURSOR_DOWN_BIT),
+        _ => None,
+    }
+}
+
+fn cursor_key_handling_mask(engine: &crate::engine::Engine) -> u8 {
+    let mut mask = 0;
+    for (key, bit) in [
+        (ScKey::new(0x48, true), CURSOR_UP_BIT),
+        (ScKey::new(0x4B, true), CURSOR_LEFT_BIT),
+        (ScKey::new(0x4D, true), CURSOR_RIGHT_BIT),
+        (ScKey::new(0x50, true), CURSOR_DOWN_BIT),
+    ] {
+        if engine.needs_cursor_key_handling(key) {
+            mask |= bit;
+        }
+    }
+    mask
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -392,6 +427,7 @@ pub fn refresh_runtime_flags_from_engine() {
         RIGHT_CTRL_NEEDS_HANDLING.store(false, Ordering::Relaxed);
         LEFT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
         RIGHT_WIN_NEEDS_HANDLING.store(false, Ordering::Relaxed);
+        CURSOR_KEYS_NEED_HANDLING.store(0, Ordering::Relaxed);
         reset_transient_input_state();
         return;
     }
@@ -411,6 +447,7 @@ pub fn refresh_runtime_flags_from_engine() {
     RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
     LEFT_WIN_NEEDS_HANDLING.store(engine.needs_left_win_handling(), Ordering::Relaxed);
     RIGHT_WIN_NEEDS_HANDLING.store(engine.needs_right_win_handling(), Ordering::Relaxed);
+    CURSOR_KEYS_NEED_HANDLING.store(cursor_key_handling_mask(&engine), Ordering::Relaxed);
 }
 
 /// Starts the keyboard hook.
@@ -637,6 +674,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             return pass_through();
         }
 
+        let raw_ext =
+            (kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0;
+        if let Some(bit) = cursor_key_bit(scan_code, raw_ext) {
+            let cursor_needs_handling =
+                (CURSOR_KEYS_NEED_HANDLING.load(Ordering::Relaxed) & bit) != 0;
+            if !cursor_needs_handling && !is_any_shortcut {
+                return pass_through();
+            }
+        }
+
         // Alt may be used as a logical key source via [機能キー] swap.
         // In that case we must feed Alt events into the engine.
         let alt_needs_handling = ALT_NEEDS_HANDLING.load(Ordering::Relaxed);
@@ -737,8 +784,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             return pass_through();
         }
 
-        let raw_ext =
-            (kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0;
         // Shift is represented as non-extended scancode in profile/config.
         // Normalize here so RightShift always matches thumb-shift assignment.
         let ext = if is_shift_vk { false } else { raw_ext };
@@ -831,6 +876,7 @@ fn process_event(event: HookEvent) {
         RIGHT_CTRL_NEEDS_HANDLING.store(engine.needs_right_ctrl_handling(), Ordering::Relaxed);
         LEFT_WIN_NEEDS_HANDLING.store(engine.needs_left_win_handling(), Ordering::Relaxed);
         RIGHT_WIN_NEEDS_HANDLING.store(engine.needs_right_win_handling(), Ordering::Relaxed);
+        CURSOR_KEYS_NEED_HANDLING.store(cursor_key_handling_mask(&engine), Ordering::Relaxed);
 
         let mut refresh_flags = false;
 
@@ -1304,6 +1350,49 @@ mod tests {
 
         let state = lock_captured_shift_state();
         assert_eq!(*state, CapturedShiftState::default());
+    }
+
+    #[test]
+    fn cursor_key_bit_only_matches_extended_arrow_keys() {
+        assert_eq!(cursor_key_bit(0x48, true), Some(CURSOR_UP_BIT));
+        assert_eq!(cursor_key_bit(0x4B, true), Some(CURSOR_LEFT_BIT));
+        assert_eq!(cursor_key_bit(0x4D, true), Some(CURSOR_RIGHT_BIT));
+        assert_eq!(cursor_key_bit(0x50, true), Some(CURSOR_DOWN_BIT));
+
+        assert_eq!(cursor_key_bit(0x48, false), None);
+        assert_eq!(cursor_key_bit(0x47, true), None);
+    }
+
+    #[test]
+    fn cursor_key_handling_mask_tracks_thumb_assignments() {
+        let mut engine = crate::engine::Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::Up;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::Down;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert_eq!(
+            cursor_key_handling_mask(&engine),
+            CURSOR_UP_BIT | CURSOR_DOWN_BIT
+        );
+    }
+
+    #[test]
+    fn cursor_key_handling_mask_tracks_function_key_sources() {
+        let layout = crate::parser::parse_layout_content(
+            "
+[機能キー]
+左, 拡張1
+",
+            &crate::keyboard_map::new_jis_106(),
+        )
+        .expect("layout should parse");
+        let mut engine = crate::engine::Engine::default();
+        engine.load_layout(layout);
+
+        assert_eq!(cursor_key_handling_mask(&engine), CURSOR_LEFT_BIT);
     }
 
     #[test]

@@ -249,6 +249,13 @@ impl Engine {
         self.needs_modifier_handling(&[ScKey::new(0x36, false)])
     }
 
+    pub fn needs_cursor_key_handling(&self, key: ScKey) -> bool {
+        if !is_cursor_key(key) {
+            return false;
+        }
+        self.needs_modifier_handling(&[key])
+    }
+
     fn has_japanese_section_with_suffix(layout: &Layout, suffix: &str) -> bool {
         with_section_name(ROMAJI_SECTION_PREFIX, suffix, |section_name| {
             layout.sections.contains_key(section_name)
@@ -2374,6 +2381,10 @@ fn is_virtual_extended_key(key: ScKey) -> bool {
             key.sc,
             EXTENDED_KEY_1_SC | EXTENDED_KEY_2_SC | EXTENDED_KEY_3_SC | EXTENDED_KEY_4_SC
         )
+}
+
+fn is_cursor_key(key: ScKey) -> bool {
+    key.ext && matches!(key.sc, 0x48 | 0x4B | 0x4D | 0x50)
 }
 
 fn build_function_key_swap_map(
@@ -5448,6 +5459,84 @@ xx,xx,xx,xx,xx,xx,xx,xx,xx,xx,xx
         assert!(
             !engine.needs_right_shift_handling(),
             "RightShift should not be handled when it is not assigned"
+        );
+    }
+
+    #[test]
+    fn test_needs_cursor_key_handling_for_thumb_shift_assignment() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::Up;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert!(
+            engine.needs_cursor_key_handling(ScKey::new(0x48, true)),
+            "Up should be handled when it is assigned as thumb shift"
+        );
+        assert!(
+            !engine.needs_cursor_key_handling(ScKey::new(0x50, true)),
+            "Down should not be handled when it is not assigned"
+        );
+    }
+
+    #[test]
+    fn test_needs_cursor_key_handling_for_extended_thumb_assignment() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        profile.extended_thumb1.key = crate::chord_engine::ThumbKeySelect::Down;
+        profile.extended_thumb2.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+
+        assert!(
+            engine.needs_cursor_key_handling(ScKey::new(0x50, true)),
+            "Down should be handled when it is assigned as extended thumb shift"
+        );
+        assert!(
+            !engine.needs_cursor_key_handling(ScKey::new(0x48, true)),
+            "Up should not be handled when it is not assigned"
+        );
+    }
+
+    #[test]
+    fn test_needs_cursor_key_handling_for_function_key_swap_source() {
+        let config = "
+[機能キー]
+上, 拡張1
+";
+        let layout = parse_layout_content(config, &crate::keyboard_map::new_jis_106())
+            .expect("Failed to parse config");
+
+        let mut engine = Engine::default();
+        engine.set_ignore_ime(true);
+        engine.load_layout(layout);
+
+        assert!(
+            engine.needs_cursor_key_handling(ScKey::new(0x48, true)),
+            "Up should be handled when it is used as [機能キー] swap source"
+        );
+        assert!(
+            !engine.needs_cursor_key_handling(ScKey::new(0x4B, true)),
+            "Left should not be handled when it is not a [機能キー] source"
+        );
+    }
+
+    #[test]
+    fn test_needs_cursor_key_handling_is_disabled_when_engine_disabled() {
+        let mut engine = Engine::default();
+        let mut profile = engine.get_profile();
+        profile.thumb_left.key = crate::chord_engine::ThumbKeySelect::Right;
+        profile.thumb_right.key = crate::chord_engine::ThumbKeySelect::None;
+        engine.set_profile(profile);
+        engine.set_enabled(false);
+
+        assert!(
+            !engine.needs_cursor_key_handling(ScKey::new(0x4D, true)),
+            "Cursor key handling should be off when engine is disabled"
         );
     }
 
