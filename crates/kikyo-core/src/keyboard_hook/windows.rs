@@ -75,6 +75,7 @@ static LAST_QUERIED_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static LAST_HOOK_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_MOUSE_HOOK_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_MOUSE_INPUT_TICK: AtomicU32 = AtomicU32::new(0);
 static LAST_REINSTALL_MS: AtomicU64 = AtomicU64::new(0);
 static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LCTRL_PHYSICAL_DOWN: AtomicBool = AtomicBool::new(false);
@@ -99,6 +100,7 @@ const HOOK_QUEUE_SIZE: usize = 1024;
 const WATCHDOG_INTERVAL_MS: u64 = 1000;
 const HOOK_STALL_MS: u64 = 5000;
 const INPUT_RECENT_MS: u64 = 2000;
+const INPUT_TICK_TOLERANCE_MS: u32 = 100;
 const REINSTALL_BACKOFF_MS: u64 = 10000;
 const WM_HOOK_REINSTALL: u32 = WM_APP + 0x4B10;
 const CURSOR_UP_BIT: u8 = 1 << 0;
@@ -596,6 +598,14 @@ fn reset_transient_input_state() {
 fn clear_hook_activity_timestamps() {
     LAST_HOOK_MS.store(0, Ordering::Relaxed);
     LAST_MOUSE_HOOK_MS.store(0, Ordering::Relaxed);
+    LAST_MOUSE_INPUT_TICK.store(0, Ordering::Relaxed);
+}
+
+fn mark_hooks_installed() {
+    let now = monotonic_ms().max(1);
+    LAST_HOOK_MS.store(now, Ordering::Relaxed);
+    LAST_MOUSE_HOOK_MS.store(now, Ordering::Relaxed);
+    LAST_MOUSE_INPUT_TICK.store(0, Ordering::Relaxed);
 }
 
 fn ensure_worker_thread() {
@@ -680,26 +690,53 @@ pub fn install_hook() -> anyhow::Result<()> {
 
     info!("Installing keyboard hook...");
 
-    // Avoid leaking an old handle if this is a reinstall request.
-    uninstall_hook();
-    reset_transient_input_state();
     ensure_foreground_monitor_thread();
     refresh_foreground_target();
-    clear_hook_activity_timestamps();
 
     // Low-level hooks require hMod to be NULL if threadId is 0.
     // However, Rust/Windows crates handle Option<HINSTANCE> -> 0.
     let hook_id =
         unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), HINSTANCE::default(), 0) }?;
-    let mouse_hook_id =
-        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), HINSTANCE::default(), 0) }?;
-
     if hook_id.is_invalid() {
         return Err(anyhow::anyhow!("Failed to install hook"));
     }
 
-    *HOOK_HANDLE.lock().unwrap() = Some(hook_id);
-    *MOUSE_HOOK_HANDLE.lock().unwrap() = Some(mouse_hook_id);
+    let mouse_hook_id = match unsafe {
+        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), HINSTANCE::default(), 0)
+    } {
+        Ok(handle) if !handle.is_invalid() => handle,
+        Ok(_) => {
+            unsafe {
+                let _ = UnhookWindowsHookEx(hook_id);
+            }
+            return Err(anyhow::anyhow!("Failed to install mouse hook"));
+        }
+        Err(err) => {
+            unsafe {
+                let _ = UnhookWindowsHookEx(hook_id);
+            }
+            return Err(err.into());
+        }
+    };
+
+    // Keep the previous pair alive until both replacement hooks have been
+    // created. A transient install failure must not leave the watchdog without
+    // handles or prevent a later retry.
+    let old_hook = HOOK_HANDLE.lock().unwrap().replace(hook_id);
+    let old_mouse_hook = MOUSE_HOOK_HANDLE.lock().unwrap().replace(mouse_hook_id);
+    if let Some(handle) = old_hook {
+        unsafe {
+            let _ = UnhookWindowsHookEx(handle);
+        }
+    }
+    if let Some(handle) = old_mouse_hook {
+        unsafe {
+            let _ = UnhookWindowsHookEx(handle);
+        }
+    }
+
+    reset_transient_input_state();
+    mark_hooks_installed();
     info!(
         "Keyboard hook installed successfully. Handle: {:?}",
         hook_id
@@ -733,7 +770,6 @@ pub fn uninstall_hook() {
 pub fn recover_from_system_resume() {
     let now = monotonic_ms();
     reset_transient_input_state();
-    clear_hook_activity_timestamps();
 
     if request_reinstall() {
         LAST_REINSTALL_MS.store(now, Ordering::Relaxed);
@@ -1295,7 +1331,13 @@ fn request_reinstall() -> bool {
     unsafe { PostThreadMessageW(thread_id, WM_HOOK_REINSTALL, WPARAM(0), LPARAM(0)).is_ok() }
 }
 
-fn last_input_age_ms() -> Option<u64> {
+#[derive(Clone, Copy, Debug)]
+struct LastInputSample {
+    age_ms: u64,
+    tick: u32,
+}
+
+fn last_input_sample() -> Option<LastInputSample> {
     let mut lii = LASTINPUTINFO {
         cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
@@ -1309,14 +1351,28 @@ fn last_input_age_ms() -> Option<u64> {
 
     let now = unsafe { GetTickCount() };
     let age_ms = now.wrapping_sub(lii.dwTime) as u64;
-    Some(age_ms)
+    Some(LastInputSample {
+        age_ms,
+        tick: lii.dwTime,
+    })
+}
+
+fn input_tick_matches_mouse(last_input_tick: u32, last_mouse_input_tick: u32) -> bool {
+    if last_mouse_input_tick == 0 {
+        return false;
+    }
+
+    let forward = last_input_tick.wrapping_sub(last_mouse_input_tick);
+    let backward = last_mouse_input_tick.wrapping_sub(last_input_tick);
+    forward.min(backward) <= INPUT_TICK_TOLERANCE_MS
 }
 
 fn should_request_reinstall(
     now: u64,
     last_keyboard_hook: u64,
-    last_mouse_hook: u64,
     input_age: u64,
+    last_input_tick: u32,
+    last_mouse_input_tick: u32,
     last_reinstall: u64,
 ) -> bool {
     if last_keyboard_hook == 0 {
@@ -1336,8 +1392,10 @@ fn should_request_reinstall(
         return false;
     }
 
-    // Mouse-only activity should not look like a stalled keyboard hook.
-    if last_mouse_hook != 0 && now.saturating_sub(last_mouse_hook) < INPUT_RECENT_MS {
+    // Compare the actual Windows input timestamp with the mouse callback's
+    // timestamp. Merely seeing some recent mouse activity is not enough: a
+    // later keyboard event may be the signal that the keyboard hook vanished.
+    if input_tick_matches_mouse(last_input_tick, last_mouse_input_tick) {
         return false;
     }
 
@@ -1357,16 +1415,24 @@ fn watchdog_loop() {
         let last_hook = LAST_HOOK_MS.load(Ordering::Relaxed);
         let last_mouse_hook = LAST_MOUSE_HOOK_MS.load(Ordering::Relaxed);
 
-        let input_age = match last_input_age_ms() {
-            Some(age) => age,
+        let input = match last_input_sample() {
+            Some(sample) => sample,
             None => {
                 warn!("GetLastInputInfo failed; skipping watchdog cycle");
                 continue;
             }
         };
 
+        let last_mouse_input_tick = LAST_MOUSE_INPUT_TICK.load(Ordering::Relaxed);
         let last_reinstall = LAST_REINSTALL_MS.load(Ordering::Relaxed);
-        if !should_request_reinstall(now, last_hook, last_mouse_hook, input_age, last_reinstall) {
+        if !should_request_reinstall(
+            now,
+            last_hook,
+            input.age_ms,
+            input.tick,
+            last_mouse_input_tick,
+            last_reinstall,
+        ) {
             continue;
         }
 
@@ -1376,7 +1442,7 @@ fn watchdog_loop() {
                 "Hook watchdog requested reinstall: last_keyboard_hook={}ms ago, last_mouse_hook={}ms ago, last_input={}ms ago",
                 now.saturating_sub(last_hook),
                 now.saturating_sub(last_mouse_hook),
-                input_age
+                input.age_ms
             );
         }
     }
@@ -1500,6 +1566,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
         }
 
         LAST_MOUSE_HOOK_MS.store(monotonic_ms(), Ordering::Relaxed);
+        LAST_MOUSE_INPUT_TICK.store(GetTickCount(), Ordering::Relaxed);
 
         if is_mouse_event {
             let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
@@ -1640,33 +1707,43 @@ mod tests {
     fn watchdog_skips_mouse_only_activity() {
         let now = 10_000;
         let last_keyboard_hook = now - (HOOK_STALL_MS + 100);
-        let last_mouse_hook = now - 100;
         let input_age = 100;
+        let last_input_tick = 50_000;
+        let last_mouse_input_tick = last_input_tick - 5;
         let last_reinstall = 0;
 
         assert!(!should_request_reinstall(
             now,
             last_keyboard_hook,
-            last_mouse_hook,
             input_age,
+            last_input_tick,
+            last_mouse_input_tick,
             last_reinstall
         ));
     }
 
     #[test]
-    fn watchdog_requests_reinstall_when_both_hooks_are_stale() {
+    fn watchdog_requests_reinstall_when_keyboard_input_follows_mouse_input() {
         let now = 10_000;
         let last_keyboard_hook = now - (HOOK_STALL_MS + 100);
-        let last_mouse_hook = now - (INPUT_RECENT_MS + 100);
         let input_age = 100;
+        let last_input_tick = 50_000;
+        let last_mouse_input_tick = last_input_tick - 500;
         let last_reinstall = 0;
 
         assert!(should_request_reinstall(
             now,
             last_keyboard_hook,
-            last_mouse_hook,
             input_age,
+            last_input_tick,
+            last_mouse_input_tick,
             last_reinstall
         ));
+    }
+
+    #[test]
+    fn input_tick_matching_handles_get_tick_count_wraparound() {
+        assert!(input_tick_matches_mouse(25, u32::MAX - 25));
+        assert!(!input_tick_matches_mouse(250, u32::MAX - 250));
     }
 }
