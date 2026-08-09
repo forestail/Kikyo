@@ -1,5 +1,6 @@
 use image::GenericImageView;
 use kikyo_core::analytics::AnalyticsData;
+use kikyo_core::app_filter::{ExcludedTarget, ExclusionScope, ForegroundTarget};
 use kikyo_core::chord_engine::Profile;
 use kikyo_core::engine::ENGINE;
 use kikyo_core::{keyboard_hook, parser};
@@ -73,6 +74,8 @@ struct Settings {
     autostart_enabled: Option<bool>,
     #[serde(default = "default_keyboard_type")]
     pub keyboard_type: String,
+    #[serde(default)]
+    excluded_targets: Vec<ExcludedTarget>,
 }
 
 fn default_keyboard_type() -> String {
@@ -93,6 +96,7 @@ impl Default for Settings {
             enabled: true,
             autostart_enabled: None,
             keyboard_type: "JIS106".to_string(),
+            excluded_targets: Vec::new(),
         }
     }
 }
@@ -294,6 +298,22 @@ fn sync_last_path_with_active(settings: &mut Settings) -> bool {
 
 fn migrate_settings(settings: &mut Settings) -> bool {
     let mut changed = false;
+
+    for target in &mut settings.excluded_targets {
+        let before = target.clone();
+        target.normalize();
+        if target.id.is_empty() {
+            target.id = generate_layout_entry_id().replace("layout-", "exclusion-");
+        }
+        if *target != before {
+            changed = true;
+        }
+    }
+    let old_target_len = settings.excluded_targets.len();
+    settings.excluded_targets.retain(ExcludedTarget::is_valid);
+    if settings.excluded_targets.len() != old_target_len {
+        changed = true;
+    }
 
     for entry in &mut settings.layout_entries {
         if normalize_layout_entry(entry) {
@@ -867,6 +887,87 @@ fn set_profile(app: tauri::AppHandle, profile: Profile) {
     save_settings(&app, &settings);
 }
 
+fn validate_excluded_targets(targets: &mut [ExcludedTarget]) -> Result<(), String> {
+    if targets.len() > 100 {
+        return Err("除外ルールは100件まで登録できます".to_string());
+    }
+    for target in targets {
+        target.normalize();
+        if target.id.is_empty() {
+            target.id = generate_layout_entry_id().replace("layout-", "exclusion-");
+        }
+        if !target.is_valid() {
+            return Err("アプリ識別子またはウィンドウ条件が空の除外ルールがあります".to_string());
+        }
+        if target.executable_path.len() > 32768
+            || target.window_title_contains.len() > 1024
+            || target.window_class.len() > 256
+        {
+            return Err("除外ルールの文字列が長すぎます".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_excluded_targets(app: tauri::AppHandle) -> Vec<ExcludedTarget> {
+    load_settings_with_migration(&app).excluded_targets
+}
+
+#[tauri::command]
+fn set_excluded_targets(
+    app: tauri::AppHandle,
+    mut targets: Vec<ExcludedTarget>,
+) -> Result<(), String> {
+    validate_excluded_targets(&mut targets)?;
+    let mut settings = load_settings_with_migration(&app);
+    settings.excluded_targets = targets.clone();
+    if !save_settings(&app, &settings) {
+        return Err("除外設定を保存できませんでした".to_string());
+    }
+    keyboard_hook::set_excluded_targets(targets);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_last_external_foreground_target() -> Option<ForegroundTarget> {
+    keyboard_hook::get_last_external_foreground_target()
+}
+
+#[tauri::command]
+fn add_excluded_target_from_last(
+    app: tauri::AppHandle,
+    scope: ExclusionScope,
+) -> Result<ExcludedTarget, String> {
+    let foreground = keyboard_hook::get_last_external_foreground_target()
+        .ok_or_else(|| "直前に使用していたアプリを取得できませんでした".to_string())?;
+    let id = generate_layout_entry_id().replace("layout-", "exclusion-");
+    let target = ExcludedTarget::from_foreground(id, &foreground, scope);
+    if !target.is_valid() {
+        return Err("このアプリまたはウィンドウを識別できませんでした".to_string());
+    }
+
+    let mut settings = load_settings_with_migration(&app);
+    if settings.excluded_targets.iter().any(|existing| {
+        existing.scope == target.scope
+            && existing.platform == target.platform
+            && existing.app_id == target.app_id
+            && existing.executable_path == target.executable_path
+            && existing.process_name == target.process_name
+            && existing.window_title_contains == target.window_title_contains
+            && existing.window_class == target.window_class
+    }) {
+        return Err("同じ除外ルールがすでに登録されています".to_string());
+    }
+    settings.excluded_targets.push(target.clone());
+    validate_excluded_targets(&mut settings.excluded_targets)?;
+    if !save_settings(&app, &settings) {
+        return Err("除外設定を保存できませんでした".to_string());
+    }
+    keyboard_hook::set_excluded_targets(settings.excluded_targets);
+    Ok(target)
+}
+
 #[tauri::command]
 fn get_app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
@@ -1126,6 +1227,7 @@ mod tests {
         let parsed: Settings = serde_json::from_str("{}").expect("settings json");
         assert!(parsed.enabled);
         assert_eq!(parsed.autostart_enabled, None);
+        assert!(parsed.excluded_targets.is_empty());
     }
 
     #[test]
@@ -1381,6 +1483,10 @@ pub fn run() {
             get_enabled,
             get_profile,
             set_profile,
+            get_excluded_targets,
+            set_excluded_targets,
+            get_last_external_foreground_target,
+            add_excluded_target_from_last,
             get_app_version,
             get_keyboard_types,
             get_keyboard_type,
@@ -1494,6 +1600,7 @@ pub fn run() {
                 ENGINE.lock().set_profile(profile.clone());
                 keyboard_hook::refresh_runtime_flags_from_engine();
             }
+            keyboard_hook::set_excluded_targets(settings.excluded_targets.clone());
 
             // Initialize Analytics
             {

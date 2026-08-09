@@ -47,6 +47,11 @@ let charContinuousCb, charOverlapRatioInput, charOverlapVal;
 // Operation
 let imeModeSel, suspendShortcutInput, settingsShortcutInput, switchLayoutShortcutInput;
 
+// Exclusions
+let excludedTargetListEl, lastForegroundTargetEl;
+let addExcludedAppBtn, addExcludedWindowBtn, refreshForegroundTargetBtn;
+let excludedTargets = [];
+
 function formatShortcut(shortcut) {
   if (!shortcut || !shortcut.vkey) return "なし";
 
@@ -772,6 +777,145 @@ function setupAutoSave() {
   });
 }
 
+function exclusionIdentityText(target) {
+  return target.app_id || target.executable_path || target.process_name || "識別情報なし";
+}
+
+async function refreshLastForegroundTarget() {
+  if (!lastForegroundTargetEl) return;
+  try {
+    const target = await invoke("get_last_external_foreground_target");
+    if (!target) {
+      lastForegroundTargetEl.innerText = "対象を取得できません。別のアプリを前面にしてから桔梗へ戻ってください。";
+      addExcludedAppBtn.disabled = true;
+      addExcludedWindowBtn.disabled = true;
+      return;
+    }
+    const appName = target.display_name || target.process_name || target.app_id || "不明なアプリ";
+    const title = target.window_title ? ` — ${target.window_title}` : "";
+    lastForegroundTargetEl.innerText = `${appName}${title}`;
+    lastForegroundTargetEl.title = exclusionIdentityText(target);
+    addExcludedAppBtn.disabled = false;
+    addExcludedWindowBtn.disabled = !target.window_title && !target.window_class;
+  } catch (e) {
+    lastForegroundTargetEl.innerText = "対象の取得に失敗しました: " + e;
+  }
+}
+
+async function saveExcludedTargets() {
+  try {
+    await invoke("set_excluded_targets", { targets: excludedTargets });
+    statusMsg.innerText = "除外設定を保存しました";
+  } catch (e) {
+    statusMsg.innerText = "除外設定の保存に失敗しました: " + e;
+    await loadExcludedTargets();
+  }
+}
+
+function renderExcludedTargets() {
+  if (!excludedTargetListEl) return;
+  excludedTargetListEl.replaceChildren();
+  if (excludedTargets.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "layout-entry-empty";
+    empty.innerText = "除外ルールは登録されていません。";
+    excludedTargetListEl.appendChild(empty);
+    return;
+  }
+
+  excludedTargets.forEach((target) => {
+    const row = document.createElement("div");
+    row.className = "excluded-target-row";
+    if (!target.enabled) row.classList.add("is-disabled");
+
+    const enabledLabel = document.createElement("label");
+    enabledLabel.className = "toggle-switch exclusion-enabled";
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.checked = target.enabled !== false;
+    const slider = document.createElement("span");
+    slider.className = "slider";
+    enabledLabel.append(enabled, slider);
+
+    const content = document.createElement("div");
+    content.className = "excluded-target-content";
+    const header = document.createElement("div");
+    header.className = "excluded-target-header";
+    const name = document.createElement("span");
+    name.className = "excluded-target-name";
+    name.innerText = target.display_name || target.process_name || target.app_id || "不明なアプリ";
+    const badge = document.createElement("span");
+    badge.className = "excluded-target-scope";
+    badge.innerText = target.scope === "Window" ? "ウィンドウ" : "アプリ全体";
+    header.append(name, badge);
+
+    const identity = document.createElement("div");
+    identity.className = "excluded-target-identity";
+    identity.innerText = exclusionIdentityText(target);
+    identity.title = identity.innerText;
+    content.append(header, identity);
+
+    if (target.scope === "Window") {
+      const titleRow = document.createElement("label");
+      titleRow.className = "excluded-title-row";
+      const label = document.createElement("span");
+      label.innerText = "タイトルに含む文字";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = target.window_title_contains || "";
+      input.placeholder = target.window_class ? "未指定（クラスのみで判定）" : "必須";
+      input.addEventListener("change", async () => {
+        target.window_title_contains = input.value.trim();
+        await saveExcludedTargets();
+      });
+      titleRow.append(label, input);
+      content.appendChild(titleRow);
+    }
+
+    const remove = document.createElement("button");
+    remove.className = "layout-entry-delete-btn";
+    remove.title = "削除";
+    remove.setAttribute("aria-label", "削除");
+    remove.innerText = "×";
+
+    enabled.addEventListener("change", async () => {
+      target.enabled = enabled.checked;
+      row.classList.toggle("is-disabled", !enabled.checked);
+      await saveExcludedTargets();
+    });
+    remove.addEventListener("click", async () => {
+      excludedTargets = excludedTargets.filter((item) => item.id !== target.id);
+      renderExcludedTargets();
+      await saveExcludedTargets();
+    });
+
+    row.append(enabledLabel, content, remove);
+    excludedTargetListEl.appendChild(row);
+  });
+}
+
+async function loadExcludedTargets() {
+  if (!excludedTargetListEl) return;
+  try {
+    excludedTargets = await invoke("get_excluded_targets");
+    renderExcludedTargets();
+  } catch (e) {
+    statusMsg.innerText = "除外設定の読み込みに失敗しました: " + e;
+  }
+}
+
+async function addExcludedTarget(scope) {
+  try {
+    await invoke("add_excluded_target_from_last", { scope });
+    await loadExcludedTargets();
+    statusMsg.innerText = scope === "Window"
+      ? "ウィンドウを除外対象に追加しました"
+      : "アプリを除外対象に追加しました";
+  } catch (e) {
+    statusMsg.innerText = "除外対象を追加できませんでした: " + e;
+  }
+}
+
 function ensureExtendedThumbSection() {
   const thumbSection = document.querySelector("#section-thumb");
   const chordSection = document.querySelector("#section-chord");
@@ -1014,6 +1158,21 @@ window.addEventListener("DOMContentLoaded", () => {
   // Op
   imeModeSel = document.querySelector("#ime-mode");
 
+  excludedTargetListEl = document.querySelector("#excluded-target-list");
+  lastForegroundTargetEl = document.querySelector("#last-foreground-target");
+  addExcludedAppBtn = document.querySelector("#add-excluded-app-btn");
+  addExcludedWindowBtn = document.querySelector("#add-excluded-window-btn");
+  refreshForegroundTargetBtn = document.querySelector("#refresh-foreground-target-btn");
+  if (addExcludedAppBtn) {
+    addExcludedAppBtn.addEventListener("click", () => addExcludedTarget("Application"));
+  }
+  if (addExcludedWindowBtn) {
+    addExcludedWindowBtn.addEventListener("click", () => addExcludedTarget("Window"));
+  }
+  if (refreshForegroundTargetBtn) {
+    refreshForegroundTargetBtn.addEventListener("click", refreshLastForegroundTarget);
+  }
+
   // Custom MacOS IME Options
   const isMac = navigator.userAgent.includes("Mac OS X");
   if (isMac && imeModeSel) {
@@ -1052,12 +1211,16 @@ window.addEventListener("DOMContentLoaded", () => {
   setupAutoSave();
   refreshLayoutEntries();
   loadProfile();
+  loadExcludedTargets();
+  refreshLastForegroundTarget();
   refreshEnabledState();
 
   window.addEventListener("focus", () => {
     refreshLayoutEntries();
     refreshEnabledState();
     loadProfile();
+    loadExcludedTargets();
+    refreshLastForegroundTarget();
   });
 
   window.__TAURI__.event.listen("enabled-state-changed", (event) => {

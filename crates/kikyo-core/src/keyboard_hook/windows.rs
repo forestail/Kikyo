@@ -1,17 +1,24 @@
+use crate::app_filter::{is_target_excluded, ExcludedTarget, ForegroundTarget, TargetPlatform};
 use crate::engine::ENGINE;
 use crate::types::InputEvent;
 use crate::types::KeyAction;
 use crate::types::ScKey;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
+use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+use windows::core::PWSTR;
+use windows::Win32::Foundation::{CloseHandle, HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::SystemInformation::GetTickCount;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{
+    GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState,
     GetLastInputInfo,
@@ -48,12 +55,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
-    LLKHF_ALTDOWN, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
-    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYUP, WM_XBUTTONDOWN,
-    WM_XBUTTONUP,
+    CallNextHookEx, DispatchMessageW, GetClassNameW, GetForegroundWindow, GetMessageW,
+    GetWindowTextW, GetWindowThreadProcessId, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, LLKHF_INJECTED,
+    MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYUP, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 /// Magic number to identify our own injected events.
 const INJECTED_EXTRA_INFO: usize = 0xFFC3C3C3;
@@ -62,6 +69,9 @@ static HOOK_HANDLE: Mutex<Option<HHOOK>> = Mutex::new(None);
 static MOUSE_HOOK_HANDLE: Mutex<Option<HHOOK>> = Mutex::new(None);
 static HOOK_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static HOOK_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
+static FOREGROUND_MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
+static FOREGROUND_EXCLUDED: AtomicBool = AtomicBool::new(false);
+static LAST_QUERIED_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static LAST_HOOK_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_MOUSE_HOOK_MS: AtomicU64 = AtomicU64::new(0);
@@ -177,11 +187,207 @@ enum ShiftSide {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyRoute {
+    IncludedCandidate,
+    Intercepted,
+    DeliveredPassthrough,
+    ExcludedPassthrough,
+    SuppressUntilUp,
+}
+
 lazy_static::lazy_static! {
     static ref HOOK_QUEUE: (Sender<HookEvent>, Receiver<HookEvent>) =
         crossbeam_channel::bounded(HOOK_QUEUE_SIZE);
     static ref CAPTURED_SHIFT_STATE: Mutex<CapturedShiftState> =
         Mutex::new(CapturedShiftState::default());
+    static ref EXCLUDED_TARGETS: Mutex<Vec<ExcludedTarget>> = Mutex::new(Vec::new());
+    static ref LAST_EXTERNAL_FOREGROUND: Mutex<Option<ForegroundTarget>> = Mutex::new(None);
+    static ref KEY_ROUTES: Mutex<HashMap<ScKey, KeyRoute>> = Mutex::new(HashMap::new());
+    static ref PROCESS_IMAGE_CACHE: Mutex<String> = Mutex::new(String::new());
+}
+
+pub fn set_excluded_targets(mut rules: Vec<ExcludedTarget>) {
+    for rule in &mut rules {
+        rule.normalize();
+    }
+    rules.retain(ExcludedTarget::is_valid);
+    *EXCLUDED_TARGETS.lock().unwrap_or_else(|e| e.into_inner()) = rules;
+    refresh_foreground_target();
+}
+
+pub fn get_last_external_foreground_target() -> Option<ForegroundTarget> {
+    LAST_EXTERNAL_FOREGROUND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn wide_window_text(hwnd: windows::Win32::Foundation::HWND) -> String {
+    let mut buffer = vec![0u16; 1024];
+    let len = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+    if len <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buffer[..len as usize])
+    }
+}
+
+fn wide_window_class(hwnd: windows::Win32::Foundation::HWND) -> String {
+    let mut buffer = vec![0u16; 256];
+    let len = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    if len <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buffer[..len as usize])
+    }
+}
+
+fn process_image_path(process_id: u32) -> String {
+    let Ok(process) =
+        (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
+    else {
+        return String::new();
+    };
+    let mut buffer = vec![0u16; 32768];
+    let mut len = buffer.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    let _ = unsafe { CloseHandle(process) };
+    if result.is_err() {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buffer[..len as usize])
+    }
+}
+
+fn query_foreground_target() -> Option<(u32, ForegroundTarget)> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0 == 0 {
+        return None;
+    }
+    let mut process_id = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+    if process_id == 0 {
+        return None;
+    }
+
+    let executable_path = if LAST_QUERIED_PROCESS_ID.load(Ordering::Acquire) == process_id {
+        PROCESS_IMAGE_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    } else {
+        let path = process_image_path(process_id);
+        *PROCESS_IMAGE_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = path.clone();
+        LAST_QUERIED_PROCESS_ID.store(process_id, Ordering::Release);
+        path
+    };
+    let process_name = Path::new(&executable_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let display_name = Path::new(&process_name)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&process_name)
+        .to_string();
+    Some((
+        process_id,
+        ForegroundTarget {
+            platform: TargetPlatform::Windows,
+            display_name,
+            app_id: String::new(),
+            executable_path,
+            process_name,
+            window_title: wide_window_text(hwnd),
+            window_class: wide_window_class(hwnd),
+        },
+    ))
+}
+
+fn refresh_foreground_target() {
+    let Some((process_id, target)) = query_foreground_target() else {
+        FOREGROUND_EXCLUDED.store(false, Ordering::Release);
+        return;
+    };
+
+    if process_id != std::process::id() {
+        *LAST_EXTERNAL_FOREGROUND
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(target.clone());
+    }
+
+    let excluded = {
+        let rules = EXCLUDED_TARGETS.lock().unwrap_or_else(|e| e.into_inner());
+        is_target_excluded(&rules, &target)
+    };
+    let was_excluded = FOREGROUND_EXCLUDED.swap(excluded, Ordering::AcqRel);
+    if excluded && !was_excluded {
+        let mut routes = KEY_ROUTES.lock().unwrap_or_else(|e| e.into_inner());
+        for route in routes.values_mut() {
+            if *route == KeyRoute::Intercepted {
+                *route = KeyRoute::SuppressUntilUp;
+            }
+        }
+        drop(routes);
+        ENGINE.lock().reset_input_state();
+        release_and_clear_captured_shift_state();
+    }
+}
+
+fn ensure_foreground_monitor_thread() {
+    if FOREGROUND_MONITOR_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    thread::Builder::new()
+        .name("kikyo-foreground-monitor".to_string())
+        .spawn(|| loop {
+            refresh_foreground_target();
+            thread::sleep(Duration::from_millis(100));
+        })
+        .expect("Failed to spawn foreground monitor thread");
+}
+
+fn key_route_for_event(key: ScKey, up: bool) -> KeyRoute {
+    let current_excluded = FOREGROUND_EXCLUDED.load(Ordering::Acquire);
+    let mut routes = KEY_ROUTES.lock().unwrap_or_else(|e| e.into_inner());
+    if up {
+        return routes.remove(&key).unwrap_or(if current_excluded {
+            KeyRoute::ExcludedPassthrough
+        } else {
+            KeyRoute::IncludedCandidate
+        });
+    }
+    *routes.entry(key).or_insert(if current_excluded {
+        KeyRoute::ExcludedPassthrough
+    } else {
+        KeyRoute::IncludedCandidate
+    })
+}
+
+fn mark_key_intercepted(key: ScKey) {
+    if let Ok(mut routes) = KEY_ROUTES.try_lock() {
+        if let Some(route) = routes.get_mut(&key) {
+            *route = KeyRoute::Intercepted;
+        }
+    }
+}
+
+fn mark_key_delivered_passthrough(key: ScKey) {
+    let mut routes = KEY_ROUTES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(route) = routes.get_mut(&key) {
+        *route = KeyRoute::DeliveredPassthrough;
+    }
 }
 
 fn monotonic_ms() -> u64 {
@@ -366,6 +572,21 @@ fn clear_captured_shift_state() {
     *state = CapturedShiftState::default();
 }
 
+fn release_and_clear_captured_shift_state() {
+    let (release_left, release_right) = {
+        let mut state = lock_captured_shift_state();
+        let releases = (state.left.os_down_sent, state.right.os_down_sent);
+        *state = CapturedShiftState::default();
+        releases
+    };
+    if release_left {
+        let _ = inject_scancode(shift_scancode(ShiftSide::Left), false, true);
+    }
+    if release_right {
+        let _ = inject_scancode(shift_scancode(ShiftSide::Right), false, true);
+    }
+}
+
 fn reset_transient_input_state() {
     LCTRL_PHYSICAL_DOWN.store(false, Ordering::Relaxed);
     RCTRL_PHYSICAL_DOWN.store(false, Ordering::Relaxed);
@@ -462,6 +683,8 @@ pub fn install_hook() -> anyhow::Result<()> {
     // Avoid leaking an old handle if this is a reinstall request.
     uninstall_hook();
     reset_transient_input_state();
+    ensure_foreground_monitor_thread();
+    refresh_foreground_target();
     clear_hook_activity_timestamps();
 
     // Low-level hooks require hMod to be NULL if threadId is 0.
@@ -649,6 +872,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let is_settings_key = current_shortcut == settings_sc && settings_sc != 0;
         let is_switch_layout_key = current_shortcut == switch_sc && switch_sc != 0;
         let is_any_shortcut = is_suspend_key || is_settings_key || is_switch_layout_key;
+        let raw_ext =
+            (kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0;
 
         let pass_through = || -> LRESULT {
             if !is_shift_vk {
@@ -674,8 +899,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             return pass_through();
         }
 
-        let raw_ext =
-            (kbd.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_EXTENDED.0) != 0;
+        if !is_any_shortcut {
+            match key_route_for_event(ScKey::new(scan_code, raw_ext), up) {
+                KeyRoute::ExcludedPassthrough | KeyRoute::DeliveredPassthrough => {
+                    return pass_through()
+                }
+                KeyRoute::SuppressUntilUp => return LRESULT(1),
+                KeyRoute::IncludedCandidate | KeyRoute::Intercepted => {}
+            }
+        }
+
         if let Some(bit) = cursor_key_bit(scan_code, raw_ext) {
             let cursor_needs_handling =
                 (CURSOR_KEYS_NEED_HANDLING.load(Ordering::Relaxed) & bit) != 0;
@@ -800,7 +1033,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         };
 
         match HOOK_QUEUE.0.try_send(event) {
-            Ok(()) => LRESULT(1), // Block original; worker will decide inject/pass.
+            Ok(()) => {
+                if !up && !is_any_shortcut {
+                    mark_key_intercepted(ScKey::new(scan_code, raw_ext));
+                }
+                LRESULT(1) // Block original; worker will decide inject/pass.
+            }
             Err(TrySendError::Full(_)) => pass_through(),
             Err(TrySendError::Disconnected(_)) => pass_through(),
         }
@@ -914,6 +1152,9 @@ fn process_event(event: HookEvent) {
 
     match action {
         KeyAction::Pass => {
+            if !event.up {
+                mark_key_delivered_passthrough(ScKey::new(event.sc, event.ext));
+            }
             if !is_shift_event {
                 let _ = forward_pending_captured_shift_downs_if_needed();
             }

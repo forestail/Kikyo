@@ -1,7 +1,12 @@
+use crate::app_filter::{is_target_excluded, ExcludedTarget, ForegroundTarget, TargetPlatform};
 use crate::engine::ENGINE;
 use crate::types::{InputEvent, KeyAction};
 use crossbeam_channel::{Receiver, Sender};
+use objc::runtime::Object;
+use objc::{class, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::ffi::CStr;
 use std::os::raw::{c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,6 +116,13 @@ extern "C" {
     pub fn CFRunLoopStop(rl: *mut c_void);
     pub fn CFRetain(cf: *mut c_void);
     pub fn CFRelease(cf: *mut c_void);
+    pub fn CFStringGetCStringPtr(string: *mut c_void, encoding: u32) -> *const i8;
+    pub fn CFStringGetCString(
+        string: *mut c_void,
+        buffer: *mut i8,
+        buffer_size: isize,
+        encoding: u32,
+    ) -> bool;
 
     // In Rust we can just use the pointer from dlsym or we can link it
 }
@@ -119,6 +131,15 @@ extern "C" {
 extern "C" {
     pub fn AXIsProcessTrusted() -> bool;
     pub fn AXIsProcessTrustedWithOptions(options: *mut c_void) -> bool;
+    pub fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
+    pub fn AXUIElementCopyAttributeValue(
+        element: *mut c_void,
+        attribute: *const c_void,
+        value: *mut *mut c_void,
+    ) -> i32;
+    pub static kAXFocusedWindowAttribute: *const c_void;
+    pub static kAXTitleAttribute: *const c_void;
+    pub static kAXRoleAttribute: *const c_void;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -150,9 +171,14 @@ lazy_static::lazy_static! {
     static ref HOOK_QUEUE: (Sender<HookEvent>, Receiver<HookEvent>) = crossbeam_channel::bounded(1024);
     static ref RUN_LOOP_PTR: Mutex<Option<RunLoopPtr>> = Mutex::new(None);
     static ref TAP_PORT: Mutex<Option<TapPortPtr>> = Mutex::new(None);
+    static ref EXCLUDED_TARGETS: Mutex<Vec<ExcludedTarget>> = Mutex::new(Vec::new());
+    static ref LAST_EXTERNAL_FOREGROUND: Mutex<Option<ForegroundTarget>> = Mutex::new(None);
+    static ref KEY_ROUTES: Mutex<HashMap<u16, MacKeyRoute>> = Mutex::new(HashMap::new());
 }
 
 static ENGINE_ENABLED: AtomicBool = AtomicBool::new(true);
+static FOREGROUND_MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
+static FOREGROUND_EXCLUDED: AtomicBool = AtomicBool::new(false);
 
 static ALT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static LEFT_SHIFT_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
@@ -165,6 +191,189 @@ static RIGHT_WIN_NEEDS_HANDLING: AtomicBool = AtomicBool::new(false);
 static SUSPEND_SHORTCUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SETTINGS_SHORTCUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SWITCH_LAYOUT_SHORTCUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacKeyRoute {
+    IncludedCandidate,
+    Intercepted,
+    DeliveredPassthrough,
+    ExcludedPassthrough,
+    SuppressUntilUp,
+}
+
+unsafe fn nsstring_to_string(value: *mut Object) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    let ptr: *const i8 = msg_send![value, UTF8String];
+    if ptr.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(ptr).to_string_lossy().into_owned()
+    }
+}
+
+unsafe fn cfstring_to_string(value: *mut c_void) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    let ptr = CFStringGetCStringPtr(value, 0x08000100);
+    if !ptr.is_null() {
+        return CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    }
+    let mut buffer = vec![0u8; 4096];
+    if CFStringGetCString(
+        value,
+        buffer.as_mut_ptr() as *mut i8,
+        buffer.len() as isize,
+        0x08000100,
+    ) {
+        CStr::from_ptr(buffer.as_ptr() as *const i8)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        String::new()
+    }
+}
+
+unsafe fn ax_attribute_string(element: *mut c_void, attribute: *const c_void) -> String {
+    let mut value = std::ptr::null_mut();
+    if element.is_null()
+        || AXUIElementCopyAttributeValue(element, attribute, &mut value) != 0
+        || value.is_null()
+    {
+        return String::new();
+    }
+    let result = cfstring_to_string(value);
+    CFRelease(value);
+    result
+}
+
+fn query_foreground_target() -> Option<(i32, ForegroundTarget)> {
+    unsafe {
+        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: *mut Object = msg_send![workspace, frontmostApplication];
+        if app.is_null() {
+            let _: () = msg_send![pool, drain];
+            return None;
+        }
+        let pid: i32 = msg_send![app, processIdentifier];
+        let bundle: *mut Object = msg_send![app, bundleIdentifier];
+        let name: *mut Object = msg_send![app, localizedName];
+        let url: *mut Object = msg_send![app, executableURL];
+        let path: *mut Object = if url.is_null() {
+            std::ptr::null_mut()
+        } else {
+            msg_send![url, path]
+        };
+
+        let ax_app = AXUIElementCreateApplication(pid);
+        let mut focused_window = std::ptr::null_mut();
+        if !ax_app.is_null() {
+            let _ = AXUIElementCopyAttributeValue(
+                ax_app,
+                kAXFocusedWindowAttribute,
+                &mut focused_window,
+            );
+        }
+        let window_title = ax_attribute_string(focused_window, kAXTitleAttribute);
+        let window_class = ax_attribute_string(focused_window, kAXRoleAttribute);
+        if !focused_window.is_null() {
+            CFRelease(focused_window);
+        }
+        if !ax_app.is_null() {
+            CFRelease(ax_app);
+        }
+
+        let target = ForegroundTarget {
+            platform: TargetPlatform::Macos,
+            display_name: nsstring_to_string(name),
+            app_id: nsstring_to_string(bundle),
+            executable_path: nsstring_to_string(path),
+            process_name: String::new(),
+            window_title,
+            window_class,
+        };
+        let _: () = msg_send![pool, drain];
+        Some((pid, target))
+    }
+}
+
+fn refresh_foreground_target() {
+    let Some((pid, target)) = query_foreground_target() else {
+        FOREGROUND_EXCLUDED.store(false, Ordering::Release);
+        return;
+    };
+    if pid as u32 != std::process::id() {
+        *LAST_EXTERNAL_FOREGROUND.lock() = Some(target.clone());
+    }
+    let excluded = is_target_excluded(&EXCLUDED_TARGETS.lock(), &target);
+    let was_excluded = FOREGROUND_EXCLUDED.swap(excluded, Ordering::AcqRel);
+    if excluded && !was_excluded {
+        for route in KEY_ROUTES.lock().values_mut() {
+            if *route == MacKeyRoute::Intercepted {
+                *route = MacKeyRoute::SuppressUntilUp;
+            }
+        }
+        ENGINE.lock().reset_input_state();
+    }
+}
+
+fn ensure_foreground_monitor_thread() {
+    if FOREGROUND_MONITOR_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    thread::Builder::new()
+        .name("kikyo-foreground-monitor".to_string())
+        .spawn(|| loop {
+            refresh_foreground_target();
+            thread::sleep(Duration::from_millis(100));
+        })
+        .expect("Failed to spawn foreground monitor thread");
+}
+
+pub fn set_excluded_targets(mut rules: Vec<ExcludedTarget>) {
+    for rule in &mut rules {
+        rule.normalize();
+    }
+    rules.retain(ExcludedTarget::is_valid);
+    *EXCLUDED_TARGETS.lock() = rules;
+    refresh_foreground_target();
+}
+
+pub fn get_last_external_foreground_target() -> Option<ForegroundTarget> {
+    LAST_EXTERNAL_FOREGROUND.lock().clone()
+}
+
+fn key_route_for_event(keycode: u16, up: bool) -> MacKeyRoute {
+    let current_excluded = FOREGROUND_EXCLUDED.load(Ordering::Acquire);
+    let mut routes = KEY_ROUTES.lock();
+    if up {
+        return routes.remove(&keycode).unwrap_or(if current_excluded {
+            MacKeyRoute::ExcludedPassthrough
+        } else {
+            MacKeyRoute::IncludedCandidate
+        });
+    }
+    *routes.entry(keycode).or_insert(if current_excluded {
+        MacKeyRoute::ExcludedPassthrough
+    } else {
+        MacKeyRoute::IncludedCandidate
+    })
+}
+
+fn mark_key_intercepted(keycode: u16) {
+    if let Some(route) = KEY_ROUTES.lock().get_mut(&keycode) {
+        *route = MacKeyRoute::Intercepted;
+    }
+}
+
+fn mark_key_delivered_passthrough(keycode: u16) {
+    if let Some(route) = KEY_ROUTES.lock().get_mut(&keycode) {
+        *route = MacKeyRoute::DeliveredPassthrough;
+    }
+}
 
 fn encode_shortcut(s: &Option<crate::types::ShortcutKey>) -> u64 {
     match s {
@@ -583,6 +792,16 @@ extern "C" fn tap_callback(
             return event;
         }
 
+        if !is_any_shortcut {
+            match key_route_for_event(kc, up) {
+                MacKeyRoute::ExcludedPassthrough | MacKeyRoute::DeliveredPassthrough => {
+                    return event
+                }
+                MacKeyRoute::SuppressUntilUp => return std::ptr::null_mut(),
+                MacKeyRoute::IncludedCandidate | MacKeyRoute::Intercepted => {}
+            }
+        }
+
         if is_any_shortcut {
             let hook_event = HookEvent {
                 sc: sc_mapped,
@@ -621,6 +840,9 @@ extern "C" fn tap_callback(
 
         match HOOK_QUEUE.0.try_send(hook_event) {
             Ok(()) => {
+                if !up {
+                    mark_key_intercepted(kc);
+                }
                 std::ptr::null_mut() // Block original event
             }
             Err(_) => {
@@ -648,6 +870,8 @@ pub fn install_hook() -> anyhow::Result<()> {
         }
     }));
     refresh_runtime_flags_from_engine();
+    ensure_foreground_monitor_thread();
+    refresh_foreground_target();
 
     // Spawn worker thread
     let rx = HOOK_QUEUE.1.clone();
@@ -685,6 +909,9 @@ pub fn install_hook() -> anyhow::Result<()> {
 
             match action {
                 KeyAction::Pass => {
+                    if !ev.up {
+                        mark_key_delivered_passthrough(ev.mac_kc);
+                    }
                     let _ = inject_mac_keycode_with_flags(ev.mac_kc, ev.up, ev.flags);
                 }
                 KeyAction::Block => {}
