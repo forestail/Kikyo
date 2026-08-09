@@ -16,6 +16,7 @@
       <li class="nav-item" data-target="section-thumb">親指シフト</li>
       <li class="nav-item" data-target="section-chord">文字キー同時打鍵シフト</li>
       <li class="nav-item" data-target="section-behavior">動作モード</li>
+      <li class="nav-item" data-target="section-exclusions">除外設定</li>
       <li class="nav-item" data-target="section-analytics">分析</li>
       <li class="nav-item" data-target="section-about">桔梗について</li>
     </ul>
@@ -325,6 +326,30 @@
             <input type="text" id="switch-layout-shortcut" class="shortcut-input" placeholder="なし" readonly>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- 除外設定セクション -->
+    <div id="section-exclusions" class="settings-section">
+      <h2>除外設定</h2>
+      <div class="setting-desc exclusion-intro">
+        登録したアプリまたはウィンドウが前面にある間、キー置換を行わず物理キー入力をそのまま渡します。桔梗の操作ショートカットは引き続き使用できます。
+      </div>
+
+      <div class="setting-group exclusion-capture-card">
+        <h3>直前に使用していた対象</h3>
+        <div id="last-foreground-target" class="exclusion-last-target">取得待ち</div>
+        <div class="exclusion-add-actions">
+          <button id="add-excluded-app-btn">アプリ全体を追加</button>
+          <button id="add-excluded-window-btn" class="secondary">このウィンドウのみ追加</button>
+          <button id="refresh-foreground-target-btn" class="secondary">再取得</button>
+        </div>
+        <div class="setting-desc">対象アプリを一度前面にしてから桔梗へ戻り、追加ボタンを押してください。</div>
+      </div>
+
+      <div class="setting-group">
+        <h3>登録済みの除外ルール</h3>
+        <div id="excluded-target-list" class="excluded-target-list"></div>
       </div>
     </div>
 

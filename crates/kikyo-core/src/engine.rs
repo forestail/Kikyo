@@ -159,18 +159,24 @@ impl Engine {
         if self.enabled != enabled {
             self.enabled = enabled;
             if !enabled {
-                // Reset state without discarding the user's profile.
-                let profile = self.chord_engine.profile.clone();
-                self.chord_engine = ChordEngine::new(profile);
-                self.repeat_plans.clear();
-                self.pending_nonshift_for_shift.clear();
-                self.passthrough_thumb_shift_modifiers.clear();
-                self.deferred_enter_rollover = None;
+                self.reset_input_state();
             }
             if let Some(ref cb) = self.on_enabled_change {
                 cb(enabled);
             }
         }
+    }
+
+    /// Discards transient key/chord state without changing the profile or the
+    /// global enabled flag. This is used when input routing changes because the
+    /// foreground application becomes excluded.
+    pub fn reset_input_state(&mut self) {
+        let profile = self.chord_engine.profile.clone();
+        self.chord_engine = ChordEngine::new(profile);
+        self.repeat_plans.clear();
+        self.pending_nonshift_for_shift.clear();
+        self.passthrough_thumb_shift_modifiers.clear();
+        self.deferred_enter_rollover = None;
     }
 
     pub fn set_on_enabled_change(&mut self, cb: impl Fn(bool) + Send + Sync + 'static) {

@@ -1,4 +1,5 @@
 pub mod analytics;
+pub mod app_filter;
 pub mod chord_engine;
 pub mod engine;
 pub mod ime;
