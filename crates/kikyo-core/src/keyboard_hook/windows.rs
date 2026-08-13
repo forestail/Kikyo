@@ -100,7 +100,11 @@ const HOOK_QUEUE_SIZE: usize = 1024;
 const WATCHDOG_INTERVAL_MS: u64 = 1000;
 const HOOK_STALL_MS: u64 = 5000;
 const INPUT_RECENT_MS: u64 = 2000;
-const INPUT_TICK_TOLERANCE_MS: u32 = 100;
+// If GetLastInputInfo still points at the most recent mouse callback, there is
+// no evidence that the keyboard hook missed an event.  Do not use a broad time
+// tolerance here: a click followed immediately by typing is a common pattern,
+// and treating both events as "the same mouse input" prevents recovery.
+const MOUSE_ONLY_REFRESH_MS: u64 = 30_000;
 const REINSTALL_BACKOFF_MS: u64 = 10000;
 const WM_HOOK_REINSTALL: u32 = WM_APP + 0x4B10;
 const CURSOR_UP_BIT: u8 = 1 << 0;
@@ -360,21 +364,28 @@ fn ensure_foreground_monitor_thread() {
         .expect("Failed to spawn foreground monitor thread");
 }
 
-fn key_route_for_event(key: ScKey, up: bool) -> KeyRoute {
+fn try_key_route_for_event(key: ScKey, up: bool) -> Option<KeyRoute> {
     let current_excluded = FOREGROUND_EXCLUDED.load(Ordering::Acquire);
-    let mut routes = KEY_ROUTES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut routes = match KEY_ROUTES.try_lock() {
+        Ok(routes) => routes,
+        Err(TryLockError::WouldBlock) => return None,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+    };
     if up {
-        return routes.remove(&key).unwrap_or(if current_excluded {
-            KeyRoute::ExcludedPassthrough
-        } else {
-            KeyRoute::IncludedCandidate
-        });
+        // A missing route means the corresponding key-down was not captured
+        // (for example because this lock was contended).  Fail open on key-up;
+        // suppressing it could leave the key logically stuck in Windows.
+        return Some(
+            routes
+                .remove(&key)
+                .unwrap_or(KeyRoute::DeliveredPassthrough),
+        );
     }
-    *routes.entry(key).or_insert(if current_excluded {
+    Some(*routes.entry(key).or_insert(if current_excluded {
         KeyRoute::ExcludedPassthrough
     } else {
         KeyRoute::IncludedCandidate
-    })
+    }))
 }
 
 fn mark_key_intercepted(key: ScKey) {
@@ -936,7 +947,13 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
 
         if !is_any_shortcut {
-            match key_route_for_event(ScKey::new(scan_code, raw_ext), up) {
+            let Some(route) = try_key_route_for_event(ScKey::new(scan_code, raw_ext), up) else {
+                // Windows silently removes low-level hooks when a callback
+                // exceeds LowLevelHooksTimeout.  A contended bookkeeping lock
+                // is therefore never allowed to hold up this callback.
+                return pass_through();
+            };
+            match route {
                 KeyRoute::ExcludedPassthrough | KeyRoute::DeliveredPassthrough => {
                     return pass_through()
                 }
@@ -1362,9 +1379,7 @@ fn input_tick_matches_mouse(last_input_tick: u32, last_mouse_input_tick: u32) ->
         return false;
     }
 
-    let forward = last_input_tick.wrapping_sub(last_mouse_input_tick);
-    let backward = last_mouse_input_tick.wrapping_sub(last_input_tick);
-    forward.min(backward) <= INPUT_TICK_TOLERANCE_MS
+    last_input_tick == last_mouse_input_tick
 }
 
 fn should_request_reinstall(
@@ -1392,10 +1407,14 @@ fn should_request_reinstall(
         return false;
     }
 
-    // Compare the actual Windows input timestamp with the mouse callback's
-    // timestamp. Merely seeing some recent mouse activity is not enough: a
-    // later keyboard event may be the signal that the keyboard hook vanished.
-    if input_tick_matches_mouse(last_input_tick, last_mouse_input_tick) {
+    // Compare the actual Windows input timestamp with the timestamp carried by
+    // the mouse hook event.  A broad proximity check makes a click followed by
+    // typing look like mouse-only activity and can suppress recovery forever.
+    // Even for genuine mouse-only activity, refresh after a longer quiet period
+    // so a lost keyboard hook cannot remain undetected indefinitely.
+    if input_tick_matches_mouse(last_input_tick, last_mouse_input_tick)
+        && since_keyboard < MOUSE_ONLY_REFRESH_MS
+    {
         return false;
     }
 
@@ -1566,7 +1585,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
         }
 
         LAST_MOUSE_HOOK_MS.store(monotonic_ms(), Ordering::Relaxed);
-        LAST_MOUSE_INPUT_TICK.store(GetTickCount(), Ordering::Relaxed);
+        LAST_MOUSE_INPUT_TICK.store(mouse.time, Ordering::Relaxed);
 
         if is_mouse_event {
             let engine_enabled = ENGINE_ENABLED.load(Ordering::Relaxed);
@@ -1704,12 +1723,32 @@ mod tests {
     }
 
     #[test]
+    fn hook_route_bookkeeping_is_nonblocking_and_unmatched_up_fails_open() {
+        let contended_key = ScKey::new(0x1E, false);
+        {
+            let _guard = KEY_ROUTES.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(try_key_route_for_event(contended_key, false), None);
+        }
+
+        let unmatched_key = ScKey::new(0x30, false);
+        KEY_ROUTES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&unmatched_key);
+
+        assert_eq!(
+            try_key_route_for_event(unmatched_key, true),
+            Some(KeyRoute::DeliveredPassthrough)
+        );
+    }
+
+    #[test]
     fn watchdog_skips_mouse_only_activity() {
         let now = 10_000;
         let last_keyboard_hook = now - (HOOK_STALL_MS + 100);
         let input_age = 100;
         let last_input_tick = 50_000;
-        let last_mouse_input_tick = last_input_tick - 5;
+        let last_mouse_input_tick = last_input_tick;
         let last_reinstall = 0;
 
         assert!(!should_request_reinstall(
@@ -1742,8 +1781,28 @@ mod tests {
     }
 
     #[test]
-    fn input_tick_matching_handles_get_tick_count_wraparound() {
-        assert!(input_tick_matches_mouse(25, u32::MAX - 25));
-        assert!(!input_tick_matches_mouse(250, u32::MAX - 250));
+    fn nearby_keyboard_input_is_not_mistaken_for_mouse_input() {
+        assert!(input_tick_matches_mouse(50_000, 50_000));
+        assert!(!input_tick_matches_mouse(50_001, 50_000));
+        assert!(!input_tick_matches_mouse(50_099, 50_000));
+    }
+
+    #[test]
+    fn watchdog_eventually_refreshes_during_mouse_only_activity() {
+        let now = MOUSE_ONLY_REFRESH_MS + 1_000;
+        let last_keyboard_hook = now - MOUSE_ONLY_REFRESH_MS;
+        let input_age = 100;
+        let last_input_tick = 50_000;
+        let last_mouse_input_tick = last_input_tick;
+        let last_reinstall = 0;
+
+        assert!(should_request_reinstall(
+            now,
+            last_keyboard_hook,
+            input_age,
+            last_input_tick,
+            last_mouse_input_tick,
+            last_reinstall
+        ));
     }
 }
