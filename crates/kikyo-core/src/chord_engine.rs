@@ -1004,22 +1004,30 @@ impl ChordEngine {
                             .any(|idx| !consumed_indices[*idx] && !flushed_indices[*idx]);
 
                         if has_later_pending && p1.t_up.is_some() && p2.t_up.is_none() {
-                            if let Some(max_ratio_now) =
+                            let can_flush_p1 =
                                 Self::max_overlap_ratio_if_second_released_now(p1, p2, now)
-                            {
-                                if max_ratio_now < self.profile.char_key_overlap_ratio {
-                                    flushed_indices[idx1] = true;
+                                    .is_some_and(|max_ratio_now| {
+                                        max_ratio_now < self.profile.char_key_overlap_ratio
+                                    });
 
-                                    let kind1 = self.modifier_kind(p1.key);
-                                    let suppress_p1_tap = kind1.is_modifier()
-                                        && self.modifier_is_continuous(kind1)
-                                        && self.state.used_modifiers.contains(&p1.key);
+                            if can_flush_p1 {
+                                flushed_indices[idx1] = true;
 
-                                    if !suppress_p1_tap && !p1.used {
-                                        output.push(Decision::KeyTap(p1.key));
-                                        mark_as_tapped[idx1] = true;
-                                    }
+                                let kind1 = self.modifier_kind(p1.key);
+                                let suppress_p1_tap = kind1.is_modifier()
+                                    && self.modifier_is_continuous(kind1)
+                                    && self.state.used_modifiers.contains(&p1.key);
+
+                                if !suppress_p1_tap && !p1.used {
+                                    output.push(Decision::KeyTap(p1.key));
+                                    mark_as_tapped[idx1] = true;
                                 }
+                            } else {
+                                // The older pair can still satisfy the overlap threshold.
+                                // Do not let a newer pair consume p2 first: for example,
+                                // D+K followed by F with K released late must resolve D+K
+                                // before K+F is considered.
+                                stop_for_ordering = true;
                             }
                         }
                         break;
@@ -1856,6 +1864,58 @@ mod tests {
         assert!(engine
             .on_event(make_event(k_s, KeyEdge::Up, t0 + Duration::from_millis(90)))
             .is_empty());
+    }
+
+    #[test]
+    fn test_noncontinuous_older_viable_pair_blocks_later_chord() {
+        // New Geta reproduction: D+K is "re", F is "n", and K+F is "mo".
+        // Releasing F before a lagging K must not let K+F consume K first and
+        // leave D to be emitted as its base tap ("ka").
+        let t0 = Instant::now();
+        let k_d = make_key(0x20);
+        let k_k = make_key(0x25);
+        let k_f = make_key(0x21);
+
+        let mut profile = Profile::default();
+        profile.char_key_continuous = false;
+        profile.char_key_overlap_ratio = 0.35;
+        profile.trigger_keys.insert(k_d, "<d>".to_string());
+        profile.trigger_keys.insert(k_k, "<k>".to_string());
+        profile.trigger_keys.insert(k_f, "<f>".to_string());
+        let mut engine = ChordEngine::new(profile);
+
+        assert!(engine
+            .on_event(make_event(k_d, KeyEdge::Down, t0))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_k,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(10)
+            ))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(k_d, KeyEdge::Up, t0 + Duration::from_millis(40)))
+            .is_empty());
+        assert!(engine
+            .on_event(make_event(
+                k_f,
+                KeyEdge::Down,
+                t0 + Duration::from_millis(50)
+            ))
+            .is_empty());
+
+        // D+K is still viable here, so K+F must not resolve first.
+        assert!(engine
+            .on_event(make_event(k_f, KeyEdge::Up, t0 + Duration::from_millis(70)))
+            .is_empty());
+
+        // Releasing K resolves the older D+K chord, then flushes F as a tap.
+        let res = engine.on_event(make_event(k_k, KeyEdge::Up, t0 + Duration::from_millis(80)));
+        assert_eq!(
+            res,
+            vec![Decision::Chord(vec![k_d, k_k]), Decision::KeyTap(k_f)]
+        );
     }
 
     #[test]
